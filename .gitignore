@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+
+# Claude Code local files
+.claude/
+
+# Third-party Z80 exercisers (GPL, fetched locally — not part of this repo).
+# See tests/zexall/fixtures/README.md for how to obtain them.
+tests/zexall/fixtures/*.com
+dev-support/ZEXALL-main/
+
+# Local dev artifacts (screenshots, logs — regenerable)
+dev-support/*.png
+dev-support/*.txt

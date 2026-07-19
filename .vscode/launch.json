@@ -1,0 +1,25 @@
+{
+    // NOTE: launching with F5 attaches the debugger, whose per-line trace hook
+    // makes the emulator's hot loop ~6x slower (13fps instead of 50). To run at
+    // full speed, use "Run Without Debugging" (Ctrl+F5) or `python main.py` in a
+    // terminal. Only use F5 when you actually need breakpoints.
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "zxide: run app",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "zxide: current file",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

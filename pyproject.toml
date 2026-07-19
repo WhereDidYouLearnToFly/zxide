@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zxide"
+version = "0.1.0"
+description = "ZX Spectrum development IDE with a pure-Python emulator core"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "PyQt5>=5.15",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+# Flat layout: packages live at the repo root; main.py is a top-level entry script.
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["zxemu_core*", "zxemu_ui*"]
+
+[tool.setuptools.package-data]
+zxemu_core = ["roms/*.rom", "roms/*.txt"]
+
+[project.scripts]
+zxide = "main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,12 @@
+These ROM images (48.rom, 128-0.rom, 128-1.rom) are copyright Amstrad.
+Amstrad has given permission for them to be distributed, provided that
+they are not sold and are not embedded in hardware, per the statement at:
+
+  https://groups.google.com/group/comp.sys.amstrad.8bit/msg/c092cc4d4943131e
+
+They were obtained unmodified from the Fuse emulator project
+(https://fuse-emulator.sourceforge.net/), whose own roms/README.copyright
+documents these same terms.
+
+This license covers only these ROM binaries. It does not apply to any
+other code in this repository, which is original work.
