@@ -242,7 +242,10 @@ class EmulatorView(QWidget):
         self._held_keys: dict[int, int] = {}  # physical-key id -> logical Qt key at press time
         self._buffer = bytearray(FULL_WIDTH * FULL_HEIGHT * BYTES_PER_PIXEL)
         self._image = QImage(self._buffer, FULL_WIDTH, FULL_HEIGHT, FULL_WIDTH * BYTES_PER_PIXEL, QImage.Format_RGB32)
-        self.setMinimumSize(FULL_WIDTH, FULL_HEIGHT)
+        # A low floor only: the paint path scales the image to whatever size the host
+        # gives us (the IDE's EmulatorStage sizes this relative to the window), so we
+        # don't pin the native 320x256 -- that would stop the view scaling down.
+        self.setMinimumSize(FULL_WIDTH // 2, FULL_HEIGHT // 2)
         self.setFocusPolicy(Qt.StrongFocus)
 
     def refresh(self, frame_count: int | None = None) -> None:
