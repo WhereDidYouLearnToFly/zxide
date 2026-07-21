@@ -1,6 +1,6 @@
 # zxide — project status & handoff
 
-_Last updated: 2026-07-18._ A snapshot to make it easy to pick the project back up.
+_Last updated: 2026-07-20._ A snapshot to make it easy to pick the project back up.
 
 ## Where we are
 
@@ -81,10 +81,28 @@ overview. When the IDE grows, `main.py` becomes the IDE shell and
 
 ## Likely next steps
 
-1. **Milestone 2 — the IDE shell**: project system, external-editor hookup,
-   external assembler build → load into the emulator view. Move the frame
-   pump out of the window into a controller (start/stop/pause/reset/step).
-2. **128K machine** via the existing paging abstraction (port 0x7ffd, AY, 2nd
-   ROM) as a `Machine` subclass.
-3. Optional: full zexall pass under PyPy; fix the 3 undocumented-flag items if
-   strict conformance is ever wanted; a debugger panel (registers/memory).
+**Milestone 2 (the IDE shell) is substantially done** — the "Full IDE" commit
+shipped the dock layout, an in-app editor (Z80 highlighting + breakpoint gutter),
+a folder project system + `zxide.json`, sjasmplus settings, a sjasmplus build →
+.sna load pipeline, and a v1 debugger (registers + step + breakpoints + live hex).
+See DEV_PLAN.md for the phase-by-phase state. The one deferred piece is Phase E,
+the visual drag-drop memory management.
+
+**Now: Milestone 3 — hardware & audio** (core work; make the machine complete):
+
+1. **Beeper (1-bit sound)** ✅ *done* — port 0xFE bit 4. Two-layer audio pipeline:
+   `zxemu_core/audio.py` (`Beeper`: timestamped speaker flips → float PCM, duty-
+   cycle resample + DC blocker) and `zxemu_ui/audio_output.py` (`AudioOutput`:
+   QtMultimedia 16-bit push sink, fails quiet). Machine timestamps flips at the
+   frame T-state; controller pushes samples per tick, mutes on pause/debug; opt-in
+   via `beeper.enabled`. The AY will mix into this same stream.
+2. **128K machine + AY-3-8912** *(next)* — `Machine128` on the existing paging abstraction
+   (port 0x7FFD, 2nd ROM already bundled) + the AY chip (ports 0xFFFD/0xBFFD)
+   mixed into the same audio pipeline.
+3. **TAP support** — load .tap tapes (ROM-trap fast load and/or edge replay via
+   port 0xFE bit 6).
+
+Order: beeper → 128K+AY → TAP, then back to Phase E (visual memory management).
+
+Still-optional backlog: full zexall pass under PyPy; the 3 undocumented-flag
+items; disassembly/watchpoint debugger polish.

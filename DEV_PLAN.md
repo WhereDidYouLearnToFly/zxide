@@ -124,38 +124,69 @@ disassembly, and watchpoints follow.
 
 ## Milestone 2 roadmap (phased)
 
-- **Phase A — IDE shell layout** *(in progress)*: the dockable `QMainWindow` per the
-  **Window & docking model** above — editor as central widget, Project as a locked left
-  dock, and emulator / memory-cells / registers / memory-map / inspector / output as
-  floatable docks; File menu; layout save/restore + Design/Debug presets. The frame pump is
-  already extracted into an `EmulatorController` (run/pause/reset/step, `frame_ready` /
-  `status_changed` signals), the emulator has its own control strip, and the fps readout
-  moved to the status bar. *Remaining:* convert the current fixed splitter layout to the
-  dock model and add the central editor host. UI-layer only — the core is untouched.
-- **Editor track** *(new — supersedes "no built-in editor")*: an in-app multi-tab text
-  editor for source and text assets, central and split-capable (see docking model). Grows
-  Z80 syntax highlighting and a breakpoint gutter, and doubles as the debugger's source view
-  (source ⇆ disassembly side by side, both tracking PC). Worth its own track; it changed the
-  original "external editor only" plan because an in-app editor is far more useful for
-  debugging.
-- **Phase B — Project & asset system**: a project model + `.zxproj` on disk; the left tree
-  bound to real source files and imported assets (bmp / binary / pt3 / beeper sfx); an
-  Import action.
-- **Phase C — External tools**: detect sjasmplus on `PATH` (overridable) for the build; a
-  Settings dialog. "Open in external editor" (VS Code, detected) stays as an *option*
-  alongside the built-in editor, not the only path.
-- **Phase D — Build pipeline**: run sjasmplus, stream its output to the console panel, and on
-  success load the emitted **snapshot** into the machine and run. Needs a new
-  `zxemu_core/snapshot.py` — **.sna first**, with .szx / .tap / raw-binary as later formats
-  (multiple build outputs are intended; snapshot is just the first).
-- **Phase E — Visual memory management** *(the centerpiece)*: the bank-oriented memory map
-  with drag-drop asset placement and auto-locate, feeding the Phase-D build. Depends on B+D.
-- **Debugger track** (parallel to B–E): registers + step + memory view, then breakpoints /
-  disassembly. Shares the memory widget with Phase E (its Debug mode).
-- **Phase F — 128K machine**: a `Machine128` built on the paging abstraction (port 0x7FFD,
-  AY sound, second ROM).
+Milestone 2 (the IDE shell) is **substantially complete** — the "Full IDE" commit landed
+Phases A–D plus the editor and debugger tracks. What remains of the original plan is the
+visual-memory centerpiece (Phase E), now deferred behind a new **Milestone 3: hardware &
+audio** (128K, AY, beeper, TAP) — see below.
 
-Rough order: A → B → C → D → E; the debugger and 128K slot in independently.
+- **Phase A — IDE shell layout** ✅ *done*: the dockable `QMainWindow` per the **Window &
+  docking model** above — editor central, Project a locked left dock, and emulator /
+  memory-cells / registers / memory-map / inspector / output as floatable docks; File / View /
+  Build menus; layout save/restore. The frame pump lives in an `EmulatorController`
+  (run/pause/reset/step + breakpoints, `frame_ready` / `status_changed` / `breakpoint_hit`
+  signals); the emulator has its own control strip and the fps readout is in the status bar.
+- **Editor track** ✅ *done* *(supersedes "no built-in editor")*: an in-app multi-tab text
+  editor (`editor.py`), Z80 syntax highlighting (`z80_highlighter.py`), a breakpoint gutter,
+  and an execution-line marker that tracks PC. Doubles as the debugger's source view.
+- **Phase B — Project & asset system** ✅ *core done*: a folder-based project with a
+  `zxide.json` manifest (`project.py`), a starter `main.asm` template, and the left tree bound
+  to the real folder with New File / New Folder. *Remaining:* first-class **asset import**
+  (bmp / binary / pt3 / beeper sfx) — folds into Phase E.
+- **Phase C — External tools** ✅ *done*: sjasmplus auto-detected on `PATH` (overridable) via
+  app `Settings` + a `SettingsDialog`; per-project build args in the manifest. (VS-Code "open
+  in external editor" not wired — the in-app editor made it optional, as planned.)
+- **Phase D — Build pipeline** ✅ *done*: `builder.py` shells out to sjasmplus, streams output
+  to the Output console, and on success loads the emitted **.sna** (`zxemu_core/snapshot.py`)
+  and runs. Source-level debug info (`sld.py` + `zxemu_core/disassembler.py`) maps source
+  lines ⇆ addresses for breakpoints. *Later formats:* .szx / .tap / raw binary.
+- **Debugger track** ✅ *v1 done*: registers/flags panel, single-step, live hex memory view,
+  and **breakpoints** (Build & Debug = F5 honours them; Build & Run = Ctrl+F5 ignores them),
+  with the execution line highlighted in the editor. *Later:* disassembly panel, watchpoints.
+- **Phase E — Visual memory management** ⏸ *deferred* *(the centerpiece)*: the bank-oriented
+  memory map (`memory_map_view.py`) and hex cells (`memory_cells_view.py`) exist as debug
+  read-outs; the **drag-drop asset placement + auto-locate** design step (generating
+  `ORG` / `incbin`) is not built yet. Picked up after Milestone 3.
+
+---
+
+## Milestone 3 roadmap: hardware & audio *(current)*
+
+The next push makes the emulated machine *complete* — sound, the 128K model, and tape
+loading — before returning to the Phase-E visual tooling. All of this is **core** work
+(`zxemu_core/`), UI-agnostic, with thin UI hooks. Chosen order and why:
+
+- **1. Beeper (1-bit sound)** ✅ *done* — port `0xFE` bit 4 drives the speaker. Establishes
+  the **audio output pipeline**, built in two layers: `zxemu_core/audio.py` (`Beeper`, a
+  UI-agnostic stage that resamples timestamped 1-bit speaker flips → float PCM via time-
+  weighted duty-cycle averaging + a DC blocker so held levels fall silent), and
+  `zxemu_ui/audio_output.py` (`AudioOutput`, a QtMultimedia push-mode 16-bit sink that fails
+  quiet and drops-rather-than-lags). The `Machine` timestamps each speaker flip at its frame
+  T-state and calls `beeper.end_frame()`; the `EmulatorController` pushes samples each tick
+  and mutes during pause/debug. Audio is opt-in (`beeper.enabled`) so tests/headless pay
+  nothing. **This is the stream the AY mixes into.**
+- **2. 128K machine + AY-3-8912** — a `Machine128` on the existing paging abstraction (port
+  `0x7FFD`: RAM/ROM/screen bank select), the second ROM (`128-*.rom`, already bundled), and
+  the **AY sound chip** (ports `0xFFFD`/`0xBFFD`, 3 tone + noise + envelope channels) mixed
+  into the same audio pipeline from step 1. AY and 128K ship together since the AY lives on
+  the 128K.
+- **3. TAP support** — load `.tap` tape images: either the fast **ROM-trap** LOAD (intercept
+  the ROM loader for instant loads) or real edge-level replay through port `0xFE` bit 6.
+  Complements the existing .sna path; also a candidate build output.
+
+*Deferred to Milestone 4:* Phase E visual memory management (drag-drop asset placement +
+auto-locate + asset import), disassembly/watchpoint debugger polish, .szx/.pt3 playback.
+
+Rough order: **beeper → 128K+AY → TAP**, then back to Phase E.
 
 ---
 

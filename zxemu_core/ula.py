@@ -36,19 +36,25 @@ def contention_delay(t_state: int) -> int:
 
 
 class Ula:
-    """Port 0xFE: OUT sets border color (bits 0-2); IN reads keyboard row bits.
+    """Port 0xFE: OUT sets border color (bits 0-2) and the speaker bit (bit 4);
+    IN reads keyboard row bits.
 
-    Beeper/MIC output and tape (EAR) input aren't modeled in this milestone;
-    unused/undriven bits read as 1, matching the floating-bus convention.
+    We record the speaker level but do no timing here -- turning the stream of
+    speaker flips into sound needs to know *when* each flip happened, and only the
+    Machine holds the frame T-state clock, so it timestamps the changes (see
+    ``Machine._io_write``). Tape (EAR) input on bit 6 isn't modeled yet; unused
+    read bits return 1, matching the floating-bus convention.
     """
 
     def __init__(self, keyboard=None):
         self.keyboard = keyboard
         self.border_color = 0
+        self.speaker = 0  # port 0xFE bit 4: the 1-bit beeper output
 
     def write_port(self, port: int, value: int) -> None:
         if port & 0x01 == 0:
             self.border_color = value & 0x07
+            self.speaker = (value >> 4) & 0x01
 
     def read_port(self, port: int) -> int:
         if port & 0x01 == 0:

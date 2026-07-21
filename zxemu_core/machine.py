@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .audio import Beeper
 from .cpu.z80 import Z80
 from .keyboard import Keyboard
 from .memory import Memory, create_48k_memory
@@ -9,13 +10,17 @@ from .ula import FRAME_TSTATES, Ula
 
 
 class Machine:
-    """A 48K Spectrum: CPU + paged memory + ULA (border/keyboard) wired together."""
+    """A 48K Spectrum: CPU + paged memory + ULA (border/keyboard) + beeper wired together."""
 
     def __init__(self, rom_data: bytes):
         self.memory: Memory = create_48k_memory(rom_data)
         self.cpu = Z80(self.memory)
         self.keyboard = Keyboard()
         self.ula = Ula(keyboard=self.keyboard)
+        # The beeper is the audio-output pipeline; it stays dormant (produces no
+        # samples, costs nothing) until a UI layer flips ``beeper.enabled`` on.
+        self.beeper = Beeper()
+        self._speaker_level = 0  # last speaker bit we handed to the beeper
         self.cpu.io_read = self._io_read
         self.cpu.io_write = self._io_write
         self.frame_t_state = 0
@@ -31,6 +36,13 @@ class Machine:
 
     def _io_write(self, port: int, value: int) -> None:
         self.ula.write_port(port, value)
+        # Timestamp speaker flips for the beeper. frame_t_state is the clock at the
+        # start of the current instruction (its T-states are added after step()
+        # returns), so the flip is placed a few T-states early -- inaudible for the
+        # beeper, and it keeps the audio timing entirely inside the Machine.
+        if self.beeper.enabled and self.ula.speaker != self._speaker_level:
+            self._speaker_level = self.ula.speaker
+            self.beeper.set_level(self.frame_t_state, self._speaker_level)
 
     def run_frame(self) -> None:
         """Execute one 50Hz frame's worth of T-states (69888), firing one interrupt at the start.
@@ -45,3 +57,6 @@ class Machine:
         while self.frame_t_state < target:
             self.frame_t_state += self.cpu.step()
         self.frame_t_state -= FRAME_TSTATES
+        # Close out the frame's audio: resample the speaker flips gathered above
+        # into PCM the UI can play. A no-op while the beeper is disabled.
+        self.beeper.end_frame(FRAME_TSTATES)
