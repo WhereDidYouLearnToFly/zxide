@@ -9,6 +9,10 @@ independently -- not derived from fuse's C source.
 from __future__ import annotations
 
 FRAME_TSTATES = 69888  # 48K PAL: 312 lines * 224 T-states/line
+FRAME_TSTATES_128K = 70908  # 128K PAL: 311 lines * 228 T-states/line
+# The 128K ULA runs a slightly longer frame than the 48K, so its 50Hz interrupt
+# falls on a different T-state cadence -- code timed against one model runs a hair
+# off on the other. Machine128 selects this length; see Machine.frame_tstates.
 LINE_TSTATES = 224
 TOP_BORDER_LINES = 64
 SCREEN_LINES = 192

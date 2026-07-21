@@ -169,3 +169,63 @@ class Beeper:
         self._dc_prev_in = x
         self._dc_prev_out = y
         return y
+
+
+class SoundMixer:
+    """Sums several sound sources into the single PCM stream the audio backend plays.
+
+    A 48K Spectrum has one voice (the beeper); a 128K adds the AY sound chip. Both
+    are "sources" that speak the same tiny contract -- an ``enabled`` flag, an
+    ``end_frame(frame_tstates)`` that renders one frame, and a ``take_samples()``
+    that drains the rendered PCM. The mixer holds an ordered list of them and, each
+    frame, adds their outputs sample-for-sample.
+
+    Keeping the mixer separate from the sources means the ``Beeper`` stays completely
+    unaware of the AY -- the 48K machine reuses it verbatim -- and the summing lives
+    in one small, testable place. The machine exposes the mixer as ``machine.audio``;
+    the controller drives *that* rather than any individual source.
+    """
+
+    def __init__(self, sample_rate: int = 44100, frame_rate: int = 50):
+        self.sample_rate = sample_rate
+        self.frame_rate = frame_rate
+        self.sources: list = []
+
+    def add_source(self, source) -> None:
+        """Register a sound source (must expose enabled / end_frame / take_samples)."""
+        self.sources.append(source)
+
+    @property
+    def enabled(self) -> bool:
+        """True if audio is on. Sources are muted/unmuted together (see the setter)."""
+        return any(source.enabled for source in self.sources)
+
+    @enabled.setter
+    def enabled(self, value: bool) -> None:
+        # One switch for the whole machine: pause/debug mutes every voice at once, and
+        # each source clears its own transient state on the transition (no stale burst).
+        for source in self.sources:
+            source.enabled = value
+
+    def end_frame(self, frame_tstates: int) -> None:
+        """Render this frame on every source (each queues its own samples)."""
+        for source in self.sources:
+            source.end_frame(frame_tstates)
+
+    def take_samples(self) -> list[float]:
+        """Drain every source and return their per-sample sum, clamped to [-1, 1].
+
+        Sources emit the same number of samples per frame when enabled, so they line
+        up; a shorter buffer is simply treated as trailing silence. The final clamp is
+        a safety net against a mix that momentarily exceeds full scale -- with the
+        beeper/AY volumes calibrated for headroom it should rarely engage.
+        """
+        buffers = [source.take_samples() for source in self.sources]
+        if not any(buffers):
+            return []
+        length = max(len(buffer) for buffer in buffers)
+        mixed = [0.0] * length
+        for buffer in buffers:
+            for i, sample in enumerate(buffer):
+                mixed[i] += sample
+        return [1.0 if s > 1.0 else -1.0 if s < -1.0 else s for s in mixed]

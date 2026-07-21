@@ -149,9 +149,11 @@ audio** (128K, AY, beeper, TAP) — see below.
   to the Output console, and on success loads the emitted **.sna** (`zxemu_core/snapshot.py`)
   and runs. Source-level debug info (`sld.py` + `zxemu_core/disassembler.py`) maps source
   lines ⇆ addresses for breakpoints. *Later formats:* .szx / .tap / raw binary.
-- **Debugger track** ✅ *v1 done*: registers/flags panel, single-step, live hex memory view,
-  and **breakpoints** (Build & Debug = F5 honours them; Build & Run = Ctrl+F5 ignores them),
-  with the execution line highlighted in the editor. *Later:* disassembly panel, watchpoints.
+- **Debugger track** ✅ *v1 done*: registers/flags panel, live hex memory view, **breakpoints**
+  (Build & Debug = F5 honours them; Build & Run = Ctrl+F5 ignores them) with the execution line
+  highlighted in the editor, and **Step Into (F11) / Step Over (F10)** — step-over runs CALLs,
+  RSTs and repeating block ops (LDIR/...) to completion, honouring breakpoints hit inside.
+  *Later:* disassembly panel, watchpoints.
 - **Phase E — Visual memory management** ⏸ *deferred* *(the centerpiece)*: the bank-oriented
   memory map (`memory_map_view.py`) and hex cells (`memory_cells_view.py`) exist as debug
   read-outs; the **drag-drop asset placement + auto-locate** design step (generating
@@ -174,19 +176,94 @@ loading — before returning to the Phase-E visual tooling. All of this is **cor
   T-state and calls `beeper.end_frame()`; the `EmulatorController` pushes samples each tick
   and mutes during pause/debug. Audio is opt-in (`beeper.enabled`) so tests/headless pay
   nothing. **This is the stream the AY mixes into.**
-- **2. 128K machine + AY-3-8912** — a `Machine128` on the existing paging abstraction (port
-  `0x7FFD`: RAM/ROM/screen bank select), the second ROM (`128-*.rom`, already bundled), and
-  the **AY sound chip** (ports `0xFFFD`/`0xBFFD`, 3 tone + noise + envelope channels) mixed
-  into the same audio pipeline from step 1. AY and 128K ship together since the AY lives on
-  the 128K.
-- **3. TAP support** — load `.tap` tape images: either the fast **ROM-trap** LOAD (intercept
-  the ROM loader for instant loads) or real edge-level replay through port `0xFE` bit 6.
-  Complements the existing .sna path; also a candidate build output.
+- **2. 128K machine + AY-3-8912** ✅ *done* — `Machine128(Machine)` on the existing paging
+  abstraction: port `0x7FFD` (RAM bank→slot 3, ROM select, screen bank 5/7, paging lock),
+  the two bundled 128 ROMs, the 70908-T frame. `create_128k_memory` builds the 8-RAM + 2-ROM
+  pool; shadow screen via `machine.display_memory()`; 128K `.sna` loading via `load_sna_128k`.
+  The **AY-3-8912** (`zxemu_core/ay.py`: 3 tone gens, 17-bit noise LFSR, 10-shape envelope,
+  logarithmic amplitude table, timestamp-then-render like the beeper) mixes into the beeper
+  stream through a new `SoundMixer` exposed as `machine.audio`. Machine model is per-project
+  (`zxide.json` `model`), chosen at New Project and swapped **on project open** via
+  `MainWindow.set_machine`/`EmulatorController.set_machine`/`machine_factory.build_machine`.
+  The memory-map pane shows per-slot bank identity + a live `0x7FFD` readout; a `project128`
+  sjasmplus template (`device zxspectrum128`, demonstrates paging + AY) was added. All
+  behaviours cross-checked against fuse (E:/github/fuse) as a **reference only** (GPLv2,
+  independent reimplementation — no code copied), the same policy used for the CPU.
+- **3. TAP support** *(next)* — load `.tap` tape images: either the fast **ROM-trap** LOAD
+  (intercept the ROM loader for instant loads) or real edge-level replay through port `0xFE`
+  bit 6. Complements the existing .sna path; also a candidate build output.
 
 *Deferred to Milestone 4:* Phase E visual memory management (drag-drop asset placement +
 auto-locate + asset import), disassembly/watchpoint debugger polish, .szx/.pt3 playback.
 
 Rough order: **beeper → 128K+AY → TAP**, then back to Phase E.
+
+---
+
+## Future directions (the full backlog)
+
+The agreed roadmap of where zxide can go after Milestone 3. **★ marks the educational
+wins** -- the north star is "a learner can search a name, step through real code, and
+understand what the machine is doing." Grouped by theme, not strictly ordered; the
+**recommended sequence** is at the end.
+
+### 1. Debugging & reverse-engineering (the RE toolkit)
+- **★ Live disassembly panel** -- disassemble around PC as you step; the foundation for
+  everything else here (the core `disassembler.py` already exists).
+- **★ Annotated ROM source for debugging** -- when PC is in ROM, show the *labelled*
+  disassembly (`KEY-SCAN`, `PRINT-A`, `CHAN-OPEN`, ...) from a public ROM map, with
+  comments, so stepping through the ROM shows *which routine you're in*. The standout
+  educational feature.
+- **Symbol / label database** -- labels from the build's SLD + the ROM map + user-defined,
+  surfaced everywhere (disasm, memory, breakpoints); go-to-label / go-to-address.
+- **Cross-references** -- "what calls this address / reads this byte?" (static scan + trace).
+- **Execution trace / history** -- a rolling log of executed instructions; step *backwards*.
+- **Coverage map** -- highlight which addresses have actually executed.
+- **Conditional & data breakpoints / watchpoints** -- break on `A==5`, or on a read/write to
+  an address (not only PC).
+- **Call-stack view** -- reconstruct the return-address chain.
+- **Memory search** -- find bytes / text / patterns; mark regions as code vs data.
+- **★ Register/flag tooltips & a T-state (cycle) counter** -- hover a flag to learn what it
+  means; show the selected instruction's cycle cost.
+
+### 2. Tape & snapshot formats
+- **TAP loading** (ROM-trap fast load + edge replay) -- closes Milestone 3.
+- **TZX** -- the richer tape format (turbo loaders, custom timing).
+- **More snapshots** -- `.z80`, `.szx` (load *and* save, so machine state can be saved).
+- **Tape-deck UI** -- play / stop / rewind, block list, "insert tape."
+
+### 3. Visual memory management (Phase E -- the "Unity" centerpiece)
+- Bank-oriented map with **drag-drop asset placement** + an **auto-locate** button.
+- **Asset import** (bmp / binary / pt3 / beeper sfx) -> generates `ORG` / `incbin`.
+- Live "where do my bytes live" before *and* after the build.
+
+### 4. Sound & hardware completeness
+- AY **stereo** (ACB/ABC), and an **AY register/scope panel** to watch the chip live. ★
+- **128K RAM disk**.
+- **PT3 / beeper-SFX playback** for imported audio assets.
+- *(Skipping +2/+3 machine variants -- little used today.)*
+
+### 5. Editor & project
+- **Build-error jump** -- click an sjasmplus error -> jump to the source line.
+- **Symbol navigation** in the editor (go-to-definition for labels).
+- **★ Lua syntax support** -- sjasmplus embeds a Lua interpreter (`LUA ... ENDLUA` blocks,
+  the `sj.` emit/label API) for compile-time metaprogramming (lookup tables, codegen).
+  Highlight Lua inside those blocks and in standalone `.lua` files; add `.lua` to the
+  editable-text suffixes.
+- **Multiple build targets / configs**; **.szx or .tap as a build output**.
+- **Richer project templates** (a game skeleton, an AY music demo).
+
+### 6. Polish / fixes
+- **Runtime swap-pause bug** -- opening a 128K project *while running* pauses the controller
+  without resuming (startup swap is fine; only a live swap is affected).
+- Per-scanline **border effects** and tighter **contention** (a cycle-accuracy pass).
+- Optional **zexall under PyPy** as a conformance gate.
+
+### Recommended sequence
+**TAP** (finish M3) -> then the **RE / debugging toolkit** (disassembly panel + labels +
+annotated ROM source) as the strongest *educational* bet, reusing the existing debugger ->
+then **Phase E** (the flashier "product" feature). The RE toolkit is where the *teaching*
+happens; Phase E is where zxide feels most like "Unity for the Spectrum."
 
 ---
 

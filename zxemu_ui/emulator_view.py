@@ -11,8 +11,14 @@ from __future__ import annotations
 
 import numpy as np
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QImage, QPainter
+from PyQt5.QtGui import QColor, QImage, QPainter
 from PyQt5.QtWidgets import QWidget
+
+# A 1px frame signalling keyboard focus: green when the view has focus (typing reaches
+# the Spectrum), a faint gray otherwise -- so it's always obvious whether the machine
+# is "listening" to the keyboard.
+_FOCUS_ON = QColor("#4ec96b")
+_FOCUS_OFF = QColor("#4a4a4a")
 
 SCREEN_WIDTH = 256
 SCREEN_HEIGHT = 192
@@ -256,16 +262,30 @@ class EmulatorView(QWidget):
             self._frame_counter += 1
             frame_count = self._frame_counter
         flash_on = (frame_count // FLASH_TOGGLE_FRAMES) % 2 == 1
-        screen_bank = np.frombuffer(self.machine.memory.slots[1].data, dtype=np.uint8)
+        # Ask the machine which 16K bank the ULA displays: slot 1 on 48K, but RAM5 or
+        # (shadow) RAM7 on 128K depending on port 0x7FFD -- even if RAM7 isn't slotted in.
+        screen_bank = np.frombuffer(self.machine.display_memory(), dtype=np.uint8)
         frame = render_frame_fast(screen_bank, self.machine.ula.border_color, flash_on=flash_on)
         # tobytes() gives an immutable copy the QImage can safely reference for its lifetime.
         self._buffer = frame.tobytes()
         self._image = QImage(self._buffer, FULL_WIDTH, FULL_HEIGHT, FULL_WIDTH * BYTES_PER_PIXEL, QImage.Format_RGB32)
         self.update()
 
+    def focusInEvent(self, event) -> None:  # noqa: N802 (Qt override name)
+        super().focusInEvent(event)
+        self.update()  # repaint so the focus border turns green
+
+    def focusOutEvent(self, event) -> None:  # noqa: N802 (Qt override name)
+        super().focusOutEvent(event)
+        self.update()  # repaint so the focus border goes gray
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.drawImage(self.rect(), self._image, self._image.rect())
+        # A thin frame showing whether we currently hold keyboard focus.
+        painter.setPen(_FOCUS_ON if self.hasFocus() else _FOCUS_OFF)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
 
     @staticmethod
     def _key_identity(event) -> int:

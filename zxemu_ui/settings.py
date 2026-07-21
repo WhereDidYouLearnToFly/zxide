@@ -22,11 +22,16 @@ def detect_assembler() -> str:
     return shutil.which("sjasmplus") or ""
 
 
+RECENT_LIMIT = 10  # how many entries the Open Recent / Load Recent menus remember
+
+
 def default_settings() -> dict:
     return {
         "assembler_path": detect_assembler(),
         "last_project": "",
         "show_special": False,  # editor: render whitespace markers
+        "recent_projects": [],  # project folders, most-recent first (Open Recent menu)
+        "recent_files": [],     # loaded .sna/.tap files, most-recent first (Load Recent menu)
     }
 
 
@@ -70,3 +75,19 @@ class Settings:
     def set(self, key: str, value) -> None:
         self.data[key] = value
         self._write(self.data)
+
+    def push_recent(self, key: str, value: str, limit: int = RECENT_LIMIT) -> None:
+        """Prepend ``value`` to a recent-list setting, de-duplicated and capped.
+
+        Moving a re-used entry back to the front (rather than appending a duplicate)
+        keeps the most recently touched item at the top of the menu.
+        """
+        items = [item for item in self.get(key, []) if item != value]
+        items.insert(0, value)
+        del items[limit:]
+        self.set(key, items)
+
+    def remove_recent(self, key: str, value: str) -> None:
+        """Drop ``value`` from a recent-list setting (e.g. when the path is gone)."""
+        items = [item for item in self.get(key, []) if item != value]
+        self.set(key, items)

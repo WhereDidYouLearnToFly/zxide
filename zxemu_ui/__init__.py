@@ -7,22 +7,27 @@ it visible and interactive:
 
     emulator_view.py  A QWidget that, each frame, (a) reads the core's screen
                       memory and paints it (bitmap + colour attributes + border
-                      + FLASH), and (b) translates your PC key presses into the
-                      Spectrum's key-matrix presses.
+                      + FLASH, with a green/gray keyboard-focus frame), and (b)
+                      translates your PC key presses into Spectrum key-matrix presses.
     controller.py     Drives the machine in real time (the frame pump) and offers
-                      the IDE's run / pause / reset / step controls, talking to the
-                      rest of the UI purely through Qt signals.
+                      the IDE's run / pause / reset / step-into / step-over controls,
+                      talking to the rest of the UI purely through Qt signals.
     emulator_panel.py Groups the emulator view with its own control strip (Run /
                       Pause / Step / Reset on top) and fits the screen to its dock.
+    audio_output.py   Plays the core's PCM sound through the system audio device
+                      (a thin QtMultimedia sink that fails quiet if none is present).
+    machine_factory.py  Builds the right machine (48K or 128K) for a project's model.
     editor.py         The central, multi-tab code/text editor (the dock anchor).
     z80_highlighter.py    Syntax colouring for Z80 assembly in the editor.
     project.py        A folder-based project + its zxide.json manifest (+ scaffolding).
-    settings.py       App settings (auto-created; sjasmplus auto-detected).
+    settings.py       App settings (auto-created; sjasmplus auto-detected; recents).
     settings_dialog.py    Dialog to override the build configuration.
     builder.py        Runs sjasmplus on a project and reports the result.
+    sld.py            Parses sjasmplus's source-level-debug map (source line <-> address).
     registers_view.py     Live read-out of the Z80 register file + flags.
     memory_cells_view.py  Live hex dump of memory (address + hex + ASCII).
-    memory_map_view.py    Visual, bank-oriented overview of memory with PC/SP markers.
+    memory_map_view.py    Visual, bank-oriented overview of memory with PC/SP markers
+                          and the live 128K paging state.
     inspector_view.py     Details of the selected asset/region (stub for now).
     main_window.py    The IDE shell: a Visual-Studio-style dock layout with the
                       editor central and the emulator + debug panels as docks.
@@ -31,5 +36,5 @@ it visible and interactive:
 Keeping the UI separate from the core is what lets the same emulator run
 headless in tests, and lets the view be embedded as a panel inside the larger IDE
 window -- the way a game viewport sits inside an editor. The top-level ``main.py``
-is now just a composition root that wires these three together.
+is now just a composition root that wires these pieces together.
 """

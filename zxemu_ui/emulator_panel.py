@@ -47,6 +47,13 @@ class EmulatorStage(QWidget):
         self._view = view
         self._view.setParent(self)
 
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override name)
+        # Clicking anywhere on the emulator -- including the letterbox margins around
+        # the aspect-locked screen -- gives the view keyboard focus, so a slightly
+        # off-target click can't leave the Spectrum unable to "hear" the keyboard.
+        self._view.setFocus(Qt.MouseFocusReason)
+        super().mousePressEvent(event)
+
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override name)
         self._layout_view()
 
@@ -96,10 +103,19 @@ class EmulatorPanel(QWidget):
         self.pause_action.setToolTip("Pause execution")
         self.pause_action.triggered.connect(self.controller.pause)
 
-        # Debugger step: one Z80 instruction at a time.
-        self.step_action = QAction(style.standardIcon(QStyle.SP_MediaSeekForward), "Step", self)
-        self.step_action.setToolTip("Step one instruction (while paused)")
+        # Debugger step into: one Z80 instruction at a time (one LDIR iteration, or
+        # into a called subroutine).
+        self.step_action = QAction(style.standardIcon(QStyle.SP_MediaSeekForward), "Step Into", self)
+        self.step_action.setToolTip("Step one instruction — into calls, one block-op iteration (F11)")
+        self.step_action.setShortcut("F11")
         self.step_action.triggered.connect(self.controller.step_instruction)
+
+        # Step over: run CALLs/RSTs and repeating block ops (LDIR/...) to completion,
+        # stopping at the next instruction in the current routine.
+        self.step_over_action = QAction(style.standardIcon(QStyle.SP_ArrowForward), "Step Over", self)
+        self.step_over_action.setToolTip("Step over calls and block ops — run them to completion (F10)")
+        self.step_over_action.setShortcut("F10")
+        self.step_over_action.triggered.connect(self.controller.step_over)
 
         # Coarser step: a whole 50Hz frame (handy for eyeballing animation).
         self.frame_action = QAction(style.standardIcon(QStyle.SP_MediaSkipForward), "Frame", self)
@@ -118,7 +134,7 @@ class EmulatorPanel(QWidget):
         row.setSpacing(4)
         row.addStretch()
         actions = (self.run_action, self.pause_action, self.step_action,
-                   self.frame_action, self.reset_action)
+                   self.step_over_action, self.frame_action, self.reset_action)
         for action in actions:
             button = QToolButton()
             button.setDefaultAction(action)
@@ -132,4 +148,5 @@ class EmulatorPanel(QWidget):
         self.run_action.setEnabled(not running)
         self.pause_action.setEnabled(running)
         self.step_action.setEnabled(not running)
+        self.step_over_action.setEnabled(not running)
         self.frame_action.setEnabled(not running)

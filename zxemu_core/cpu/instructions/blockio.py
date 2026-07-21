@@ -27,21 +27,22 @@ def _block_copy_undoc_flags(cpu, transferred: int, bc_after: int) -> int:
 
 
 def _block_copy(cpu, step: int, repeat: bool) -> None:
-    # NOTE: the repeat is looped internally (atomically) rather than rewinding PC
-    # by 2 and re-dispatching per iteration -- a big speed win on large block
-    # moves. Trade-off: real hardware can take an interrupt between individual
-    # LDIR/CPIR/etc iterations; here the whole repeat runs within one step().
-    # Not observable without mid-block interrupt timing -- revisit if needed.
-    while True:
-        value = cpu.read_mem(cpu.regs.hl)
-        cpu.write_mem(cpu.regs.de, value)
-        cpu.regs.hl = (cpu.regs.hl + step) & 0xFFFF
-        cpu.regs.de = (cpu.regs.de + step) & 0xFFFF
-        cpu.regs.bc = (cpu.regs.bc - 1) & 0xFFFF
-        cpu.regs.f = _block_copy_undoc_flags(cpu, value, cpu.regs.bc)
-        cpu.add_t_states(2)
-        if not repeat or cpu.regs.bc == 0:
-            break
+    # One iteration per step(). A repeating op (LDIR/LDDR) that isn't done rewinds PC
+    # by 2 so the next step() re-fetches and re-runs it -- exactly how the real Z80
+    # repeats (it never "finishes" until BC hits 0). Running one iteration per step,
+    # rather than looping the whole block atomically, keeps the CPU inside the frame
+    # loop: a huge block move can't overshoot the frame by millions of T-states (which
+    # desynced audio and starved interrupts), and each re-fetch is correctly billed the
+    # 21 vs 16 T-states real hardware charges for a repeated vs final iteration.
+    value = cpu.read_mem(cpu.regs.hl)
+    cpu.write_mem(cpu.regs.de, value)
+    cpu.regs.hl = (cpu.regs.hl + step) & 0xFFFF
+    cpu.regs.de = (cpu.regs.de + step) & 0xFFFF
+    cpu.regs.bc = (cpu.regs.bc - 1) & 0xFFFF
+    cpu.regs.f = _block_copy_undoc_flags(cpu, value, cpu.regs.bc)
+    cpu.add_t_states(2)
+    if repeat and cpu.regs.bc != 0:
+        cpu.regs.pc = (cpu.regs.pc - 2) & 0xFFFF  # repeat: re-execute next step
         cpu.add_t_states(5)
 
 
@@ -72,29 +73,30 @@ def lddr(cpu):
 ## ─── Block compare operation: CPI/CPD/CPIR/CPDR ───
 
 def _block_compare(cpu, step: int, repeat: bool) -> None:
-    while True:
-        value = cpu.read_mem(cpu.regs.hl)
-        a = cpu.regs.a
-        result = (a - value) & 0xFF
-        half_carry = 1 if (a & 0x0F) - (value & 0x0F) < 0 else 0
-        cpu.regs.hl = (cpu.regs.hl + step) & 0xFFFF
-        cpu.regs.bc = (cpu.regs.bc - 1) & 0xFFFF
+    # One iteration per step(); CPIR/CPDR also stop early on a match (result == 0).
+    # See _block_copy for why the repeat rewinds PC rather than looping internally.
+    value = cpu.read_mem(cpu.regs.hl)
+    a = cpu.regs.a
+    result = (a - value) & 0xFF
+    half_carry = 1 if (a & 0x0F) - (value & 0x0F) < 0 else 0
+    cpu.regs.hl = (cpu.regs.hl + step) & 0xFFFF
+    cpu.regs.bc = (cpu.regs.bc - 1) & 0xFFFF
 
-        flags = alu.sz53_of(result) & (FLAG_S | FLAG_Z)
-        flags |= FLAG_N
-        if half_carry:
-            flags |= FLAG_H
-        if cpu.regs.bc != 0:
-            flags |= FLAG_P
-        flags |= cpu.regs.f & FLAG_C
-        n = (result - half_carry) & 0xFF
-        flags |= n & 0x08
-        flags |= ((n >> 1) & 1) << 5
-        cpu.regs.f = flags
+    flags = alu.sz53_of(result) & (FLAG_S | FLAG_Z)
+    flags |= FLAG_N
+    if half_carry:
+        flags |= FLAG_H
+    if cpu.regs.bc != 0:
+        flags |= FLAG_P
+    flags |= cpu.regs.f & FLAG_C
+    n = (result - half_carry) & 0xFF
+    flags |= n & 0x08
+    flags |= ((n >> 1) & 1) << 5
+    cpu.regs.f = flags
 
-        cpu.add_t_states(5)
-        if not repeat or cpu.regs.bc == 0 or result == 0:
-            break
+    cpu.add_t_states(5)
+    if repeat and cpu.regs.bc != 0 and result != 0:
+        cpu.regs.pc = (cpu.regs.pc - 2) & 0xFFFF  # repeat: re-execute next step
         cpu.add_t_states(5)
 
 
@@ -138,17 +140,17 @@ def _io_block_flags(cpu, value: int, b_after: int, k: int) -> int:
 ## ─── Block input: INI/IND/INIR/INDR ───
 
 def _block_in(cpu, step: int, repeat: bool) -> None:
-    while True:
-        value = cpu.io_read(cpu.regs.bc) & 0xFF
-        cpu.write_mem(cpu.regs.hl, value)
-        cpu.regs.hl = (cpu.regs.hl + step) & 0xFFFF
-        b_after = (cpu.regs.b - 1) & 0xFF
-        cpu.regs.b = b_after
-        k = value + ((cpu.regs.c + step) & 0xFF)
-        cpu.regs.f = _io_block_flags(cpu, value, b_after, k)
-        cpu.add_t_states(1)
-        if not repeat or b_after == 0:
-            break
+    # One iteration per step(); INIR/INDR repeat until B hits 0 (see _block_copy).
+    value = cpu.io_read(cpu.regs.bc) & 0xFF
+    cpu.write_mem(cpu.regs.hl, value)
+    cpu.regs.hl = (cpu.regs.hl + step) & 0xFFFF
+    b_after = (cpu.regs.b - 1) & 0xFF
+    cpu.regs.b = b_after
+    k = value + ((cpu.regs.c + step) & 0xFF)
+    cpu.regs.f = _io_block_flags(cpu, value, b_after, k)
+    cpu.add_t_states(1)
+    if repeat and b_after != 0:
+        cpu.regs.pc = (cpu.regs.pc - 2) & 0xFFFF  # repeat: re-execute next step
         cpu.add_t_states(5)
 
 
@@ -179,17 +181,17 @@ def indr(cpu):
 ## ─── Block output: OUTI/OUTD/OTIR/OTDR ───
 
 def _block_out(cpu, step: int, repeat: bool) -> None:
-    while True:
-        value = cpu.read_mem(cpu.regs.hl)
-        cpu.regs.hl = (cpu.regs.hl + step) & 0xFFFF
-        b_after = (cpu.regs.b - 1) & 0xFF
-        cpu.regs.b = b_after
-        cpu.io_write(cpu.regs.bc, value)
-        k = value + cpu.regs.l
-        cpu.regs.f = _io_block_flags(cpu, value, b_after, k)
-        cpu.add_t_states(1)
-        if not repeat or b_after == 0:
-            break
+    # One iteration per step(); OTIR/OTDR repeat until B hits 0 (see _block_copy).
+    value = cpu.read_mem(cpu.regs.hl)
+    cpu.regs.hl = (cpu.regs.hl + step) & 0xFFFF
+    b_after = (cpu.regs.b - 1) & 0xFF
+    cpu.regs.b = b_after
+    cpu.io_write(cpu.regs.bc, value)
+    k = value + cpu.regs.l
+    cpu.regs.f = _io_block_flags(cpu, value, b_after, k)
+    cpu.add_t_states(1)
+    if repeat and b_after != 0:
+        cpu.regs.pc = (cpu.regs.pc - 2) & 0xFFFF  # repeat: re-execute next step
         cpu.add_t_states(5)
 
 

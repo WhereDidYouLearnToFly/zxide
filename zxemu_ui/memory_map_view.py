@@ -54,39 +54,72 @@ class MemoryMapView(QWidget):
         w, h = self.width(), self.height()
         p.fillRect(0, 0, w, h, _BG)
 
+        # 128K machines report their live 0x7FFD paging; 48K returns None (unpaged).
+        paging = self.machine.paging_state()
         margin, label_h, legend_h, gap = 12, 18, 20, 8
+        readout_h = 16 if paging is not None else 0
         slots = self.machine.memory.slots
         cols = len(slots)
         bar_top = margin + label_h
-        bar_bottom = h - margin - legend_h
+        bar_bottom = h - margin - legend_h - readout_h
         bar_h = max(1, bar_bottom - bar_top)
         col_w = (w - 2 * margin - (cols - 1) * gap) / cols
 
+        screen_slot = self._screen_slot(paging)
         for i, bank in enumerate(slots):
             x = margin + i * (col_w + gap)
-            self._draw_slot_label(p, i, bank, x, margin, col_w, label_h)
-            self._draw_slot_bar(p, i, bank, QRectF(x, bar_top, col_w, bar_h))
+            self._draw_slot_label(p, i, bank, x, margin, col_w, label_h, paging)
+            self._draw_slot_bar(p, i, bank, QRectF(x, bar_top, col_w, bar_h), screen_slot)
 
         self._draw_marker(p, self.machine.cpu.regs.pc, "PC", _PC, margin, gap, col_w, bar_top, bar_h)
         self._draw_marker(p, self.machine.cpu.regs.sp, "SP", _SP, margin, gap, col_w, bar_top, bar_h)
+        if paging is not None:
+            self._draw_paging_readout(p, paging, margin, bar_bottom + 2, w)
         self._draw_legend(p, margin, h - margin - legend_h + 2, w)
 
-    def _draw_slot_label(self, p, i, bank, x, y, col_w, label_h) -> None:
-        kind = "ROM" if bank.readonly else "RAM"
-        p.setPen(_MUTED)
-        p.drawText(QRectF(x, y, col_w, label_h), Qt.AlignCenter, f"slot {i} · {kind}")
+    def _screen_slot(self, paging):
+        """Which slot column currently shows the display file, or None if off-map.
 
-    def _draw_slot_bar(self, p, i, bank, rect: QRectF) -> None:
+        48K: always slot 1. 128K: the normal screen (RAM5) is in slot 1; the shadow
+        screen (RAM7) is only visible if RAM7 happens to be paged into slot 3 --
+        otherwise it is being displayed from a bank the CPU can't see, so no column
+        shows it (the readout still names it).
+        """
+        if paging is None:
+            return SCREEN_SLOT
+        if paging.screen_bank == 5:
+            return 1
+        return 3 if paging.ram_bank == 7 else None
+
+    def _draw_slot_label(self, p, i, bank, x, y, col_w, label_h, paging) -> None:
+        # On 128K name the actual bank in the slot (ROM0/RAM5/...); on 48K just ROM/RAM.
+        if paging is not None:
+            text = f"slot {i} · {paging.slot_labels[i]}"
+        else:
+            text = f"slot {i} · {'ROM' if bank.readonly else 'RAM'}"
+        p.setPen(_MUTED)
+        p.drawText(QRectF(x, y, col_w, label_h), Qt.AlignCenter, text)
+
+    def _draw_slot_bar(self, p, i, bank, rect: QRectF, screen_slot) -> None:
         if bank.readonly:
             p.fillRect(rect, _ROM)
             p.fillRect(rect, QBrush(_ROM_HATCH, Qt.BDiagPattern))
         else:
             p.fillRect(rect, _CONTENDED if bank.contended else _RAM)
-            if i == SCREEN_SLOT:  # the display file sits at the base of this bank
+            if i == screen_slot:  # the display file sits at the base of this bank
                 screen_h = rect.height() * (SCREEN_BYTES / BANK_SIZE)
                 p.fillRect(QRectF(rect.x(), rect.y(), rect.width(), screen_h), _SCREEN)
         p.setPen(_BORDER)
         p.drawRect(rect)
+
+    def _draw_paging_readout(self, p, paging, x, y, w) -> None:
+        """A compact one-line summary of the live 0x7FFD paging state (128K only)."""
+        text = (
+            f"$7FFD=${paging.port_7ffd:02X}  ROM{paging.rom_index}"
+            f"  screen RAM{paging.screen_bank}" + ("  LOCK" if paging.locked else "")
+        )
+        p.setPen(_MUTED)
+        p.drawText(QRectF(x, y, w - 2 * x, 14), Qt.AlignLeft | Qt.AlignVCenter, text)
 
     def _draw_marker(self, p, address, label, color, margin, gap, col_w, bar_top, bar_h) -> None:
         slot, offset = divmod(address & 0xFFFF, BANK_SIZE)

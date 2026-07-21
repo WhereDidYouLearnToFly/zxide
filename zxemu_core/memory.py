@@ -81,3 +81,29 @@ def create_48k_memory(rom_data: bytes) -> Memory:
     ram_bank_2 = Bank(contended=False)
     ram_bank_3 = Bank(contended=False)
     return Memory([rom_bank, screen_bank, ram_bank_2, ram_bank_3])
+
+
+def create_128k_memory(rom0_data: bytes, rom1_data: bytes):
+    """Build the 128K memory: a bank *pool* plus its power-on mapping.
+
+    Unlike the fixed 48K map, the 128K pages banks in and out of the four slots via
+    port 0x7FFD, so the banks must outlive whatever is currently mapped. We therefore
+    return the pool alongside the initial ``Memory`` so the machine can keep
+    references and swap them with ``Memory.page``:
+
+        (memory, rom_banks, ram_banks)
+
+    - ``ram_banks``: eight 16K RAM banks (0-7). The odd banks (1, 3, 5, 7) are
+      contended on real hardware -- they share the memory bus with the ULA.
+    - ``rom_banks``: two 16K ROMs -- ROM 0 is the 128 editor/menu, ROM 1 is 48 BASIC.
+    - Power-on map (0x7FFD = 0): ROM0 at 0x0000, RAM5 (the normal screen) at 0x4000,
+      RAM2 at 0x8000, RAM0 at 0xC000. Slots 1 and 2 never change; paging only ever
+      swaps ROM into slot 0 and a RAM bank into slot 3.
+    """
+    ram_banks = [Bank(contended=(n in (1, 3, 5, 7))) for n in range(8)]
+    rom_banks = [
+        Bank.from_bytes(rom0_data, readonly=True),
+        Bank.from_bytes(rom1_data, readonly=True),
+    ]
+    memory = Memory([rom_banks[0], ram_banks[5], ram_banks[2], ram_banks[0]])
+    return memory, rom_banks, ram_banks

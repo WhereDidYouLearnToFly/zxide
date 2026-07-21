@@ -61,6 +61,10 @@ class FakeMachine:
         self.memory = memory or FakeMemory()
         self.ula = FakeUla(border_color)
 
+    def display_memory(self):
+        # Mirrors Machine.display_memory: the 16K bank the ULA rasterises (slot 1).
+        return self.memory.slots[1].data
+
 
 def test_bitmap_address_top_left_is_screen_base():
     assert bitmap_address(0, 0) == 0x4000

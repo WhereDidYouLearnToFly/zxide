@@ -30,11 +30,17 @@ import time
 from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
 
 from zxemu_core.machine import Machine
-from zxemu_core.ula import FRAME_TSTATES
 
 FRAME_PERIOD_S = 1.0 / 50.0  # one Spectrum frame = 1/50s of emulated time
 TICK_INTERVAL_MS = 10  # poll often; real-time catch-up (not the tick rate) sets emulation speed
 MAX_CATCHUP_FRAMES = 2  # cap per tick: keeps a slow machine degrading smoothly, not freezing in bursts
+
+# Opcodes that "step over" runs to completion (they return control to the next
+# instruction). CALL nn / conditional CALL, RST, and the repeating block ops.
+_CALL_OPCODES = frozenset({0xC4, 0xCC, 0xD4, 0xDC, 0xE4, 0xEC, 0xF4, 0xFC})  # + 0xCD (CALL nn)
+_RST_OPCODES = frozenset({0xC7, 0xCF, 0xD7, 0xDF, 0xE7, 0xEF, 0xF7, 0xFF})
+_BLOCK_REPEAT_OPCODES = frozenset({0xB0, 0xB8, 0xB1, 0xB9, 0xB2, 0xBA, 0xB3, 0xBB})  # after an ED prefix
+_STEP_OVER_MAX_INSTRUCTIONS = 50_000_000  # safety net: a routine that never returns can't hang the UI
 
 
 class EmulatorController(QObject):
@@ -87,9 +93,9 @@ class EmulatorController(QObject):
         """Begin ticking and running the machine (call once, after the UI is built)."""
         from zxemu_ui.audio_output import AudioOutput  # local import: needs a live QApplication
 
-        self.audio = AudioOutput(sample_rate=self.machine.beeper.sample_rate, parent=self)
+        self.audio = AudioOutput(sample_rate=self.machine.audio.sample_rate, parent=self)
         self._timer.start(TICK_INTERVAL_MS)
-        self.set_running(True)  # also enables the beeper via _update_audio
+        self.set_running(True)  # also enables sound via _update_audio
 
     def set_running(self, running: bool) -> None:
         """Run or pause emulation. Resuming resets the clock so no backlog fast-forwards."""
@@ -130,9 +136,29 @@ class EmulatorController(QObject):
         buffered samples, so resuming never replays stale sound.
         """
         on = self._running and not self._breakpoints
-        self.machine.beeper.enabled = on
+        self.machine.audio.enabled = on
         if self.audio is not None:
             self.audio.resume() if on else self.audio.suspend()
+
+    def set_machine(self, machine) -> None:
+        """Swap the driven machine (e.g. 48K <-> 128K when the open project changes).
+
+        Pauses first, rebinds, and clears the debug clocks so stepping restarts clean
+        on the new machine. The sound sink is rebuilt only if it already exists and
+        the new machine's sample rate differs (each machine owns its own mixer); the
+        real-time pacing clocks are model-independent and carry over untouched.
+        """
+        self.set_running(False)
+        old_rate = self.machine.audio.sample_rate
+        self.machine = machine
+        self._debug_tstates = 0
+        self._skip_breakpoint = None
+        if self.audio is not None and machine.audio.sample_rate != old_rate:
+            self.audio.stop()
+            from zxemu_ui.audio_output import AudioOutput
+
+            self.audio = AudioOutput(sample_rate=machine.audio.sample_rate, parent=self)
+        self._update_audio()
 
     def reset(self) -> None:
         """Reboot the machine (as if the power was cycled), repainting once."""
@@ -153,14 +179,69 @@ class EmulatorController(QObject):
         self.frame_ready.emit(self._emulated_frames)
 
     def step_instruction(self) -> None:
-        """Execute a single Z80 instruction while paused (the debugger's step).
+        """Execute a single Z80 instruction while paused (the debugger's step *into*).
 
         Runs one cpu.step() -- no interrupt, no frame pacing -- so you can walk
-        through code one opcode at a time. Emits frame_ready so the views refresh.
+        through code one opcode at a time. On a repeating block op (LDIR/CPIR/...)
+        this advances a single iteration (PC rewinds to the instruction), and on a
+        CALL it steps *into* the subroutine. Use step_over to run those to completion.
+        Emits frame_ready so the views refresh.
         """
         if self._running:
             return
         self.machine.cpu.step()
+        self.frame_ready.emit(self._emulated_frames)
+
+    def step_over(self) -> None:
+        """Step *over* the current instruction (Visual-Studio F10 semantics).
+
+        Most instructions step exactly like step_instruction. But three kinds return
+        control to the *following* instruction, and stepping into them is tedious:
+
+          * CALL / conditional CALL and RST -- run the whole subroutine,
+          * the repeating block ops (LDIR/LDDR/CPIR/.../OTDR) -- run every iteration,
+
+        For those we run the machine until PC reaches the instruction that follows,
+        with the stack unwound back to where it started (so nested calls and recursion
+        don't stop us early). Interrupts fire on the normal 50Hz cadence -- a routine
+        that waits on one (HALT) still proceeds -- and a breakpoint reached inside the
+        stepped-over code stops us there, exactly as a real debugger would.
+        """
+        if self._running:
+            return
+        cpu = self.machine.cpu
+        memory = self.machine.memory
+        start_pc = cpu.regs.pc
+        start_sp = cpu.regs.sp
+        opcode = memory.read_byte(start_pc)
+        sub_opcode = memory.read_byte((start_pc + 1) & 0xFFFF)
+
+        if opcode == 0xED and sub_opcode in _BLOCK_REPEAT_OPCODES:
+            length = 2
+        elif opcode == 0xCD or opcode in _CALL_OPCODES:
+            length = 3
+        elif opcode in _RST_OPCODES:
+            length = 1
+        else:
+            self.step_instruction()  # nothing to step over -- a plain single step
+            return
+
+        return_addr = (start_pc + length) & 0xFFFF
+        frame_tstates = self.machine.frame_tstates
+        hit = None
+        for _ in range(_STEP_OVER_MAX_INSTRUCTIONS):
+            if self._debug_tstates >= frame_tstates:
+                self._debug_tstates -= frame_tstates
+                cpu.maskable_interrupt()
+            self._debug_tstates += cpu.step()
+            pc = cpu.regs.pc
+            if pc == return_addr and cpu.regs.sp >= start_sp:
+                break  # control returned to the following instruction
+            if pc != start_pc and pc in self._breakpoints:
+                hit = pc  # a breakpoint inside the stepped-over code
+                break
+        if hit is not None:
+            self.breakpoint_hit.emit(hit)
         self.frame_ready.emit(self._emulated_frames)
 
     # --- the frame pump -------------------------------------------------------
@@ -198,10 +279,10 @@ class EmulatorController(QObject):
             self._time_accumulator = 0.0  # fell too far behind; drop the backlog
 
         if ran:
-            # Hand the frames' worth of beeper samples to the sound device (a no-op
-            # when audio is unavailable or the beeper produced nothing).
+            # Hand the frames' worth of mixed samples to the sound device (a no-op
+            # when audio is unavailable or the sources produced nothing).
             if self.audio is not None:
-                self.audio.push(self.machine.beeper.take_samples())
+                self.audio.push(self.machine.audio.take_samples())
             # FLASH/cursor timing is driven by emulated frames elapsed (real time),
             # not by how often we happen to repaint, so it blinks at the true rate.
             self.frame_ready.emit(self._emulated_frames)
@@ -222,16 +303,17 @@ class EmulatorController(QObject):
         resume at any single instruction without the frame-boundary bookkeeping that
         run_frame relies on. Returns True (and pauses) if a breakpoint was reached.
         """
+        frame_tstates = self.machine.frame_tstates  # per-model (69888 on 48K, 70908 on 128K)
         budget = 0
-        while budget < FRAME_TSTATES:
+        while budget < frame_tstates:
             pc = self.machine.cpu.regs.pc
             if pc in self._breakpoints and pc != self._skip_breakpoint:
                 self.breakpoint_hit.emit(pc)
                 self.pause()
                 return True
             self._skip_breakpoint = None  # only skips the first instruction after resume
-            if self._debug_tstates >= FRAME_TSTATES:
-                self._debug_tstates -= FRAME_TSTATES
+            if self._debug_tstates >= frame_tstates:
+                self._debug_tstates -= frame_tstates
                 self.machine.cpu.maskable_interrupt()
             elapsed = self.machine.cpu.step()
             self._debug_tstates += elapsed

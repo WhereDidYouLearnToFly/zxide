@@ -74,3 +74,81 @@ def test_128k_snapshot_reports_not_implemented():
     machine = Machine(_rom())
     with pytest.raises(NotImplementedError):
         snapshot.load_sna(machine, b"\x00" * snapshot.SNA_128K_SIZE)
+
+
+from zxemu_core.machine import Machine128
+
+
+def _make_machine128() -> Machine128:
+    return Machine128(bytes(0x4000), bytes(0x4000))
+
+
+def _make_128k_sna(port_7ffd: int = 0x14, pc: int = 0x9000) -> bytes:
+    """A synthetic 128K snapshot; each RAM bank is filled with its own bank number.
+
+    port_7ffd's low bits pick the bank at $C000; 0x14 -> bank 4 (and ROM1), which is
+    not 5 or 2, so the three fixed blocks (5, 2, 4) and the five remaining banks are
+    all distinct -- the normal case the 131103-byte layout assumes.
+    """
+    header = bytearray(snapshot.HEADER_SIZE)
+    header[0] = 0x11               # I
+    header[19] = 0x04              # IFF enabled
+    header[20] = 0x33              # R
+    _put_word(header, 23, 0x8000)  # SP -- must be left untouched (PC is in the extra header)
+    header[25] = 1                 # IM
+    header[26] = 2                 # border (red)
+
+    current = port_7ffd & 0x07
+    data = bytearray(header)
+    for bank in (5, 2, current):   # the three fixed blocks, in this order
+        data += bytes([bank]) * snapshot.BANK_SIZE
+
+    extra = bytearray(4)
+    _put_word(extra, 0, pc)        # PC lives here, not on the stack
+    extra[2] = port_7ffd
+    extra[3] = 0                   # TR-DOS flag
+    data += extra
+
+    for bank in range(8):          # remaining banks, ascending, skipping the fixed three
+        if bank in (5, 2, current):
+            continue
+        data += bytes([bank]) * snapshot.BANK_SIZE
+
+    assert len(data) == snapshot.SNA_128K_SIZE
+    return bytes(data)
+
+
+def test_load_128k_sna_restores_all_banks_paging_and_pc():
+    machine = _make_machine128()
+    snapshot.load_sna(machine, _make_128k_sna(port_7ffd=0x14, pc=0x9000))
+    regs = machine.cpu.regs
+
+    assert regs.i == 0x11
+    assert regs.iff1 is True and regs.iff2 is True
+    assert regs.im == 1
+    assert machine.ula.border_color == 2
+
+    # Every RAM bank got its own sentinel byte, wherever it lived in the file.
+    for bank in range(8):
+        assert machine.ram_banks[bank].data[0] == bank
+
+    # Paging restored from the saved 0x7FFD (bank 4 in slot 3, ROM1 in slot 0).
+    assert machine.port_7ffd == 0x14
+    assert machine.memory.slots[3] is machine.ram_banks[4]
+    assert machine.memory.slots[0] is machine.rom_banks[1]
+
+    # PC from the extra header; SP is NOT advanced (unlike the 48K stack-pop path).
+    assert regs.pc == 0x9000
+    assert regs.sp == 0x8000
+
+
+def test_load_128k_sna_into_48k_machine_is_rejected():
+    machine = Machine(_rom())
+    with pytest.raises(NotImplementedError):
+        snapshot.load_sna(machine, _make_128k_sna())
+
+
+def test_load_48k_sna_into_128k_machine_is_rejected():
+    machine = _make_machine128()
+    with pytest.raises(ValueError):
+        snapshot.load_sna(machine, _make_48k_sna())

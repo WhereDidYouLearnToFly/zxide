@@ -26,3 +26,9 @@ dev-support/ZEXALL-main/
 # Local dev artifacts (screenshots, logs — regenerable)
 dev-support/*.png
 dev-support/*.txt
+
+# Per-user saved window layout (written by "Save layout")
+layout.json
+
+# Per-user app settings (auto-created; holds machine-specific paths)
+settings.json

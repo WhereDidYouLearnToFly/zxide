@@ -2,7 +2,7 @@ import importlib.resources as res
 
 import pytest
 
-from zxemu_core.memory import Bank, BANK_SIZE, Memory, create_48k_memory
+from zxemu_core.memory import Bank, BANK_SIZE, Memory, create_48k_memory, create_128k_memory
 
 
 def make_ram_only_memory():
@@ -87,3 +87,22 @@ def test_create_48k_memory_rom_is_protected_and_ram_is_writable():
     memory.write_byte(0xC000, 0x77)
     assert memory.read_byte(0xC000) == 0x77
     assert memory.is_contended(0xC000) is False
+
+
+def test_create_128k_memory_powers_on_with_the_standard_map():
+    memory, rom_banks, ram_banks = create_128k_memory(b"\x11" * BANK_SIZE, b"\x22" * BANK_SIZE)
+    assert len(ram_banks) == 8
+    assert len(rom_banks) == 2
+    # 0x7FFD = 0 at power-on: ROM0, RAM5 (screen), RAM2, RAM0.
+    assert memory.slots[0] is rom_banks[0]
+    assert memory.slots[1] is ram_banks[5]
+    assert memory.slots[2] is ram_banks[2]
+    assert memory.slots[3] is ram_banks[0]
+
+
+def test_create_128k_memory_marks_odd_banks_contended():
+    _, rom_banks, ram_banks = create_128k_memory(bytes(BANK_SIZE), bytes(BANK_SIZE))
+    for n in range(8):
+        assert ram_banks[n].contended == (n in (1, 3, 5, 7))
+    assert all(rom.readonly for rom in rom_banks)
+    assert not any(ram.readonly for ram in ram_banks)

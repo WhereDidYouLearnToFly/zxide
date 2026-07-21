@@ -149,9 +149,8 @@ def test_ldi_copies_byte_and_updates_pointers_and_counter():
 
 
 def test_ldir_repeats_until_bc_zero():
-    # LDIR completes its whole repeat count within a single step() call
-    # (looped internally for interpreter speed -- see the comment in
-    # instructions/blockio.py's _block_copy), not by re-dispatching per iteration.
+    # LDIR runs one iteration per step(), rewinding PC by 2 to re-execute until BC
+    # reaches 0 -- as the real Z80 does (see instructions/blockio.py's _block_copy).
     cpu = make_cpu()
     cpu.regs.hl = 0x8000
     cpu.regs.de = 0x9000
@@ -160,10 +159,18 @@ def test_ldir_repeats_until_bc_zero():
     cpu.memory.write_byte(0x8001, 0x02)
     cpu.memory.write_byte(0x8002, 0x03)
     load(cpu, 0, [0xED, 0xB0])  # LDIR
-    cpu.step()
+
+    cpu.step()  # first iteration: copies one byte, rewinds PC to repeat
+    assert cpu.regs.bc == 2
+    assert cpu.regs.pc == 0x0000  # PC rewound onto the LDIR
+    assert cpu.t_states == 21     # a repeating iteration costs 21 T-states
+
+    while cpu.regs.pc != 0x0002:  # drive the rest to completion
+        cpu.step()
     assert cpu.regs.bc == 0
     assert [cpu.memory.read_byte(a) for a in (0x9000, 0x9001, 0x9002)] == [1, 2, 3]
     assert cpu.regs.pc == 0x0002  # moved past LDIR once BC hit zero
+    assert cpu.t_states == 21 + 21 + 16  # two repeats (21) + final (16)
 
 
 def test_cpi_sets_zero_when_match_found():
@@ -187,7 +194,11 @@ def test_cpir_stops_early_on_match():
     cpu.memory.write_byte(0x8000, 0x01)
     cpu.memory.write_byte(0x8001, 0x05)
     load(cpu, 0, [0xED, 0xB1])  # CPIR
-    cpu.step()  # searches internally, stops as soon as it matches at 0x8001
+
+    cpu.step()  # first compare (0x01): no match, rewinds PC to repeat
+    assert not (cpu.regs.f & FLAG_Z)
+    assert cpu.regs.pc == 0x0000
+    cpu.step()  # second compare (0x05): match -> stop, PC advances past CPIR
     assert cpu.regs.f & FLAG_Z
     assert cpu.regs.pc == 0x0002
     assert cpu.regs.bc == 3

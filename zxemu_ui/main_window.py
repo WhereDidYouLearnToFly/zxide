@@ -46,6 +46,7 @@ from zxemu_ui.emulator_panel import EmulatorPanel
 from zxemu_ui.emulator_view import EmulatorView
 from zxemu_ui import layout_store
 from zxemu_ui.inspector_view import InspectorView
+from zxemu_ui.machine_factory import build_machine, machine_model
 from zxemu_ui.memory_cells_view import MemoryCellsView
 from zxemu_ui.memory_map_view import MemoryMapView
 from zxemu_ui.project import Project, is_text_file
@@ -202,7 +203,31 @@ class MainWindow(QMainWindow):
         self.project_tree.setRootIndex(self._fs_model.index(str(folder)))
         self.setWindowTitle(f"zxide — {self.project.name}")
         self.settings.set("last_project", str(folder))
+        self.settings.push_recent("recent_projects", str(folder))
         self._log(f"Opened project: {folder}")
+        # Boot the machine the project targets; swap only if it differs from the current one.
+        model = self.project.model
+        if model != machine_model(self.machine):
+            self.set_machine(build_machine(model))
+            self._log(f"Switched to the {model.upper()} machine for this project.")
+
+    def set_machine(self, machine) -> None:
+        """Swap the emulated machine (48K <-> 128K) and re-point every view at it.
+
+        The frame_ready -> refresh signal bindings target the view objects, not the
+        machine, so they survive untouched; we only rebind each view's ``.machine``
+        and hand the new machine to the controller, then repaint from its state.
+        """
+        self.machine = machine
+        self.view.machine = machine
+        self.memory_cells.machine = machine
+        self.registers.machine = machine
+        self.memory_map.machine = machine
+        self.controller.set_machine(machine)
+        self.view.refresh()
+        self.registers.refresh()
+        self.memory_cells.refresh(force=True)
+        self.memory_map.refresh()
 
     def _new_project(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Choose a folder for the new project")
@@ -211,7 +236,13 @@ class MainWindow(QMainWindow):
         name, ok = QInputDialog.getText(self, "New Project", "Project name:", text=Path(folder).name)
         if not ok or not name.strip():
             return
-        project = Project.create(folder, name.strip())
+        model_label, ok = QInputDialog.getItem(
+            self, "Target machine", "Machine model:", ["48K", "128K"], 0, False
+        )
+        if not ok:
+            return
+        model = "128k" if model_label == "128K" else "48k"
+        project = Project.create(folder, name.strip(), model)
         self._open_project(folder)
         main = project.folder / project.load_manifest().get("main", "main.asm")
         if main.exists():
@@ -349,7 +380,32 @@ class MainWindow(QMainWindow):
         start_dir = str(self.project.folder) if self.project else ""
         path, _ = QFileDialog.getOpenFileName(self, "Load Snapshot", start_dir, "Snapshots (*.sna)")
         if path:
-            self._load_snapshot(Path(path))
+            self._load_media(path)
+
+    def _load_media(self, path) -> bool:
+        """Load a user-chosen media file (snapshot/tape) and record it in Load Recent.
+
+        Dispatches on the file extension so tape support slots in later without
+        touching the menu wiring. A file that has since been deleted is dropped from
+        the recent list rather than left to fail again.
+        """
+        path = Path(path)
+        if not path.exists():
+            self._log(f"File no longer exists: {path}")
+            self.settings.remove_recent("recent_files", str(path))
+            return False
+        suffix = path.suffix.lower()
+        if suffix == ".sna":
+            ok = self._load_snapshot(path)
+        elif suffix == ".tap":
+            self._log("Tape (.tap) loading isn't supported yet.")
+            ok = False
+        else:
+            self._log(f"Don't know how to load {path.name}.")
+            ok = False
+        if ok:
+            self.settings.push_recent("recent_files", str(path))
+        return ok
 
     def _load_snapshot(self, path) -> bool:
         """Load a .sna into the machine and refresh the views. Returns success."""
@@ -364,8 +420,53 @@ class MainWindow(QMainWindow):
         self.registers.refresh()
         self.memory_cells.refresh(force=True)
         self.memory_map.refresh()
+        self.view.setFocus()  # you just loaded something to run -- send the keyboard here
         self._log(f"Loaded {path.name} — running.")
         return True
+
+    # --- recent projects / files -----------------------------------------------
+
+    def _populate_open_recent(self) -> None:
+        self._fill_recent_menu(
+            self._open_recent_menu, "recent_projects", self._open_recent_project, "No recent projects"
+        )
+
+    def _populate_load_recent(self) -> None:
+        self._fill_recent_menu(
+            self._load_recent_menu, "recent_files", self._load_media, "No recent files"
+        )
+
+    def _fill_recent_menu(self, menu, key: str, handler, empty_label: str) -> None:
+        """Rebuild a recent submenu from settings: numbered entries + a Clear action."""
+        menu.clear()
+        paths = self.settings.get(key, [])
+        if not paths:
+            disabled = menu.addAction(f"({empty_label})")
+            disabled.setEnabled(False)
+            return
+        for index, path in enumerate(paths, start=1):
+            prefix = f"&{index}  " if index <= 9 else ""
+            action = menu.addAction(prefix + self._recent_label(path))
+            action.setToolTip(path)
+            action.triggered.connect(lambda _checked=False, p=path: handler(p))
+        menu.addSeparator()
+        clear = menu.addAction("Clear")
+        clear.triggered.connect(lambda _checked=False, k=key: self.settings.set(k, []))
+
+    @staticmethod
+    def _recent_label(path: str) -> str:
+        """A compact menu label: the item's name plus its parent folder for context."""
+        p = Path(path)
+        parent = p.parent.name
+        return f"{p.name}  ({parent})" if parent else p.name
+
+    def _open_recent_project(self, folder) -> None:
+        """Open a project from the recent list, pruning it if the folder is gone."""
+        if Path(folder).is_dir():
+            self._open_project(folder)
+        else:
+            self._log(f"Project folder no longer exists: {folder}")
+            self.settings.remove_recent("recent_projects", str(folder))
 
     def _open_settings(self) -> None:
         SettingsDialog(self.settings, self.project, self).exec_()
@@ -427,6 +528,10 @@ class MainWindow(QMainWindow):
         open_folder = QAction("Open Folder…", self)
         open_folder.triggered.connect(self._open_folder)
         file_menu.addAction(open_folder)
+        # Open Recent: recently opened project folders, rebuilt each time it's shown.
+        self._open_recent_menu = file_menu.addMenu("Open &Recent")
+        self._open_recent_menu.aboutToShow.connect(self._populate_open_recent)
+        self._populate_open_recent()
         file_menu.addSeparator()
         save = QAction("&Save", self)
         save.setShortcut("Ctrl+S")
@@ -456,6 +561,10 @@ class MainWindow(QMainWindow):
         load_snapshot = QAction("Load Snapshot…", self)
         load_snapshot.triggered.connect(self._load_snapshot_dialog)
         build_menu.addAction(load_snapshot)
+        # Load Recent: recently loaded snapshots/tapes, rebuilt each time it's shown.
+        self._load_recent_menu = build_menu.addMenu("Load &Recent")
+        self._load_recent_menu.aboutToShow.connect(self._populate_load_recent)
+        self._populate_load_recent()
 
         view_menu = self.menuBar().addMenu("&View")
         self._build_interface_scale_menu(view_menu)
