@@ -151,9 +151,25 @@ audio** (128K, AY, beeper, TAP) — see below.
   lines ⇆ addresses for breakpoints. *Later formats:* .szx / .tap / raw binary.
 - **Debugger track** ✅ *v1 done*: registers/flags panel, live hex memory view, **breakpoints**
   (Build & Debug = F5 honours them; Build & Run = Ctrl+F5 ignores them) with the execution line
-  highlighted in the editor, and **Step Into (F11) / Step Over (F10)** — step-over runs CALLs,
-  RSTs and repeating block ops (LDIR/...) to completion, honouring breakpoints hit inside.
-  *Later:* disassembly panel, watchpoints.
+  highlighted in the editor, and **Step Into (F11) / Step Over (F10) / Step Out (Shift+F11)** —
+  step-over runs CALLs, RSTs and repeating block ops (LDIR/...) to completion; step-out runs to
+  the current subroutine's RET. Both honour breakpoints hit inside, and share one
+  `_run_until` engine. A **live disassembly panel** (`disassembly_view.py`, own Disassembly menu)
+  decodes around PC as you step. **Watchpoints** (own Watch menu) pause on a memory
+  value changing or on IN/OUT of a port — ports by true interception (the CPU's io hooks
+  are swapped, so the fast path is untouched when unused), memory by value comparison in
+  the debug loop rather than by instrumenting the emulator's hottest methods.
+  A **call stack** panel infers the caller chain from raw stack contents (the Z80 records
+  no frames), **conditional breakpoints** (`debug_expr.py`) gate a stop on an expression,
+  **ROM routine names** (`rom_symbols.py`) annotate disassembly and call stack, and the
+  registers panel carries a **T-state read-out** (frame position, cost of the last step).
+  Memory watchpoints cover **reads as well as writes** via an instrumented `Memory`
+  subclass swapped in only while watches exist. **Run to Cursor / Run to Address**
+  (one-shot breakpoints), plus **editing**: poke a byte in the Memory panel, click a
+  register to set it. The **RE toolkit** landed too (`analysis.py` + `analysis_view.py`,
+  own Analyse menu): memory search, cross-references, a coverage map, and a bounded
+  execution trace; plus a **symbol database** — `sld.py` now reads the SLD's label
+  records, so your own names appear in the disassembly and Go-to-Label works.
 - **Phase E — Visual memory management** ⏸ *deferred* *(the centerpiece)*: the bank-oriented
   memory map (`memory_map_view.py`) and hex cells (`memory_cells_view.py`) exist as debug
   read-outs; the **drag-drop asset placement + auto-locate** design step (generating

@@ -26,6 +26,13 @@ it visible and interactive:
     sld.py            Parses sjasmplus's source-level-debug map (source line <-> address).
     registers_view.py     Live read-out of the Z80 register file + flags.
     memory_cells_view.py  Live hex dump of memory (address + hex + ASCII).
+    disassembly_view.py   Live disassembly around PC -- the same bytes as the hex
+                          dump, decoded back into Z80 mnemonics for single-stepping.
+    call_stack_view.py    "How did I get here?" -- infers the chain of callers from
+                          raw stack contents, since the Z80 records no call frames.
+    analysis_view.py      Results of whole-program queries: memory search, what refers
+                          to an address, coverage, and the execution trace. Double-click
+                          a result to open it in the disassembly.
     memory_map_view.py    Visual, bank-oriented overview of memory with PC/SP markers
                           and the live 128K paging state.
     inspector_view.py     Details of the selected asset/region (stub for now).

@@ -5,11 +5,17 @@ up in memory. It's pipe-delimited, one record per line:
 
     file | line | (defn) | (?) | page | address | type | data
 
-We care about the ``T`` (trace) records -- one per emitted instruction -- which give
-the ``address`` of the code at a given ``file``:``line``. From those we build both
-directions: line -> address (to place a breakpoint) and address -> line (to show
-where execution stopped). The ``page`` column is the memory bank; it matters for
-128K and is ignored for now (48K has a single mapping).
+Two record types matter here:
+
+  * ``T`` (trace) -- one per emitted instruction, giving the ``address`` of the code at
+    a given ``file``:``line``. From those we build both directions: line -> address (to
+    place a breakpoint) and address -> line (to show where execution stopped).
+  * ``F`` (definition) -- a label and the address it ended up at. These give the
+    disassembly your *own* names, the way ``zxemu_core.rom_symbols`` does for the ROM,
+    and let you jump to a label instead of hunting for its address.
+
+The ``page`` column is the memory bank; it matters for 128K and is ignored for now
+(48K has a single mapping).
 """
 
 from __future__ import annotations
@@ -26,11 +32,34 @@ def _norm(path) -> str:
 
 
 class SourceMap:
-    """Bidirectional map between source (file, line) and memory address."""
+    """Bidirectional map between source (file, line) and memory address, plus labels."""
 
     def __init__(self):
         self.line_to_addr: dict[tuple[str, int], int] = {}
         self.addr_to_line: dict[int, tuple[str, int]] = {}
+        # Your own labels, from the SLD's F (definition) records: name <-> address.
+        # These are what make a disassembly of *your* code readable, the same way
+        # rom_symbols does for the ROM.
+        self.labels: dict[str, int] = {}
+        self.addr_to_label: dict[int, str] = {}
+
+    def label_for(self, address: int) -> str | None:
+        return self.addr_to_label.get(address)
+
+    def address_for_label(self, name: str) -> int | None:
+        """Look a label up by name, case-insensitively and ignoring any module prefix.
+
+        sjasmplus qualifies labels inside a MODULE (``player.clear``), but you rarely
+        type the prefix when you just want to jump somewhere, so a bare ``clear``
+        matches too -- provided it's unambiguous.
+        """
+        wanted = name.strip().lower()
+        if wanted in self.labels:
+            return self.labels[wanted]
+        suffix_matches = [
+            address for label, address in self.labels.items() if label.rsplit(".", 1)[-1] == wanted
+        ]
+        return suffix_matches[0] if len(suffix_matches) == 1 else None
 
     def address_for(self, path: str, line: int) -> int | None:
         return self.line_to_addr.get((_norm(path), line))
@@ -52,7 +81,19 @@ def parse(text: str, base_dir=None) -> SourceMap:
     base = Path(base_dir) if base_dir else None
     for row in text.splitlines():
         parts = row.split("|")
-        if len(parts) < 7 or parts[6] != "T":  # only executable trace records
+        if len(parts) < 7:
+            continue
+        if parts[6] == "F":  # a label definition, with the address it landed on
+            try:
+                address = int(parts[5])
+            except ValueError:
+                continue
+            name = parts[7].strip() if len(parts) > 7 else ""
+            if name and address >= 0:
+                source_map.labels.setdefault(name.lower(), address)
+                source_map.addr_to_label.setdefault(address, name)
+            continue
+        if parts[6] != "T":  # otherwise only executable trace records interest us
             continue
         try:
             line = int(parts[1])

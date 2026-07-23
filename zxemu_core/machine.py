@@ -57,8 +57,6 @@ class Machine:
         self.audio.add_source(self.beeper)
         self._speaker_level = 0  # last speaker bit we handed to the beeper
         self.frame_tstates = FRAME_TSTATES  # per-model frame length (128K overrides)
-        self.cpu.io_read = self._io_read
-        self.cpu.io_write = self._io_write
         self.frame_t_state = 0
         # Tape: a TapeDeck when a .tap is inserted, else None. Fast loading is on by
         # default; the trap below only acts when a tape is present, so it's inert until
@@ -66,6 +64,7 @@ class Machine:
         self.tape: tape.TapeDeck | None = None
         self.fast_load_enabled = True
         self.cpu.set_trap(tape.LD_BYTES_ENTRY, self._tape_trap)
+        self.set_port_watchpoints()  # none: installs the plain, uninstrumented io hooks
         self.reset()
 
     def reset(self) -> None:
@@ -82,6 +81,15 @@ class Machine:
     def paging_state(self):
         """Live 0x7FFD paging state for the memory-map view; None means 'unpaged' (48K)."""
         return None
+
+    def rom_symbols_valid(self) -> bool:
+        """Whether the 48K ROM routine names describe the ROM currently paged in.
+
+        Always true on a 48K -- there is only one ROM. Machine128 overrides this,
+        because with the 128 editor ROM paged those addresses hold different code and
+        labelling them would actively mislead (see zxemu_core.rom_symbols).
+        """
+        return True
 
     # --- tape -----------------------------------------------------------------
 
@@ -108,6 +116,44 @@ class Machine:
         if self.memory.read_byte(0x0556) != 0x14 or self.memory.read_byte(0x0557) != 0x08:
             return None  # not the real LD-BYTES (wrong ROM paged) -- don't intercept
         return TAPE_TRAP_TSTATES if tape.fast_load(self, self.tape) else None
+
+    # --- port watchpoints -----------------------------------------------------
+
+    def set_port_watchpoints(self, reads=(), writes=()) -> None:
+        """Watch IN/OUT on these ports, or clear the watch when both are empty.
+
+        Rather than testing "is anything watched?" on every port access, this *swaps
+        the CPU's io hooks*: with no watchpoints the CPU calls the plain ``_io_read`` /
+        ``_io_write`` and pays literally nothing -- not even a branch. That matters
+        more than it looks: a PWM beeper engine can do 80,000 OUTs in a single frame,
+        so even an empty-set check on the fast path would cost real milliseconds.
+
+        Port matching follows how the Spectrum actually decodes: a watch value of
+        0x00-0xFF matches the *low byte* of the address (so watching 0xFE catches every
+        ULA access, whatever the high byte holds), while a 16-bit value must match
+        exactly (so 0x7FFD means the paging port and nothing else).
+        """
+        self.watch_ports_read = set(reads)
+        self.watch_ports_write = set(writes)
+        self.port_watch_hit: PortWatchHit | None = None
+        watching = bool(self.watch_ports_read or self.watch_ports_write)
+        self.cpu.io_read = self._io_read_watched if watching else self._io_read
+        self.cpu.io_write = self._io_write_watched if watching else self._io_write
+
+    @staticmethod
+    def _port_matches(port: int, watched: set) -> bool:
+        return port in watched or (port & 0xFF) in watched
+
+    def _io_read_watched(self, port: int) -> int:
+        value = self._io_read(port)
+        if self._port_matches(port, self.watch_ports_read):
+            self.port_watch_hit = PortWatchHit(False, port, value, self.cpu.regs.pc)
+        return value
+
+    def _io_write_watched(self, port: int, value: int) -> None:
+        self._io_write(port, value)
+        if self._port_matches(port, self.watch_ports_write):
+            self.port_watch_hit = PortWatchHit(True, port, value, self.cpu.regs.pc)
 
     # --- IO + frame loop ------------------------------------------------------
 
@@ -151,6 +197,15 @@ class Machine:
         # Close out the frame's audio: resample the sound sources' activity gathered
         # above into PCM the UI can play. A no-op while audio is disabled.
         self.audio.end_frame(self.frame_tstates)
+
+
+class PortWatchHit(NamedTuple):
+    """Records the IN/OUT that tripped a port watchpoint."""
+
+    is_write: bool
+    port: int
+    value: int
+    pc: int  # the instruction that did it (PC is already past it by the time we look)
 
 
 class Paging128(NamedTuple):
@@ -225,6 +280,10 @@ class Machine128(Machine):
     def display_memory(self):
         # Shadow-screen (bit 3) shows RAM7 even when it isn't mapped into any slot.
         return self.ram_banks[7 if self.port_7ffd & 0x08 else 5].data
+
+    def rom_symbols_valid(self) -> bool:
+        # ROM 1 is 48 BASIC -- the ROM the traditional routine names describe.
+        return ((self.port_7ffd >> 4) & 1) == 1
 
     def paging_state(self) -> Paging128:
         rom_index = (self.port_7ffd >> 4) & 1

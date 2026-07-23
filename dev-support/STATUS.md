@@ -1,6 +1,44 @@
 # zxide — project status & handoff
 
-_Last updated: 2026-07-20._ A snapshot to make it easy to pick the project back up.
+_Last updated: 2026-07-22._ A snapshot to make it easy to pick the project back up.
+
+## Latest session (2026-07-22) — audio bug hunt, then the debugger
+
+**Three real emulator bugs**, all found by chasing a "loud farting noise" over beeper
+music and all verified by headless capture rather than by ear:
+
+1. `beeper.py` — the speaker level never carried across frames (the flush sentinel
+   reassigned it back to the frame's *starting* value, so it was permanently 0). Every
+   frame restarted from low, injecting a full-amplitude pulse at each boundary: a 50Hz
+   buzz that was **68% of the output's total energy**.
+2. `machine.py` — `run_frame` computed its target relative to the carried remainder, so
+   the remainder accumulated every frame's overshoot forever. Once non-zero, flips in
+   the frame's tail were timestamped past `frame_tstates` and clamped onto one instant:
+   **36,350 of ~670,000 flips destroyed per 1000 frames**, worsening the longer you
+   listened. Fixed by making the target absolute.
+3. `cpu/instructions/indexed.py` — forming `(IX+d)` was treated as free, so **every**
+   indexed instruction ran 5 T-states short (2 for `LD (IX+d),n`). Engine-independent;
+   affects anything that paces itself by instruction cycles.
+
+**Audio modules split** one-per-chip, matching `ula.py`/`keyboard.py`: `beeper.py`
+(Beeper), `ay.py` (AY8912), `mixer.py` (SoundMixer). `audio.py` is gone.
+
+**The debugger is now complete** — see DEV_PLAN's debugger track. Panels:
+disassembly (with ROM routine names and your own SLD labels), call stack, analysis.
+Stepping: into / over / out, run-to-cursor. Stopping: conditional breakpoints,
+watchpoints on memory reads *and* writes and on I/O ports. Editing: poke memory,
+click a register to set it. Plus coverage recording, a bounded execution trace,
+memory search and cross-references.
+
+Two design decisions worth knowing, both about not taxing the fast path:
+* **port watchpoints** swap `cpu.io_read`/`io_write` for instrumented versions only
+  while watches exist — Danterrifik does 80k OUTs a frame, so even an empty-set check
+  would have cost milliseconds;
+* **memory watchpoints** rebind `memory.__class__` to an instrumented subclass rather
+  than building a replacement object, because the CPU, the machine and the 128K paging
+  code all hold that same reference.
+
+**342 tests pass.**
 
 ## Where we are
 
@@ -11,7 +49,7 @@ _Last updated: 2026-07-20._ A snapshot to make it easy to pick the project back 
   numpy fast path, driven by a real-time-paced frame loop at ~50 fps.
 - Boots the real 48K ROM to the 1982 copyright screen; BASIC runs; typing
   `PRINT "HELLO"` works end to end.
-- **207 tests pass** (`pytest tests/unit tests/integration`).
+- **342 tests pass** (`pytest tests/unit tests/integration`).
 
 ## How it's structured
 
@@ -27,12 +65,23 @@ zxemu_core/        emulator core, no Qt dependency
                     jump, call_return, control, blockio, exchange, indexed)
                    + indexed_bit.py (DDCB/FDCB, kept compact as a loop demo)
                    + _dispatch.py (tables + @base/@cb/@ed/@indexed decorators)
-  memory.py        16K-bank paged model (paging-ready for 128K)
+  memory.py        16K-bank paged model (paging-ready for 128K) + the instrumented
+                   variant memory watchpoints switch on
   ula.py           port 0xFE (border/keyboard), frame timing, contention table
   keyboard.py      8x5 matrix
+  beeper.py        1-bit speaker flips -> PCM      } one file per sound source,
+  ay.py            AY-3-8912 (128K)                } summed by...
+  mixer.py         ...the resistor network's software stand-in
+  tape.py          .tap parsing + ROM-trap fast load
+  snapshot.py      .sna load (48K/128K)
+  disassembler.py  bytes -> Z80 mnemonics
+  rom_symbols.py   names for 48K ROM entry points
+  debug_expr.py    conditional-breakpoint expressions
+  analysis.py      search / cross-references / coverage
   machine.py       wires it together; run_frame() = one 50Hz frame
-zxemu_ui/
-  emulator_view.py QWidget: screen render + PC-key -> Spectrum-matrix mapping
+zxemu_ui/          IDE shell + panels (see its __init__.py for the full list;
+                   debug panels: disassembly, call stack, analysis, registers,
+                   memory cells, memory map)
 tests/             unit, integration (ROM boot), zexall harness
 dev-support/       this file, screenshots, ZEXALL binaries (git-ignored .com)
 ```
@@ -72,8 +121,8 @@ overview. When the IDE grows, `main.py` becomes the IDE shell and
 - **Beeper models one bit, not two.** Real hardware sums port 0xFE bit 4 (EAR) *and*
   bit 3 (MIC) into the speaker through different resistors, giving four output levels;
   `ula.py` keeps only bit 4, so we produce two. Engines that use MIC for extra dynamic
-  range will sound flatter here than on hardware. (Checked against Danterrifik, which
-  never sets MIC — so this is not the cause of the outstanding artefact there.)
+  range will sound flatter here than on hardware. No game tested so far uses MIC, so
+  this is theoretical for now rather than an observed problem.
 - **Timing** is functional, not cycle-accurate: contention is modelled/tested
   but not applied to every memory access; no per-scanline border effects.
 - **Not a git repo yet** (user is handling version control separately).

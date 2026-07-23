@@ -7,6 +7,8 @@ will use to implement port 0x7ffd paging without reworking this module.
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 BANK_SIZE = 0x4000  # 16K
 SLOT_COUNT = 4
 
@@ -66,6 +68,74 @@ class Memory:
     def is_contended(self, address: int) -> bool:
         bank, _ = self._locate(address)
         return bank.contended
+
+
+class MemoryAccess(NamedTuple):
+    """The read or write that tripped a memory watchpoint."""
+
+    is_write: bool
+    address: int
+    value: int
+
+
+class WatchedMemory(Memory):
+    """Memory that reports reads and writes of watched addresses.
+
+    ``read_byte``/``write_byte`` are the busiest methods in the whole emulator --
+    millions of calls a second -- so the debugger must not make every program pay for
+    a feature almost nobody has switched on. This subclass exists so that the check
+    lives *only* in the instrumented version: with no watchpoints set, the machine
+    runs the plain :class:`Memory` and there is no test to skip, not even a branch.
+    """
+
+    def read_byte(self, address: int) -> int:
+        value = Memory.read_byte(self, address)
+        if (address & 0xFFFF) in self.watch_reads:
+            self.access_hit = MemoryAccess(False, address & 0xFFFF, value)
+        return value
+
+    def write_byte(self, address: int, value: int) -> None:
+        Memory.write_byte(self, address, value)
+        if (address & 0xFFFF) in self.watch_writes:
+            self.access_hit = MemoryAccess(True, address & 0xFFFF, value & 0xFF)
+
+
+def install_watch(memory: Memory, reads=(), writes=()) -> None:
+    """Switch ``memory`` between the plain and instrumented versions, in place.
+
+    Note what this does *not* do: build a new object. The same ``Memory`` instance is
+    referenced by the CPU (``cpu.memory``), by the machine (``machine.memory``), and on
+    a 128K by the paging code that swaps banks through it. Handing out a replacement
+    would mean finding and updating every one of those references, and any that was
+    missed would keep reading the old object -- a bug that would look like "the
+    watchpoint works but the screen stopped updating".
+
+    Rebinding ``__class__`` sidesteps that entirely: the object, its identity and its
+    banks are untouched, and only method lookup changes. Python supports this
+    deliberately, and it is the rare case where it is the *simpler* option rather than
+    the clever one.
+    """
+    reads, writes = set(reads), set(writes)
+    if reads or writes:
+        if not isinstance(memory, WatchedMemory):
+            memory._unwatched_class = type(memory)
+        memory.watch_reads = reads
+        memory.watch_writes = writes
+        memory.access_hit = None
+        memory.__class__ = WatchedMemory
+    elif isinstance(memory, WatchedMemory):
+        memory.__class__ = memory._unwatched_class
+        memory.watch_reads = set()
+        memory.watch_writes = set()
+        memory.access_hit = None
+
+
+def take_access(memory: Memory):
+    """Return and clear any recorded watched access (None on plain, uninstrumented memory)."""
+    hit = getattr(memory, "access_hit", None)
+    if hit is not None:
+        memory.access_hit = None
+    return hit
 
 
 def create_48k_memory(rom_data: bytes) -> Memory:

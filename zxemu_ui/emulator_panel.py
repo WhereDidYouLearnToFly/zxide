@@ -117,6 +117,12 @@ class EmulatorPanel(QWidget):
         self.step_over_action.setShortcut("F10")
         self.step_over_action.triggered.connect(self.controller.step_over)
 
+        # Step out: finish the current subroutine and stop at whoever called it.
+        self.step_out_action = QAction(style.standardIcon(QStyle.SP_ArrowUp), "Step Out", self)
+        self.step_out_action.setToolTip("Run until the current subroutine returns (Shift+F11)")
+        self.step_out_action.setShortcut("Shift+F11")
+        self.step_out_action.triggered.connect(self.controller.step_out)
+
         # Coarser step: a whole 50Hz frame (handy for eyeballing animation).
         self.frame_action = QAction(style.standardIcon(QStyle.SP_MediaSkipForward), "Frame", self)
         self.frame_action.setToolTip("Advance one frame (while paused)")
@@ -134,7 +140,8 @@ class EmulatorPanel(QWidget):
         row.setSpacing(4)
         row.addStretch()
         actions = (self.run_action, self.pause_action, self.step_action,
-                   self.step_over_action, self.frame_action, self.reset_action)
+                   self.step_over_action, self.step_out_action, self.frame_action,
+                   self.reset_action)
         for action in actions:
             button = QToolButton()
             button.setDefaultAction(action)
@@ -149,4 +156,5 @@ class EmulatorPanel(QWidget):
         self.pause_action.setEnabled(running)
         self.step_action.setEnabled(not running)
         self.step_over_action.setEnabled(not running)
+        self.step_out_action.setEnabled(not running)
         self.frame_action.setEnabled(not running)

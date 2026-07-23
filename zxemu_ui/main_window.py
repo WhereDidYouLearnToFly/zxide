@@ -20,6 +20,12 @@ The menu bar is split by *what you are doing*, not by which code implements it:
   * **Build** -- turning *your* project into a running program (sjasmplus, then
     load the snapshot it produced), with or without breakpoints,
   * **Load** -- running *somebody else's* program: a .sna snapshot or a .tap tape,
+  * **Disassembly** -- the disassembly panel and where it points,
+  * **Breaks** -- conditions on breakpoints, and run-to-cursor/address,
+  * **Analyse** -- whole-program questions: search, cross-references, coverage, trace,
+  * **Watch** -- pause when a value or a port is *touched* (as against a breakpoint,
+    which pauses when execution *reaches* somewhere),
+  * **Compression** -- optional addons (ZX0) copied into the open project on request,
   * **Model** -- which machine is emulated (48K/128K). A project declares a target
     model and opening one switches to it, but the machine isn't owned by a project,
   * **View** -- panel visibility, interface scale, and the saved dock layout.
@@ -47,6 +53,7 @@ from PyQt5.QtWidgets import (
 
 from zxemu_core import snapshot, tape
 from zxemu_core.machine import Machine
+from zxemu_core import debug_expr
 from zxemu_ui import builder, sld
 from zxemu_ui.controller import EmulatorController
 from zxemu_ui.editor import EditorArea
@@ -55,6 +62,9 @@ from zxemu_ui.emulator_view import EmulatorView
 from zxemu_ui import layout_store
 from zxemu_ui.inspector_view import InspectorView
 from zxemu_ui.machine_factory import build_machine, machine_model
+from zxemu_ui.analysis_view import AnalysisView
+from zxemu_ui.call_stack_view import CallStackView
+from zxemu_ui.disassembly_view import DisassemblyView
 from zxemu_ui.memory_cells_view import MemoryCellsView
 from zxemu_ui.memory_map_view import MemoryMapView
 from zxemu_ui.project import Project, is_text_file
@@ -100,6 +110,13 @@ class MainWindow(QMainWindow):
         # kept in sync by set_machine, so the tick always follows the *live* machine --
         # whether it changed from the menu or from opening a project.
         self._model_actions: dict[str, QAction] = {}
+        # Watchpoints the user has added, kept here because the menu adds one at a time
+        # while the controller takes the whole set.
+        self._watched_reads: set[int] = set()
+        self._watched_writes: set[int] = set()
+        self._watched_ports_read: set[int] = set()
+        self._watched_ports_write: set[int] = set()
+        self._breakpoint_conditions: dict[int, str] = {}  # address -> expression
 
         # Give the left/right dock areas the corners, so the side columns (Project +
         # Inspector, and the emulator/registers/memory-map stack) run the full height
@@ -118,6 +135,9 @@ class MainWindow(QMainWindow):
         self.view = EmulatorView(machine)
         self.emulator_panel = EmulatorPanel(self.view, controller)
         self.memory_cells = MemoryCellsView(machine)
+        self.disassembly = DisassemblyView(machine)
+        self.call_stack = CallStackView(machine)
+        self.analysis = AnalysisView(machine)
         self.registers = RegistersView(machine)
         self.memory_map = MemoryMapView(machine)
         self.inspector = InspectorView()
@@ -141,9 +161,14 @@ class MainWindow(QMainWindow):
         self.controller.frame_ready.connect(self.view.refresh)
         self.controller.frame_ready.connect(self.registers.refresh)
         self.controller.frame_ready.connect(self.memory_cells.refresh)
+        self.controller.frame_ready.connect(self.disassembly.refresh)
+        self.controller.frame_ready.connect(self.call_stack.refresh)
         self.controller.frame_ready.connect(self.memory_map.refresh)
         self.controller.status_changed.connect(self.statusBar().showMessage)
         self.controller.breakpoint_hit.connect(self._on_breakpoint_hit)
+        self.controller.watchpoint_hit.connect(self._on_watchpoint_hit)
+        # Double-clicking an analysis result should take you to the code it names.
+        self.analysis.address_activated.connect(self._disasm_goto)
         self.editor.breakpoints_changed.connect(self._sync_breakpoints)
         # The execution-line marker: cleared while running, shown (and moved) whenever
         # paused -- on a breakpoint, a manual pause, or after each Step.
@@ -241,6 +266,9 @@ class MainWindow(QMainWindow):
         self.machine = machine
         self.view.machine = machine
         self.memory_cells.machine = machine
+        self.disassembly.machine = machine
+        self.call_stack.machine = machine
+        self.analysis.machine = machine
         self.registers.machine = machine
         self.memory_map.machine = machine
         self.controller.set_machine(machine)
@@ -252,6 +280,8 @@ class MainWindow(QMainWindow):
         self.view.refresh()
         self.registers.refresh()
         self.memory_cells.refresh(force=True)
+        self.disassembly.refresh(force=True)
+        self.call_stack.refresh(force=True)
         self.memory_map.refresh()
 
     def _new_project(self) -> None:
@@ -362,6 +392,8 @@ class MainWindow(QMainWindow):
                 self._source_map = sld.parse(
                     Path(sld_path).read_text(encoding="utf-8"), base_dir=self.project.folder
                 )
+                # Hand the labels to the disassembly panel so your code shows your names.
+                self.disassembly.source_map = self._source_map
             except OSError:
                 pass
 
@@ -380,9 +412,20 @@ class MainWindow(QMainWindow):
         (see _on_running_marker), so it lands on the right line automatically.
         """
         self._log(f"Breakpoint hit at ${address:04X}")
+
+    def _on_watchpoint_hit(self, description: str) -> None:
+        """Execution paused on a watchpoint: report what was touched, and by roughly what.
+
+        "Roughly": PC has already moved past the instruction that did it by the time we
+        look, so the reported address is where execution *is*, not the exact opcode.
+        Open the disassembly to see the instruction just above it.
+        """
+        self._log(f"Watchpoint: {description}")
         self.view.refresh()
         self.registers.refresh()
         self.memory_cells.refresh(force=True)
+        self.disassembly.refresh(force=True)
+        self.call_stack.refresh(force=True)
         self.memory_map.refresh()
 
     def _on_running_marker(self, running: bool) -> None:
@@ -453,6 +496,8 @@ class MainWindow(QMainWindow):
         self.view.refresh()
         self.registers.refresh()
         self.memory_cells.refresh(force=True)
+        self.disassembly.refresh(force=True)
+        self.call_stack.refresh(force=True)
         self.memory_map.refresh()
         self.view.setFocus()  # you just loaded something to run -- send the keyboard here
         self._log(f"Loaded {path.name} — running.")
@@ -574,13 +619,35 @@ class MainWindow(QMainWindow):
         self._memory_dock.resize(560, 380)
         self._memory_dock.hide()
 
+        # Disassembly starts floating and hidden for the same reason as Memory: it wants
+        # height the machine column can't spare. Open it from the Disassembly menu.
+        self._disasm_dock = self._make_dock("Disassembly", self.disassembly, "disasmDock")
+        self.addDockWidget(Qt.RightDockWidgetArea, self._disasm_dock)
+        self._disasm_dock.setFloating(True)
+        self._disasm_dock.resize(520, 460)
+        self._disasm_dock.hide()
+
+        self._callstack_dock = self._make_dock("Call stack", self.call_stack, "callStackDock")
+        self.addDockWidget(Qt.RightDockWidgetArea, self._callstack_dock)
+        self._callstack_dock.setFloating(True)
+        self._callstack_dock.resize(420, 260)
+        self._callstack_dock.hide()
+
+        self._analysis_dock = self._make_dock("Analysis", self.analysis, "analysisDock")
+        self.addDockWidget(Qt.RightDockWidgetArea, self._analysis_dock)
+        self._analysis_dock.setFloating(True)
+        self._analysis_dock.resize(520, 400)
+        self._analysis_dock.hide()
+
         # Full-width build/output console along the bottom.
         self._output_dock = self._make_dock("Output", self.output_console, "outputDock")
         self.addDockWidget(Qt.BottomDockWidgetArea, self._output_dock)
 
         self._all_docks = [
             self._project_dock, self._inspector_dock, self._emulator_dock,
-            self._memory_dock, self._registers_dock, self._memmap_dock, self._output_dock,
+            self._memory_dock, self._registers_dock, self._memmap_dock,
+            self._disasm_dock, self._callstack_dock, self._analysis_dock,
+            self._output_dock,
         ]
 
     # --- menu -----------------------------------------------------------------
@@ -640,6 +707,114 @@ class MainWindow(QMainWindow):
 
         self._build_model_menu()
 
+        # Disassembly: the panel and where it points. Its own menu rather than a line in
+        # View, because "show the panel" and "navigate it" belong together.
+        disasm_menu = self.menuBar().addMenu("D&isassembly")
+        show_disasm = self._disasm_dock.toggleViewAction()
+        show_disasm.setText("Show Disassembly")
+        disasm_menu.addAction(show_disasm)
+        disasm_menu.addSeparator()
+        goto_pc = QAction("Go to PC", self)
+        goto_pc.setToolTip("Re-centre on the program counter and keep following it")
+        goto_pc.triggered.connect(self._disasm_goto_pc)
+        disasm_menu.addAction(goto_pc)
+        goto_addr = QAction("Go to Address…", self)
+        goto_addr.triggered.connect(self._disasm_goto_address)
+        disasm_menu.addAction(goto_addr)
+        goto_label = QAction("Go to Label…", self)
+        goto_label.setToolTip("Jump to one of your own labels from the last build")
+        goto_label.triggered.connect(self._disasm_goto_label)
+        disasm_menu.addAction(goto_label)
+        disasm_menu.addSeparator()
+        show_stack = self._callstack_dock.toggleViewAction()
+        show_stack.setText("Show Call Stack")
+        disasm_menu.addAction(show_stack)
+
+        # Breaks: conditions attached to the gutter breakpoints, so a routine called
+        # ten thousand times a frame can stop on the one call that misbehaves.
+        breaks_menu = self.menuBar().addMenu("&Breaks")
+        set_condition = QAction("Set Breakpoint Condition…", self)
+        set_condition.setToolTip("Stop at an address only when an expression is true")
+        set_condition.triggered.connect(self._set_breakpoint_condition)
+        breaks_menu.addAction(set_condition)
+        run_to_cursor = QAction("Run to Cursor", self)
+        run_to_cursor.setToolTip("Resume, stopping at the line the caret is on (Ctrl+F10)")
+        run_to_cursor.setShortcut("Ctrl+F10")
+        run_to_cursor.triggered.connect(self._run_to_cursor)
+        breaks_menu.addAction(run_to_cursor)
+        run_to_address = QAction("Run to Address…", self)
+        run_to_address.triggered.connect(self._run_to_address)
+        breaks_menu.addAction(run_to_address)
+        list_conditions = QAction("List Conditions", self)
+        list_conditions.triggered.connect(self._list_breakpoint_conditions)
+        breaks_menu.addAction(list_conditions)
+        breaks_menu.addSeparator()
+        clear_conditions = QAction("Clear All Conditions", self)
+        clear_conditions.triggered.connect(self._clear_breakpoint_conditions)
+        breaks_menu.addAction(clear_conditions)
+
+        # Watch: pause when a value or a port is touched, as opposed to a breakpoint,
+        # which pauses when execution *reaches* somewhere.
+        watch_menu = self.menuBar().addMenu("&Watch")
+        watch_write = QAction("Watch Memory Write…", self)
+        watch_write.setToolTip("Pause when the program writes to an address")
+        watch_write.triggered.connect(lambda: self._watch_memory(write=True))
+        watch_menu.addAction(watch_write)
+        watch_read = QAction("Watch Memory Read…", self)
+        watch_read.setToolTip("Pause when the program reads an address")
+        watch_read.triggered.connect(lambda: self._watch_memory(write=False))
+        watch_menu.addAction(watch_read)
+        watch_out = QAction("Watch Port (OUT)…", self)
+        watch_out.setToolTip("Pause when the program writes to a port")
+        watch_out.triggered.connect(lambda: self._watch_port(write=True))
+        watch_menu.addAction(watch_out)
+        watch_in = QAction("Watch Port (IN)…", self)
+        watch_in.setToolTip("Pause when the program reads a port")
+        watch_in.triggered.connect(lambda: self._watch_port(write=False))
+        watch_menu.addAction(watch_in)
+        watch_menu.addSeparator()
+        clear_watch = QAction("Clear All Watchpoints", self)
+        clear_watch.triggered.connect(self._clear_watchpoints)
+        watch_menu.addAction(clear_watch)
+
+        # Analyse: questions about the program as a whole rather than its current state.
+        analyse_menu = self.menuBar().addMenu("&Analyse")
+        find_bytes = QAction("Find Bytes…", self)
+        find_bytes.setToolTip("Search memory for a hex byte sequence")
+        find_bytes.triggered.connect(lambda: self._find_in_memory(as_text=False))
+        analyse_menu.addAction(find_bytes)
+        find_text = QAction("Find Text…", self)
+        find_text.triggered.connect(lambda: self._find_in_memory(as_text=True))
+        analyse_menu.addAction(find_text)
+        xrefs = QAction("Cross-references…", self)
+        xrefs.setToolTip("What calls, jumps to, reads or writes an address?")
+        xrefs.triggered.connect(self._cross_references)
+        analyse_menu.addAction(xrefs)
+        analyse_menu.addSeparator()
+        self._coverage_action = QAction("Record Coverage", self, checkable=True)
+        self._coverage_action.setToolTip("Record which addresses actually execute")
+        self._coverage_action.toggled.connect(self._set_coverage)
+        analyse_menu.addAction(self._coverage_action)
+        show_coverage = QAction("Show Coverage", self)
+        show_coverage.triggered.connect(self._show_coverage)
+        analyse_menu.addAction(show_coverage)
+        analyse_menu.addSeparator()
+        self._trace_action = QAction("Record Trace", self, checkable=True)
+        self._trace_action.setToolTip("Keep a rolling log of the last few thousand instructions")
+        self._trace_action.toggled.connect(self._set_trace)
+        analyse_menu.addAction(self._trace_action)
+        show_trace = QAction("Show Trace", self)
+        show_trace.triggered.connect(self._show_trace)
+        analyse_menu.addAction(show_trace)
+
+        # Compression: optional addons a project can opt into. Nothing is added to a
+        # project until you ask, so a project that compresses nothing carries nothing.
+        compression_menu = self.menuBar().addMenu("&Compression")
+        add_zx0 = QAction("Add ZX0", self)
+        add_zx0.setToolTip("Copy the ZX0 decompressor into the open project")
+        add_zx0.triggered.connect(lambda: self._add_addon("zx0", "ZX0"))
+        compression_menu.addAction(add_zx0)
+
         view_menu = self.menuBar().addMenu("&View")
         self._build_interface_scale_menu(view_menu)
         special_chars = QAction("Show special characters", self, checkable=True)
@@ -693,6 +868,217 @@ class MainWindow(QMainWindow):
             self.project.set_model(model)
             self._log(f"Project target model set to {model.upper()}.")
 
+    # --- analysis (thin: the work is in analysis_view / zxemu_core.analysis) --------
+
+    def _show_analysis(self) -> None:
+        self._analysis_dock.show()
+        self._analysis_dock.raise_()
+
+    def _find_in_memory(self, as_text: bool) -> None:
+        title = "Find Text" if as_text else "Find Bytes"
+        prompt = "Text:" if as_text else "Hex bytes (e.g. 21 00 40):"
+        text, ok = QInputDialog.getText(self, title, prompt)
+        if not ok or not text.strip():
+            return
+        self._show_analysis()
+        if as_text:
+            self.analysis.find_text(text)
+            return
+        try:
+            pattern = bytes(int(part, 16) for part in text.split())
+        except ValueError:
+            self._log(f"Not a hex byte sequence: {text.strip()}")
+            return
+        self.analysis.find_bytes(pattern, " ".join(f"{b:02X}" for b in pattern))
+
+    def _cross_references(self) -> None:
+        address = self._ask_hex("Cross-references", "Address (hex):")
+        if address is None:
+            return
+        self._show_analysis()
+        self.analysis.cross_references(address)
+
+    def _set_coverage(self, on: bool) -> None:
+        self.controller.set_coverage_enabled(on)
+        self._log("Coverage recording " + ("on (runs the slower debug loop)." if on else "off."))
+
+    def _show_coverage(self) -> None:
+        self._show_analysis()
+        self.analysis.show_coverage(self.controller.coverage)
+
+    def _set_trace(self, on: bool) -> None:
+        self.controller.set_trace_enabled(on)
+        self._log("Trace recording " + ("on (runs the slower debug loop)." if on else "off."))
+
+    def _show_trace(self) -> None:
+        self._show_analysis()
+        self.analysis.show_trace(self.controller.trace_entries())
+
+    # --- breakpoint conditions ---------------------------------------------------
+
+    def _set_breakpoint_condition(self) -> None:
+        address = self._ask_hex("Breakpoint Condition", "Breakpoint address (hex):")
+        if address is None:
+            return
+        expression, ok = QInputDialog.getText(
+            self,
+            "Breakpoint Condition",
+            f"Stop at ${address & 0xFFFF:04X} only when:",
+            text=self._breakpoint_conditions.get(address & 0xFFFF, "A == $FF"),
+        )
+        if not ok:
+            return
+        expression = expression.strip()
+        if not expression:  # cleared
+            self._breakpoint_conditions.pop(address & 0xFFFF, None)
+            self._log(f"Condition on ${address & 0xFFFF:04X} removed.")
+        else:
+            # Check it now, against live state: a typo should be reported while you are
+            # still looking at the dialog, not by silently never matching later.
+            try:
+                debug_expr.validate(expression, self.machine)
+            except debug_expr.ExpressionError as error:
+                self._log(f"Bad condition: {error}")
+                return
+            self._breakpoint_conditions[address & 0xFFFF] = expression
+            self._log(f"Breakpoint ${address & 0xFFFF:04X} stops only when: {expression}")
+        self.controller.set_breakpoint_conditions(self._breakpoint_conditions)
+
+    def _run_to_cursor(self) -> None:
+        """Run until execution reaches the line the caret is on."""
+        if self._source_map is None:
+            self._log("Run to Cursor needs a build first (no source map yet).")
+            return
+        path, line = self.editor.current_location()
+        if path is None:
+            self._log("Run to Cursor: no file open.")
+            return
+        address = self._source_map.address_for(path, line)
+        if address is None:
+            self._log(f"Line {line} produced no code — nothing to run to.")
+            return
+        self._log(f"Running to ${address:04X} (line {line})")
+        self.controller.run_to(address)
+
+    def _run_to_address(self) -> None:
+        address = self._ask_hex("Run to Address", "Address (hex):")
+        if address is None:
+            return
+        self._log(f"Running to ${address & 0xFFFF:04X}")
+        self.controller.run_to(address)
+
+    def _list_breakpoint_conditions(self) -> None:
+        if not self._breakpoint_conditions:
+            self._log("No breakpoint conditions set.")
+            return
+        for address, expression in sorted(self._breakpoint_conditions.items()):
+            self._log(f"  ${address:04X}  when  {expression}")
+
+    def _clear_breakpoint_conditions(self) -> None:
+        self._breakpoint_conditions.clear()
+        self.controller.set_breakpoint_conditions({})
+        self._log("Cleared all breakpoint conditions.")
+
+    # --- watchpoints ------------------------------------------------------------
+
+    def _ask_hex(self, title: str, prompt: str) -> int | None:
+        """Prompt for a hex value, accepting $8000 / 0x8000 / 8000. None if cancelled."""
+        text, ok = QInputDialog.getText(self, title, prompt)
+        if not ok or not text.strip():
+            return None
+        try:
+            return int(text.strip().lstrip("$#").removeprefix("0x"), 16)
+        except ValueError:
+            self._log(f"Not a hex value: {text.strip()}")
+            return None
+
+    def _watch_memory(self, write: bool) -> None:
+        label = "Write" if write else "Read"
+        address = self._ask_hex(f"Watch Memory {label}", "Address (hex):")
+        if address is None:
+            return
+        target = self._watched_writes if write else self._watched_reads
+        target.add(address & 0xFFFF)
+        self.controller.set_memory_watchpoints(self._watched_writes, self._watched_reads)
+        self._log(f"Watching ${address & 0xFFFF:04X} for {label.lower()}s")
+
+    def _watch_port(self, write: bool) -> None:
+        label = "OUT" if write else "IN"
+        port = self._ask_hex(f"Watch Port ({label})", "Port (hex, e.g. FE or 7FFD):")
+        if port is None:
+            return
+        target = self._watched_ports_write if write else self._watched_ports_read
+        target.add(port & 0xFFFF)
+        self.controller.set_port_watchpoints(self._watched_ports_read, self._watched_ports_write)
+        self._log(f"Watching {label} on port ${port:04X}")
+
+    def _clear_watchpoints(self) -> None:
+        self._watched_reads.clear()
+        self._watched_writes.clear()
+        self._watched_ports_read.clear()
+        self._watched_ports_write.clear()
+        self.controller.set_memory_watchpoints((), ())
+        self.controller.set_port_watchpoints((), ())
+        self._log("Cleared all watchpoints.")
+
+    def _show_disassembly(self) -> None:
+        """Reveal the disassembly dock -- navigating to it should also open it."""
+        self._disasm_dock.show()
+        self._disasm_dock.raise_()
+
+    def _disasm_goto_pc(self) -> None:
+        self._show_disassembly()
+        self.disassembly.goto_pc()
+
+    def _disasm_goto(self, address: int) -> None:
+        """Open the disassembly at an address (used by analysis results)."""
+        self._show_disassembly()
+        self.disassembly.goto(address)
+
+    def _disasm_goto_label(self) -> None:
+        if self._source_map is None or not self._source_map.labels:
+            self._log("No labels yet — build the project first (labels come from its SLD).")
+            return
+        name, ok = QInputDialog.getText(self, "Go to Label", "Label name:")
+        if not ok or not name.strip():
+            return
+        address = self._source_map.address_for_label(name)
+        if address is None:
+            self._log(f"No unique label matching {name.strip()!r}.")
+            return
+        self._log(f"{name.strip()} = ${address:04X}")
+        self._show_disassembly()
+        self.disassembly.goto(address)
+
+    def _disasm_goto_address(self) -> None:
+        text, ok = QInputDialog.getText(self, "Go to Address", "Address (hex):")
+        if not ok or not text.strip():
+            return
+        try:
+            address = int(text.strip().lstrip("$#").removeprefix("0x"), 16)
+        except ValueError:
+            self._log(f"Not a hex address: {text.strip()}")
+            return
+        self._show_disassembly()
+        self.disassembly.goto(address)
+
+    def _add_addon(self, addon: str, label: str) -> None:
+        """Copy an optional addon's files into the open project and report what changed."""
+        if self.project is None:
+            self._log("No project open — use File ▸ New Project or Open Folder first.")
+            return
+        try:
+            added, skipped = self.project.add_addon(addon)
+        except OSError as error:
+            self._log(f"Could not add {label}: {error}")
+            return
+        if added:
+            self._log(f"Added {label}: {', '.join(added)}")
+        for name in skipped:
+            self._log(f"{label}: {name} already exists — left untouched.")
+        if not added and not skipped:
+            self._log(f"{label} addon is empty — nothing to add.")
+
     def _build_interface_scale_menu(self, view_menu) -> None:
         """A checkable group scaling all UI text, for readability on large displays."""
         scale_menu = view_menu.addMenu("Interface scale")
@@ -720,6 +1106,9 @@ class MainWindow(QMainWindow):
         apply_ui_scale(QApplication.instance(), scale)
         self.editor.set_mono_scale(scale)
         self.memory_cells.set_mono_scale(scale)
+        self.disassembly.set_mono_scale(scale)
+        self.call_stack.set_mono_scale(scale)
+        self.analysis.set_mono_scale(scale)
         self.registers.set_mono_scale(scale)
         self.output_console.setFont(monospace_font(scale))
 

@@ -245,6 +245,21 @@ class EditorArea(QTabWidget):
                 result[path] = widget.breakpoints()
         return result
 
+    def current_location(self) -> tuple[str | None, int]:
+        """The (file path, 1-based line) the caret is on, for "run to cursor" and friends.
+
+        Returns (None, 0) when the active tab isn't a saved file -- the welcome tab, or
+        a buffer that has never been written to disk and so has no path to map through
+        the source map.
+        """
+        widget = self.currentWidget()
+        if not isinstance(widget, CodeEdit):
+            return None, 0
+        path = widget.property("file_path")
+        if not path:
+            return None, 0
+        return path, widget.textCursor().blockNumber() + 1
+
     def goto_line(self, path: str, line: int) -> None:
         """Open (or focus) a file and move the cursor to a 1-based line."""
         self.open_file(path)

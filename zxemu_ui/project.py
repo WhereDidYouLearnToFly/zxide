@@ -28,6 +28,13 @@ _TEMPLATE_ROOT = Path(__file__).resolve().parent / "templates"
 TEMPLATE_DIRS = {"48k": _TEMPLATE_ROOT / "project48", "128k": _TEMPLATE_ROOT / "project128"}
 DEFAULT_MODEL = "48k"
 
+# Optional addons: extra source files a project can opt into *after* creation, unlike
+# the templates above which are scaffolded once at New-Project time. Keeping them out
+# of the templates is the point -- a project only carries what it actually uses, which
+# matters when every byte of a 48K is spoken for.
+_ADDON_ROOT = Path(__file__).resolve().parent / "addons"
+ADDON_DIRS = {"zx0": _ADDON_ROOT / "zx0addon"}
+
 # Default sjasmplus invocation for a new project. {main}/{output} are filled in per
 # build. sjasmplus writes the snapshot itself via a SAVESNA directive in the source
 # (there is no --sna flag); --fullpath makes error messages carry the full path.
@@ -76,6 +83,26 @@ class Project:
         manifest = self.load_manifest()
         manifest["model"] = model
         self.save_manifest(manifest)
+
+    def add_addon(self, name: str) -> tuple[list[str], list[str]]:
+        """Copy an addon's files into the project root. Returns (added, skipped) names.
+
+        Existing files are never overwritten, so re-adding an addon is harmless and
+        can't clobber a copy you have since edited -- the same no-clobber rule
+        ``create`` uses when scaffolding a template.
+        """
+        added: list[str] = []
+        skipped: list[str] = []
+        for source in sorted(ADDON_DIRS[name].iterdir()):
+            if not source.is_file():
+                continue
+            destination = self.folder / source.name
+            if destination.exists():
+                skipped.append(source.name)
+            else:
+                shutil.copy(source, destination)
+                added.append(source.name)
+        return added, skipped
 
     def load_manifest(self) -> dict:
         try:

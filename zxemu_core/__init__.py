@@ -15,7 +15,8 @@ The parts, and how they fit together:
                  of memory and executes them. The heart of the emulator.
     memory.py    The 64K address space, modelled as four swappable 16K banks.
                  The 48K wires them statically; the 128K pages RAM and ROM banks
-                 in and out through this same abstraction.
+                 in and out through this same abstraction. Also holds the optional
+                 instrumented variant the debugger's watchpoints switch on.
     ula.py       The ULA chip: video/frame timing, the border colour, the 1-bit
                  speaker, and the I/O port (0xFE) the keyboard and border share.
     keyboard.py  The Spectrum's 8x5 key matrix, which the ULA reads.
@@ -33,6 +34,17 @@ The parts, and how they fit together:
                  trapping the ROM's own tape routine -- so ``LOAD ""`` completes
                  instantly instead of playing a tape in real time.
     disassembler.py  Turns bytes back into Z80 mnemonics, for the debugger.
+    rom_symbols.py   Traditional names for well-known 48K ROM entry points, so a
+                     disassembled ``call $15E6`` reads as ``; INPUT-AD``.
+    debug_expr.py    The tiny expression language behind conditional breakpoints
+                     ("stop here only when A == $FF").
+    analysis.py      Questions about the program rather than its current state:
+                     search memory, find what refers to an address, and record
+                     which addresses have actually executed.
+
+The last four are the debugger's supporting cast. They are here rather than in
+``zxemu_ui`` because none of them needs a toolkit -- they reason about bytes and
+machine state, so they stay testable (and reusable) without a window.
 
 Learning path: read machine.py first (the big picture / how a frame runs), then
 dive into cpu/ (start at cpu/z80.py), then memory / ula / keyboard, and finally
