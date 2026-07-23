@@ -36,3 +36,23 @@ def test_breakpoint_addresses(tmp_path):
     source_map = sld.parse(SAMPLE, base_dir=tmp_path)
     main = str(tmp_path / "main.asm")
     assert source_map.breakpoint_addresses(main, {18, 21, 99}) == {32768, 32772}
+
+
+def test_addresses_by_slot_groups_trace_records_by_slot(tmp_path):
+    (tmp_path / "main.asm").write_text("x")
+    source_map = sld.parse(SAMPLE, base_dir=tmp_path)
+    assert source_map.addresses_by_slot == {2: {32768, 32772}}
+
+
+def test_addresses_by_slot_ignores_non_trace_records(tmp_path):
+    # The Z (metadata) record has slot -1 and must not pollute addresses_by_slot.
+    (tmp_path / "main.asm").write_text("x")
+    source_map = sld.parse(SAMPLE, base_dir=tmp_path)
+    assert -1 not in source_map.addresses_by_slot
+
+
+def test_addresses_by_slot_separates_multiple_slots(tmp_path):
+    text = SAMPLE + "main.asm|30||0|3|49152|T|\n"
+    (tmp_path / "main.asm").write_text("x")
+    source_map = sld.parse(text, base_dir=tmp_path)
+    assert source_map.addresses_by_slot == {2: {32768, 32772}, 3: {49152}}

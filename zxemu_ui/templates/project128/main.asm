@@ -15,6 +15,7 @@
     device zxspectrum128
 
     include "zxspectrum.asm"        ; screen / port / paging / AY equates
+    include "assets_generated.asm"  ; imported assets -- see the Design-mode memory map
 
     org $8000
 

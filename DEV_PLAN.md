@@ -332,9 +332,8 @@ Note the symmetry with Phase E: that places assets *into* memory, this pulls the
 - **Tape-deck UI** -- play / stop / rewind, block list, "insert tape."
 
 ### 3. Visual memory management (Phase E -- the "Unity" centerpiece)
-- Bank-oriented map with **drag-drop asset placement** + an **auto-locate** button.
-- **Asset import** (bmp / binary / pt3 / beeper sfx) -> generates `ORG` / `incbin`.
-- Live "where do my bytes live" before *and* after the build.
+Superseded by the detailed **Milestone 4: Asset workflow (Phase E)** section below --
+this backlog line is kept only as an index pointer.
 
 ### 4. Sound & hardware completeness
 - AY **stereo** (ACB/ABC), and an **AY register/scope panel** to watch the chip live. ★
@@ -361,8 +360,258 @@ Note the symmetry with Phase E: that places assets *into* memory, this pulls the
 ### Recommended sequence
 **TAP** (finish M3) -> then the **RE / debugging toolkit** (disassembly panel + labels +
 annotated ROM source) as the strongest *educational* bet, reusing the existing debugger ->
-then **Phase E** (the flashier "product" feature). The RE toolkit is where the *teaching*
-happens; Phase E is where zxide feels most like "Unity for the Spectrum."
+then **Milestone 4 / Phase E** (the flashier "product" feature). The RE toolkit is where
+the *teaching* happens; Phase E is where zxide feels most like "Unity for the Spectrum."
+
+---
+
+## Milestone 4: Asset workflow (Phase E)
+
+Today there is **zero asset tooling**: no importers, no placement UI, no build-time asset
+codegen. The memory map is a read-only debug view (PC/SP markers only); the project
+manifest has no `assets` concept. This milestone builds the whole pipeline end to end --
+import, place, build, preview -- in six steps, each independently testable before the next
+begins.
+
+**1. Core, Qt-free asset modules** (`zxemu_core/assets/`, mirrors the `debug/`/`sound/`
+package split):
+- `manifest.py` -- `AssetKind` enum (`bitmap`, `sprite_sheet`, `sprite_sequence`, `font`,
+  `tilemap`, `binary`, `pt3`, `beeper_sfx`) and `AssetEntry` (`id`, `source` -- a path, or
+  a list of paths for `sprite_sequence` -- `kind`, `symbol`, `placement`: `"auto"` or
+  `{bank, offset}`, plus kind metadata below), with `to_dict`/`from_dict`. `sprite_sheet`,
+  `sprite_sequence`, and `font` all produce the same shape -- a `FrameSequence` (ordered
+  frames, common `frame_width`/`frame_height`/`frame_stride`, optional mask) -- so
+  anything downstream (Inspector preview, Milestone 5's `draw_sprite`) treats them
+  identically regardless of import path. There is **no separate "tileset" kind** -- a
+  tileset/palette is just a `sprite_sheet`/`sprite_sequence` asset used in a different
+  role (see `tilemap`).
+- `bmp_convert.py` -- BMP -> Spectrum format:
+  - **`bitmap`** (full-screen 256x192) -> 6144-byte bitmap + 768-byte attributes
+    (nearest-color match per 8x8 cell against the 8-color normal/bright palette --
+    `emulator_view.py`'s RGB tables are the reference, duplicated here since core can't
+    import `zxemu_ui`); attribute-clash warnings (>2 colors/cell) returned to the caller.
+  - **`sprite_sheet`** -- a BMP holding a grid or strip of equal-sized frames. Explicit
+    params (no auto-detection, ambiguous for irregular sheets): `frame_width` (multiple
+    of 8), `frame_height` (any), `layout` (`{"grid": {cols, rows}}` or `{"strip": {axis,
+    count}}`). Frames pack 1bpp row-major MSB-first, no screen interleaving, all the same
+    byte stride so code addresses any frame as `label + frame_index * frame_stride`; a
+    frame-count constant is emitted alongside the label.
+  - **`sprite_sequence`** (the animation-flip case) -- an ordered list of individual
+    same-sized image files, each file *is* one whole frame. Dimensions read off the first
+    file and validated identical across the rest; frame order is the list order (natural
+    filename sort by default, reorderable). Converts to the identical `FrameSequence`
+    shape as `sprite_sheet`, through the same mask path, so both feed one packing routine.
+  - **Mask generation is a per-asset toggle** (`generate_mask`, off by default, both
+    `sprite_sheet` and `sprite_sequence`): converts a chosen `mask_color` (sampled from
+    the source image's own palette) into a paired AND-mask plane per frame, adjacent to
+    its pixel data; off emits only the raw bitmap. Toggling later just re-runs the
+    converter.
+  - **`font`** -- a `FrameSequence` of glyphs, reusing the grid slicer wholesale, with
+    `frame_width`/`frame_height` defaulted to 8x8 and no mask (glyphs are OR/XOR-plotted,
+    not overlay-masked). The one new bit of metadata is `first_char_code` (default `32`),
+    emitted as an `equ` so code indexes a glyph as
+    `label + (char_code - first_char_code) * frame_stride`. Two source paths land on the
+    same converter: a BMP grid, or a pre-packed raw binary charset (skips slicing, just
+    `binary_convert` passthrough plus the same metadata attached).
+- `binary_convert.py` -- passthrough with optional length check.
+- `tilemap_convert.py` -- **`tilemap`**, the level-layout asset: instead of a full pixel
+  bitmap per screen, a grid of small tile-index bytes referencing a tileset (any
+  `sprite_sheet`/`sprite_sequence` asset, at whatever tile size it was imported at --
+  8x8, 16x16, custom). The actual space win: a 32x24 grid of 8x8 tiles is 768 index bytes
+  vs. 6144+768 for a raw bitmap; a 16x16 tileset over the same area is 192 bytes.
+  - Metadata: `tileset_symbol` (the "palette" asset's symbol), `map_width`/`map_height`
+    (in tiles). A tileset can be shared across levels or dedicated to one -- structurally
+    identical either way, just which `AssetEntry` the symbol points at.
+  - Source format (v1, hand-authored -- no in-app level editor yet): a plain JSON grid,
+    e.g. `{"tileset": "tileset_forest", "width": 32, "height": 24, "tiles": [[0,0,1,2,...],
+    ...]}`, indices validated against the tileset's real frame count at convert time. This
+    is the one converter needing the full asset registry, not just its own source file.
+  - Packing: one byte/tile by default (up to 256 tiles); an optional `pack_nibble` toggle
+    (mirrors `generate_mask`) halves this to 4 bits/tile when the tileset has <=16 frames.
+  - **Deferred**: importing an existing level-editor format (Tiled's `.tmx`/`.json`). The
+    representation above is chosen so that's a straightforward later converter, not a
+    restructure.
+- `pt3_convert.py` -- passthrough + `PT3` magic-header check (playback stays a separate
+  backlog item).
+- `beeper_sfx.py` -- v1 text format (`period_tstates,duration_frames` pairs) compiled to a
+  sentinel-terminated binary table.
+- `registry.py` -- suffix -> converter dispatch, used by both the import UI and the
+  build-time regenerator.
+- `preview.py` -- `render_frame_rgb(frame_bytes, width, height, attr_byte)`, a
+  non-screen-scrambled renderer for standalone frame previews (kept separate from
+  `emulator_view.render_screen_rgb`, which assumes live hardware screen layout).
+  `render_sheet_rgb(sequence)` tiles every frame into one grid image (fonts, and sprites
+  too). `render_tilemap_rgb(tilemap, tileset_sequence)` composites a whole level preview
+  by stamping tileset frames into the grid the tilemap specifies.
+
+**2. Free-space / placement model** (`zxemu_core/memlayout.py`, a top-level sibling of
+`memory.py` -- not nested under `assets/`, since the future memory-dumper (see "1b" above)
+needs the same "what lives where" model):
+- `bank_ids_for_model(model)` -- `["rom","ram1","ram2","ram3"]` (48K) vs.
+  `["rom0","rom1","ram0".."ram7"]` (128K).
+- Reserved-range table per bank (ROM fully reserved; the screen bank reserves its first
+  `SCREEN_BYTES` -- reuse the constants already in `memory_map_view.py`).
+- `FreeSpaceIndex`: `place(bank, offset, length)`, `free_ranges(bank)`,
+  `auto_locate(length, prefer_banks=...)` (first-fit bin packing, RAM before screen-bank
+  leftover space, never ROM).
+- **Known v1 limitation, stated explicitly**: "free" only excludes hardware-reserved
+  ranges and other placed assets -- it does not yet know where the user's own hand-written
+  `ORG`'d code lives (the same undecidable-without-execution problem as "1b" above). The
+  UI must warn accordingly; a real fix extends `sld.py` to capture the currently-ignored
+  `page` column.
+
+**3. Manifest additions** (`zxemu_ui/workspace/project.py`): `"assets": [...]` in
+`default_manifest()`; `Project.assets()`, `add_asset(source, kind, symbol=None)`
+(auto-derives a sjasmplus-safe label), `set_asset_placement(id, bank, offset)`,
+`set_asset_auto(id)`, `remove_asset(id)` -- thin read/write, matching `set_model()`.
+
+**4. Memory Map Design mode** (`zxemu_ui/panels/memory_map_view.py`): one class, a
+Design <-> Debug toggle (Debug unchanged; Design draws placed-asset rectangles from
+`project.assets()`) plus an Auto-locate button. Drag-drop reuses the project tree's
+existing `QFileSystemModel` `text/uri-list` drag data (`setDragEnabled(True)`) --
+`MemoryMapView` adds `setAcceptDrops(True)` + drag/drop handlers and a `_hit_test(pos) ->
+(bank, offset)` (inverse of `_draw_marker`). Dropping a single `.bmp` prompts a small
+dialog to choose `bitmap` vs `sprite_sheet` vs `font`. `sprite_sequence` gets its own
+"Import Animation Sequence..." multi-select command on the tree's context menu, since it
+doesn't fit a single-file drop.
+
+**5. Build integration** (`zxemu_ui/workspace/asset_build.py` + `builder.py`):
+`regenerate_assets_asm(project)` runs each asset's converter (cached under
+`.zxide/generated/<symbol>.bin`, keyed by source mtime/hash), resolves `"auto"`
+placements via `memlayout`, and emits `assets_generated.asm` (generated/do-not-edit
+header; one `ORG`/label/`incbin` per asset -- 48K banks map to fixed addresses, 128K uses
+sjasmplus's native `SLOT`/`PAGE` directives). Every `FrameSequence` asset also gets
+`equ` constants beside its label (`_FRAME_COUNT`, `_FRAME_STRIDE`, `font`s also
+`_FIRST_CHAR`); `tilemap` gets `_WIDTH`/`_HEIGHT` plus a comment naming its
+`tileset_symbol`, with tileset assets regenerated before the tilemaps referencing them.
+`builder.build()` calls this first; a converter failure (including a bad
+`tileset_symbol`) is a normal build-log error, never a crash. New templates bake in
+`include "assets_generated.asm"`; existing projects get a one-time idempotent append the
+first time an asset is imported.
+
+**6. Inspector integration** (`zxemu_ui/panels/inspector_view.py`): a `set_selection(...)`
+entry point wired from the project tree's selection and a new `asset_selected` signal on
+`MemoryMapView`. `bitmap` reuses `emulator_view.render_screen_rgb` via a small
+`Memory`-shaped adapter; `sprite_sheet`/`sprite_sequence` use `render_frame_rgb` with a
+frame-index scrubber; `font` uses `render_sheet_rgb` to show the whole charset at once;
+`tilemap` uses `render_tilemap_rgb` plus a field naming (and jumping to) its
+`tileset_symbol`. Everything else (`binary`/`pt3`/`beeper_sfx`) gets symbol/size/placement
+fields and a per-asset auto-locate action.
+
+**Verification**: unit tests per converter asserting exact byte output for small
+fixtures (including `sprite_sheet` grid/strip/mask variants, `sprite_sequence` ordering
+and mismatched-size rejection, `font`'s two source paths, and `tilemap`'s packing/
+nibble-packing/out-of-range/bad-reference cases); `FreeSpaceIndex` and `Project` manifest
+unit tests; one integration test building a project with imported assets through the
+real sjasmplus pipeline and diffing the resulting `.sna`; a manual pass in the running
+app (drag a bmp onto the Design-mode map, auto-locate, Build & Run, confirm render and
+Inspector preview).
+
+**Since delivered, on top of the above -- drawing sprites in zxide, not just importing them:**
+- `FrameSequence` gained an optional attribute plane (`has_attrs`): one real Spectrum
+  attribute byte (ink/paper/bright) per 8x8 cell, alongside the pixel plane, instead of
+  a sprite being plotted in one colour chosen at draw time. `bmp_convert.py`'s
+  `generate_attrs` toggle reuses the exact same colour-clash quantization `bitmap`
+  already does for the full screen, scoped to each frame.
+- A native `.zxspr.json` format (`zxemu_core/assets/native_sprite.py`) for sprites
+  *drawn* in zxide rather than imported -- plain pixels+attributes as human-readable
+  JSON, no BMP round-trip for data that never had a source image.
+  `zxemu_ui/panels/sprite_editor_view.py` is the pixel editor: ink/paper palette rows
+  (real ZX colours, normal + bright), a canvas with 8x8 attribute-cell gridlines, and
+  the key invariant that makes the "2 colours per cell" hardware limit a consequence of
+  the tool rather than a rule you could break -- **every paint action reclaims its
+  whole cell's attribute** for whatever ink/paper/bright is currently selected, so
+  there is no way to accidentally leave a third colour in a cell. Autosaves on every
+  edit, matching the rest of the asset system's "writes straight through" convention.
+  "New Sprite Asset…" (project tree context menu) creates a blank one at a chosen
+  size (8x8/16x16/custom) and frame count and opens it directly; opening an existing
+  `.zxspr.json` from the tree does the same rather than treating it as generic text.
+  `asset_build.py` emits an extra `_ATTR_OFFSET` equ for attributed frames (where the
+  attribute plane starts within each frame's stride), and Inspector/tilemap/sheet
+  previews all render true per-cell colour automatically when `has_attrs` is set.
+
+**Also since delivered -- two follow-ups the live smoke tests surfaced or suggested:**
+- **Auto-locate now avoids known hand-written code, best-effort.** The exact collision
+  hit twice in testing -- a fresh asset auto-locating to `ram2` offset 0, exactly where
+  a template's own `org $8000` begins -- is fixed for the common case. `sld.py` now
+  parses the SLD's `page` column, which turns out (checked empirically against real
+  sjasmplus output) to be the **slot** index, not a physical 128K bank. Slots 1/2 are
+  hardware-fixed on both 48K and 128K (always RAM5/RAM2, never repaged), so tracing
+  code there reliably means "this bank, always" -- `asset_build.reserved_code_ranges`
+  reads the *previous* build's SLD (if any) and reserves those addresses before
+  auto-locating. This converges over builds rather than fixing everything at once
+  (there's no way to know where code lands before a first build ever runs -- the same
+  undecidable-without-execution problem the memory-dumper backlog item already names),
+  and **128K's slot 3 is deliberately left alone**: it can hold any of 8 banks
+  depending on runtime paging the SLD has no way to see, so guessing there would be
+  false confidence, not a fix. The real, complete fix stays the originally-planned one
+  (treating a build's *entire* emitted image as occupied, not just traced instruction
+  addresses) -- this is a meaningfully-scoped step toward it, not a replacement.
+- **`beeper_sfx` playback preview.** `zxemu_core/sound/beeper_preview.py` renders a
+  `beeper_sfx` asset's tone/duration list to PCM via a standalone `Beeper` (no live
+  machine needed -- same "one frame at a time" contract the real machine drives it
+  with), and the Inspector's new "▶ Play" button pushes the result through a freshly
+  sized `AudioOutput`. (Real PT3 preview remains out of scope -- that needs an actual
+  tracker player driving the AY chip live, a separate and much larger feature.)
+- **A Beeper SFX editor**, since a raw T-state period is not a format anyone can
+  hand-author without documentation. Unlike sprites, the existing `.zxsfx` text format
+  (renamed from a plain `.sfx` to avoid colliding with other tools' generic SFX files)
+  needed no new native format -- `period,duration` pairs were already a fine storage
+  shape, just not a friendly *display* one. `zxemu_core/assets/beeper_sfx.py` gained
+  `period_to_hz`/`hz_to_period` (period is T-states between speaker flips; frequency is
+  `3500000 / (2 * period)`, the Z80 clock) and `format_beeper_sfx` (the inverse of
+  `parse_beeper_sfx`). `zxemu_ui/panels/beeper_sfx_editor_view.py` is the editor: rows
+  of Hz + frames + a remove button, "+ Tone"/"+ Rest"/"▶ Play", autosaving every edit
+  straight to the `.zxsfx` file (same convention as the sprite editor and the rest of
+  the asset system). "New Beeper SFX Asset…" (project tree) creates a blank one and
+  opens it directly; opening an existing `.zxsfx` does the same.
+- **Save Screenshot**, a button on the emulator control strip (next to Run/Pause/Step/
+  Reset), saving the current picture two ways at once into a `screenshots/` folder
+  (in the open project, or next to the app itself -- the same anchor `layout.json`
+  uses -- if none is open): a real `.scr`, the classic Spectrum screen-dump format,
+  exactly the 6912 bytes of display memory (`machine.display_memory()`, which already
+  picks the right bank on 48K/128K, shadow screen included, so it has no concept of a
+  border and never carries one) -- openable by any Spectrum-aware tool; and a `.bmp`,
+  a normal viewable image. The `.bmp` is *not* a grab of the emulator widget -- that
+  would only capture whatever size the dock happens to be scaling the picture to right
+  now -- but `EmulatorView`'s own native 320x256 `QImage` (a new `current_image()`
+  accessor), so it's always crisp at the Spectrum's real resolution, border included,
+  regardless of window size.
+
+## Milestone 5: Visual Logic (design, not yet started)
+
+*Sequenced after Milestone 4 -- actions like `draw_sprite` need assets to already exist.
+This section records the design direction; nothing here is implemented yet.*
+
+**Scope decision**: v1 is GameMaker-style linear/branching **action lists per event**,
+not a full Unreal-style typed-pin data-flow graph -- much cheaper to build and codegen on
+Z80-constrained hardware, and still expressive enough for real small games.
+
+**Runtime model**: a fixed-size **array-of-structs** entity table (AoS suits the Z80's
+`LD A,(IX+d)` addressing; no hardware multiply rules out SoA's stride math), driven by
+the existing 50Hz frame loop with **zero changes** to `zxemu_core/machine.py`/`cpu/` --
+this milestone only changes what assembly text gets generated and run inside the
+already-working frame.
+
+**IR**: one JSON file per Object (`logic/*.zxobj.json`) with events (Create / Step / Draw
+/ Key Down / Collision), each holding a linear/branching action list. v1 action
+vocabulary (8 ops): `set_var`, `if`, `move_by`, `set_border`, `play_tone` (blocking),
+`draw_sprite` (references a Phase-E asset **symbol** -- the clean dependency edge between
+the two milestones), `wait_frames` (single-pending-wait-per-object, not a real stall),
+`call_event`.
+
+**Codegen**: generate **plain sjasmplus text per action, not `LUA...ENDLUA`**. Decisive
+reason: the SLD attributes one label per emitted action, so the existing
+breakpoint/disassembly/step machinery works on generated logic code with **zero debugger
+changes**; routing through Lua would collapse everything to one source line and break
+per-action stepping.
+
+**Editor**: a new `logic_view.py` dockable panel -- a reorderable action-list widget (not
+a `QGraphicsView` node canvas; nothing in the codebase uses one today, and linear action
+lists don't need it), following the same dock/tree-open patterns as the editor.
+
+**Phased build-out** ends in a demoable vertical slice: a Phase-E-imported sprite moved
+by arrow keys via `key_down`, colliding with a second object to change the border.
 
 ---
 

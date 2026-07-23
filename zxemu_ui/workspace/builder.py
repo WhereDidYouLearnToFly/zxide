@@ -4,6 +4,10 @@ Pure and UI-free: it shells out to sjasmplus (per the app Settings and the proje
 manifest) in the project folder and returns what happened -- the command, exit
 code, combined output, and the snapshot path if one was produced. The window turns
 that into log lines and, on success, loads the snapshot.
+
+Before invoking sjasmplus, it regenerates ``assets_generated.asm`` from the project's
+imported assets (``zxemu_ui.workspace.asset_build``) -- a converter failure there is
+reported the same way an assembler error would be, never a crash.
 """
 
 from __future__ import annotations
@@ -12,6 +16,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from zxemu_ui.workspace.asset_build import AssetBuildError, regenerate_assets_asm
 from zxemu_ui.workspace.project import DEFAULT_BUILD_ARGS
 
 
@@ -35,6 +40,11 @@ def build(project, settings) -> BuildResult:
     project can differ; only the assembler *location* comes from the global
     settings (it's a per-machine install, the same for every project).
     """
+    try:
+        regenerate_assets_asm(project)
+    except AssetBuildError as exc:
+        return BuildResult([], 1, f"Asset build failed: {exc}\n", None, None)
+
     manifest = project.load_manifest()
     main = manifest.get("main", "main.asm")
     build_config = manifest.get("build", {})

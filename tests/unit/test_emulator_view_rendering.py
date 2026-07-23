@@ -197,6 +197,26 @@ def test_emulator_view_constructs_and_refreshes(qapp):
     assert view.size().height() >= FULL_HEIGHT
 
 
+def test_current_image_is_native_resolution_regardless_of_widget_size(qapp):
+    machine = FakeMachine(border_color=0)
+    view = EmulatorView(machine)
+    view.refresh()
+    view.resize(FULL_WIDTH * 3, FULL_HEIGHT * 3)  # widget scaled up; the source image must not be
+    image = view.current_image()
+    assert (image.width(), image.height()) == (FULL_WIDTH, FULL_HEIGHT)
+
+
+def test_current_image_is_a_copy_not_a_live_reference(qapp):
+    machine = FakeMachine(border_color=2)
+    view = EmulatorView(machine)
+    view.refresh()
+    first = view.current_image()
+    machine.ula.border_color = 5
+    view.refresh()
+    second = view.current_image()
+    assert first.pixel(0, 0) != second.pixel(0, 0)  # refresh() didn't mutate `first` in place
+
+
 def test_emulator_view_flash_toggles_every_16_frames(qapp):
     memory = FakeMemory()
     memory.data[bitmap_address(0, 0)] = 0b10000000

@@ -12,6 +12,13 @@ from typing import NamedTuple
 BANK_SIZE = 0x4000  # 16K
 SLOT_COUNT = 4
 
+# The display file's size and home slot -- a hardware fact (not a UI concern), so it
+# lives here rather than being duplicated between the memory-map view and asset
+# placement, both of which need to know "don't put anything in the first 6912 bytes
+# of the screen bank."
+SCREEN_BYTES = 6912  # bitmap (6144) + attributes (768)
+SCREEN_SLOT = 1      # 0x4000 lives in slot 1
+
 
 class Bank:
     """A single 16K block of memory (ROM or RAM)."""

@@ -5,13 +5,16 @@ proper sound chip. On real hardware those two signals are not "mixed" by anythin
 their voltages simply add at a resistor network on the way to the speaker. This
 package mirrors that shape:
 
-    beeper.py   The 1-bit speaker (port 0xFE bit 4). All the information in beeper
-                sound lives in the *timing* of the flips, so this is really a
-                resampler: timestamped level changes in, PCM out.
-    ay.py       The AY-3-8912: three tone channels, a noise source and an envelope
-                generator -- the 128K's synthesiser.
-    mixer.py    Sums whatever sources exist into the one stream that gets played.
-                The software stand-in for that resistor network.
+    beeper.py           The 1-bit speaker (port 0xFE bit 4). All the information in
+                        beeper sound lives in the *timing* of the flips, so this is
+                        really a resampler: timestamped level changes in, PCM out.
+    beeper_preview.py   Renders a ``beeper_sfx`` asset's tone/duration list to PCM via
+                        a standalone ``Beeper``, with no live machine -- what the
+                        Inspector's "Play" button drives.
+    ay.py               The AY-3-8912: three tone channels, a noise source and an
+                        envelope generator -- the 128K's synthesiser.
+    mixer.py            Sums whatever sources exist into the one stream that gets
+                        played. The software stand-in for that resistor network.
 
 The point of the split is that neither source knows the other exists. Both satisfy
 the same three-member contract -- ``enabled`` / ``end_frame(frame_tstates)`` /
@@ -31,6 +34,7 @@ from __future__ import annotations
 
 from zxemu_core.sound.ay import AY8912
 from zxemu_core.sound.beeper import Beeper
+from zxemu_core.sound.beeper_preview import render_tone_sequence
 from zxemu_core.sound.mixer import SoundMixer
 
-__all__ = ["AY8912", "Beeper", "SoundMixer"]
+__all__ = ["AY8912", "Beeper", "SoundMixer", "render_tone_sequence"]

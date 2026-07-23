@@ -18,7 +18,7 @@ Two pieces live here:
 
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QAction,
     QHBoxLayout,
@@ -74,6 +74,10 @@ class EmulatorStage(QWidget):
 
 class EmulatorPanel(QWidget):
     """Control strip (Run/Pause/Step/Reset) stacked above the emulator screen."""
+
+    #: Emitted when "Screenshot" is clicked -- MainWindow owns the project (and so
+    #: where a screenshot gets saved), so it does the actual saving.
+    screenshot_requested = pyqtSignal()
 
     def __init__(self, view: EmulatorView, controller: EmulatorController, parent=None):
         super().__init__(parent)
@@ -132,6 +136,10 @@ class EmulatorPanel(QWidget):
         self.reset_action.setToolTip("Reboot the machine")
         self.reset_action.triggered.connect(self.controller.reset)
 
+        self.screenshot_action = QAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Screenshot", self)
+        self.screenshot_action.setToolTip("Save a screenshot (.scr + .bmp) to the project's screenshots folder")
+        self.screenshot_action.triggered.connect(self.screenshot_requested)
+
     def _build_control_bar(self) -> QWidget:
         bar = QWidget()
         bar.setObjectName("emulatorControlBar")
@@ -141,7 +149,7 @@ class EmulatorPanel(QWidget):
         row.addStretch()
         actions = (self.run_action, self.pause_action, self.step_action,
                    self.step_over_action, self.step_out_action, self.frame_action,
-                   self.reset_action)
+                   self.reset_action, self.screenshot_action)
         for action in actions:
             button = QToolButton()
             button.setDefaultAction(action)

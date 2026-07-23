@@ -14,8 +14,14 @@ Two record types matter here:
     disassembly your *own* names, the way ``zxemu_core.debug.rom_symbols`` does for the ROM,
     and let you jump to a label instead of hunting for its address.
 
-The ``page`` column is the memory bank; it matters for 128K and is ignored for now
-(48K has a single mapping).
+The ``page`` column, checked empirically against real sjasmplus output, is actually
+the **slot index** (0-3, i.e. ``address >> 14``) the code assembled into -- not which
+physical 128K bank a ``SLOT``/``PAGE`` override targeted. That distinction matters to
+``asset_build.reserve_code_ranges``, which uses ``addresses_by_slot`` to avoid placing
+an asset on top of hand-written code: slots 1 and 2 are hardware-fixed (always RAM5 and
+RAM2, never repaged) on *both* 48K and 128K, so this data reliably identifies "occupied"
+bytes there; slot 3 on 128K can hold any of eight banks depending on runtime paging the
+SLD has no way to see, so it is deliberately left alone rather than guessed at.
 """
 
 from __future__ import annotations
@@ -42,6 +48,9 @@ class SourceMap:
         # rom_symbols does for the ROM.
         self.labels: dict[str, int] = {}
         self.addr_to_label: dict[int, str] = {}
+        # Every address a T (trace) record named as real, executed-instruction code,
+        # grouped by slot (see the module docstring on what "slot" reliably means here).
+        self.addresses_by_slot: dict[int, set[int]] = {}
 
     def label_for(self, address: int) -> str | None:
         return self.addr_to_label.get(address)
@@ -97,11 +106,13 @@ def parse(text: str, base_dir=None) -> SourceMap:
             continue
         try:
             line = int(parts[1])
+            slot = int(parts[4])
             address = int(parts[5])
         except ValueError:
             continue
         if address < 0:
             continue
+        source_map.addresses_by_slot.setdefault(slot, set()).add(address)
         path = Path(parts[0])
         if not path.is_absolute() and base is not None:
             path = base / path

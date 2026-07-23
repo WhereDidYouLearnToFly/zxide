@@ -11,6 +11,7 @@
     device zxspectrum48
 
     include "zxspectrum.asm"        ; screen / port / system-variable equates
+    include "assets_generated.asm"  ; imported assets -- see the Design-mode memory map
 
     org $8000
 

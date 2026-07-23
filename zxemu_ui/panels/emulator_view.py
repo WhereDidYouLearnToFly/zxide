@@ -271,6 +271,16 @@ class EmulatorView(QWidget):
         self._image = QImage(self._buffer, FULL_WIDTH, FULL_HEIGHT, FULL_WIDTH * BYTES_PER_PIXEL, QImage.Format_RGB32)
         self.update()
 
+    def current_image(self) -> QImage:
+        """The last-rendered frame at its native FULL_WIDTHxFULL_HEIGHT resolution.
+
+        Distinct from grabbing the widget itself, which would capture whatever size
+        the dock happens to be scaling the picture to right now -- a screenshot
+        should be crisp at the Spectrum's real resolution, not whatever arbitrary
+        size the window was when you clicked the button.
+        """
+        return self._image.copy()
+
     def focusInEvent(self, event) -> None:  # noqa: N802 (Qt override name)
         super().focusInEvent(event)
         self.update()  # repaint so the focus border turns green

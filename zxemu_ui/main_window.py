@@ -34,6 +34,8 @@ The menu bar is split by *what you are doing*, not by which code implements it:
 
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QTimer
@@ -55,6 +57,9 @@ from PyQt5.QtWidgets import (
 from zxemu_core.storage import snapshot, tape
 from zxemu_core.machine import Machine
 from zxemu_core.debug import debug_expr
+from zxemu_core.assets.manifest import AssetKind
+from zxemu_core.assets.native_sprite import NATIVE_SUFFIX, blank_sprite_data
+from zxemu_core.assets.beeper_sfx import SUFFIX as BEEPER_SFX_SUFFIX
 from zxemu_ui.workspace import builder, sld
 from zxemu_ui.controller import EmulatorController
 from zxemu_ui.editor import EditorArea
@@ -62,6 +67,8 @@ from zxemu_ui.panels.emulator_panel import EmulatorPanel
 from zxemu_ui.panels.emulator_view import EmulatorView
 from zxemu_ui import layout_store
 from zxemu_ui.panels.inspector_view import InspectorView
+from zxemu_ui.panels.sprite_editor_view import SpriteEditorView
+from zxemu_ui.panels.beeper_sfx_editor_view import BeeperSfxEditorView
 from zxemu_ui.machine_factory import build_machine, machine_model
 from zxemu_ui.panels.analysis_view import AnalysisView
 from zxemu_ui.panels.call_stack_view import CallStackView
@@ -142,6 +149,8 @@ class MainWindow(QMainWindow):
         self.registers = RegistersView(machine)
         self.memory_map = MemoryMapView(machine)
         self.inspector = InspectorView()
+        self.sprite_editor = SpriteEditorView()
+        self.beeper_sfx_editor = BeeperSfxEditorView()
         self.output_console = self._make_console()
 
         self._build_docks()
@@ -170,6 +179,9 @@ class MainWindow(QMainWindow):
         self.controller.watchpoint_hit.connect(self._on_watchpoint_hit)
         # Double-clicking an analysis result should take you to the code it names.
         self.analysis.address_activated.connect(self._disasm_goto)
+        # Clicking a placed asset in the Design-mode memory map shows it in the Inspector.
+        self.memory_map.asset_selected.connect(self._on_asset_selected)
+        self.emulator_panel.screenshot_requested.connect(self._save_screenshot)
         self.editor.breakpoints_changed.connect(self._sync_breakpoints)
         # The execution-line marker: cleared while running, shown (and moved) whenever
         # paused -- on a breakpoint, a manual pause, or after each Step.
@@ -236,8 +248,29 @@ class MainWindow(QMainWindow):
         tree.doubleClicked.connect(self._open_tree_index)
         tree.setContextMenuPolicy(Qt.CustomContextMenu)
         tree.customContextMenuRequested.connect(self._show_tree_menu)
+        # Lets a file be dragged onto the Design-mode memory map to import it as an asset.
+        tree.setDragEnabled(True)
+        tree.selectionModel().currentChanged.connect(self._on_tree_selection_changed)
         self.project_tree = tree
         return tree
+
+    def _on_tree_selection_changed(self, current, _previous) -> None:
+        """Selecting a file that matches an asset's source shows it in the Inspector."""
+        if self.project is None:
+            return
+        path = self._fs_model.filePath(current)
+        if not path:
+            return
+        try:
+            source = str(Path(path).relative_to(self.project.folder))
+        except ValueError:
+            source = path
+        self.inspector.show_path(self.project, source)
+
+    def _on_asset_selected(self, asset_id: str) -> None:
+        """A placed asset was clicked in the Design-mode memory map."""
+        if self.project is not None:
+            self.inspector.show_asset_id(self.project, asset_id)
 
     # --- project ---------------------------------------------------------------
 
@@ -247,6 +280,7 @@ class MainWindow(QMainWindow):
         self.project = Project(folder)
         self._fs_model.setRootPath(str(folder))
         self.project_tree.setRootIndex(self._fs_model.index(str(folder)))
+        self.memory_map.set_project(self.project)
         self.setWindowTitle(f"zxide — {self.project.name}")
         self.settings.set("last_project", str(folder))
         self.settings.push_recent("recent_projects", str(folder))
@@ -314,10 +348,48 @@ class MainWindow(QMainWindow):
             self._open_project(folder)
 
     def _open_tree_index(self, index) -> None:
-        """Double-click a file: open text files in the editor."""
+        """Double-click a file: sprites/SFX open in their own editor; other text files in the code editor."""
         path = self._fs_model.filePath(index)
-        if path and Path(path).is_file() and is_text_file(path):
+        if not path or not Path(path).is_file():
+            return
+        if path.lower().endswith(NATIVE_SUFFIX) and self._open_sprite_editor_for_path(path):
+            return
+        if path.lower().endswith(BEEPER_SFX_SUFFIX) and self._open_beeper_sfx_editor_for_path(path):
+            return
+        if is_text_file(path):
             self.editor.open_file(path)
+
+    def _open_sprite_editor_for_path(self, path: str) -> bool:
+        """Show ``path`` in the Sprite Editor if it's a registered asset. False if not (caller falls back)."""
+        if self.project is None:
+            return False
+        try:
+            source = str(Path(path).relative_to(self.project.folder))
+        except ValueError:
+            return False
+        entry = next((e for e in self.project.assets() if e.source == source), None)
+        if entry is None:
+            return False
+        self.sprite_editor.show_asset(self.project, entry)
+        self._sprite_editor_dock.show()
+        self._sprite_editor_dock.raise_()
+        return True
+
+    def _open_beeper_sfx_editor_for_path(self, path: str) -> bool:
+        """Show ``path`` in the Beeper SFX Editor if it's a registered asset. False if not (caller falls back)."""
+        if self.project is None:
+            return False
+        try:
+            source = str(Path(path).relative_to(self.project.folder))
+        except ValueError:
+            return False
+        entry = next((e for e in self.project.assets() if e.source == source), None)
+        if entry is None:
+            return False
+        self.beeper_sfx_editor.show_asset(self.project, entry)
+        self._beeper_sfx_editor_dock.show()
+        self._beeper_sfx_editor_dock.raise_()
+        return True
 
     def _show_tree_menu(self, pos) -> None:
         if self.project is None:
@@ -325,7 +397,87 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         menu.addAction("New File…", self._new_file)
         menu.addAction("New Folder…", self._new_folder)
+        menu.addAction("New Sprite Asset…", self._new_sprite_asset)
+        menu.addAction("New Beeper SFX Asset…", self._new_beeper_sfx_asset)
+        menu.addSeparator()
+        menu.addAction("Import Animation Sequence…", self._import_animation_sequence)
         menu.exec_(self.project_tree.viewport().mapToGlobal(pos))
+
+    def _new_sprite_asset(self) -> None:
+        """A blank sprite drawn in zxide's own editor, not imported from a file."""
+        if self.project is None:
+            return
+        size_label, ok = QInputDialog.getItem(
+            self, "New Sprite Asset", "Size:", ["8x8", "16x16", "Custom"], 0, False
+        )
+        if not ok:
+            return
+        if size_label == "Custom":
+            width, ok = QInputDialog.getInt(self, "New Sprite Asset", "Width (multiple of 8):", 8, 8, 256, 8)
+            if not ok:
+                return
+            height, ok = QInputDialog.getInt(self, "New Sprite Asset", "Height (multiple of 8):", 8, 8, 256, 8)
+            if not ok:
+                return
+        else:
+            width, height = (8, 8) if size_label == "8x8" else (16, 16)
+        frame_count, ok = QInputDialog.getInt(self, "New Sprite Asset", "Frame count:", 1, 1, 64, 1)
+        if not ok:
+            return
+        name, ok = QInputDialog.getText(self, "New Sprite Asset", "Name:", text="sprite")
+        if not ok or not name.strip():
+            return
+
+        symbol = name.strip()
+        path = self._target_dir() / f"{symbol}{NATIVE_SUFFIX}"
+        path.write_text(json.dumps(blank_sprite_data(width, height, frame_count), indent=2), encoding="utf-8")
+        entry = self.project.add_asset(str(path.relative_to(self.project.folder)), AssetKind.SPRITE_SHEET, symbol=symbol)
+
+        self.sprite_editor.show_asset(self.project, entry)
+        self._sprite_editor_dock.show()
+        self._sprite_editor_dock.raise_()
+        self.memory_map.refresh()
+
+    def _new_beeper_sfx_asset(self) -> None:
+        """A blank beeper sound effect built in zxide's own editor, not hand-typed."""
+        if self.project is None:
+            return
+        name, ok = QInputDialog.getText(self, "New Beeper SFX Asset", "Name:", text="sfx")
+        if not ok or not name.strip():
+            return
+
+        symbol = name.strip()
+        path = self._target_dir() / f"{symbol}{BEEPER_SFX_SUFFIX}"
+        path.write_text("", encoding="utf-8")  # empty -- add tones/rests in the editor
+        entry = self.project.add_asset(str(path.relative_to(self.project.folder)), AssetKind.BEEPER_SFX, symbol=symbol)
+
+        self.beeper_sfx_editor.show_asset(self.project, entry)
+        self._beeper_sfx_editor_dock.show()
+        self._beeper_sfx_editor_dock.raise_()
+        self.memory_map.refresh()
+
+    def _import_animation_sequence(self) -> None:
+        """A sprite_sequence asset: several individually-drawn frame images, one file each.
+
+        Unlike a single dropped file (handled by the memory map's own drag-drop), this
+        has no single filename to derive a symbol from, so it asks for one up front.
+        """
+        paths, _filter = QFileDialog.getOpenFileNames(
+            self, "Import Animation Sequence", str(self._target_dir()), "Bitmap images (*.bmp)"
+        )
+        if not paths:
+            return
+        symbol, ok = QInputDialog.getText(self, "Import Animation Sequence", "Symbol name:")
+        if not ok or not symbol.strip():
+            return
+        sources = []
+        for path in paths:
+            try:
+                sources.append(str(Path(path).relative_to(self.project.folder)))
+            except ValueError:
+                sources.append(path)
+        self.project.add_asset(sources, AssetKind.SPRITE_SEQUENCE, symbol=symbol.strip())
+        self.memory_map.refresh()
 
     def _target_dir(self) -> Path:
         """Where a new file/folder goes: the selected folder (or a file's parent)."""
@@ -640,6 +792,23 @@ class MainWindow(QMainWindow):
         self._analysis_dock.resize(520, 400)
         self._analysis_dock.hide()
 
+        # Sprite Editor: opened on demand (New Sprite Asset, or opening a .zxspr.json),
+        # so it starts floating and hidden like the other on-demand tools above.
+        self._sprite_editor_dock = self._make_dock("Sprite Editor", self.sprite_editor, "spriteEditorDock")
+        self.addDockWidget(Qt.RightDockWidgetArea, self._sprite_editor_dock)
+        self._sprite_editor_dock.setFloating(True)
+        self._sprite_editor_dock.resize(420, 520)
+        self._sprite_editor_dock.hide()
+
+        # Beeper SFX Editor: same on-demand pattern as the Sprite Editor above.
+        self._beeper_sfx_editor_dock = self._make_dock(
+            "Beeper SFX Editor", self.beeper_sfx_editor, "beeperSfxEditorDock"
+        )
+        self.addDockWidget(Qt.RightDockWidgetArea, self._beeper_sfx_editor_dock)
+        self._beeper_sfx_editor_dock.setFloating(True)
+        self._beeper_sfx_editor_dock.resize(420, 360)
+        self._beeper_sfx_editor_dock.hide()
+
         # Full-width build/output console along the bottom.
         self._output_dock = self._make_dock("Output", self.output_console, "outputDock")
         self.addDockWidget(Qt.BottomDockWidgetArea, self._output_dock)
@@ -648,7 +817,7 @@ class MainWindow(QMainWindow):
             self._project_dock, self._inspector_dock, self._emulator_dock,
             self._memory_dock, self._registers_dock, self._memmap_dock,
             self._disasm_dock, self._callstack_dock, self._analysis_dock,
-            self._output_dock,
+            self._sprite_editor_dock, self._beeper_sfx_editor_dock, self._output_dock,
         ]
 
     # --- menu -----------------------------------------------------------------
@@ -1135,3 +1304,31 @@ class MainWindow(QMainWindow):
     def _log(self, message: str) -> None:
         """Append a line to the Output console."""
         self.output_console.appendPlainText(message)
+
+    def _save_screenshot(self) -> None:
+        """Save the current screen as both a real .scr and a viewable .bmp.
+
+        The two capture the picture two different ways on purpose: .scr is the
+        classic Spectrum screen-dump format -- exactly the 6912 bytes of display
+        memory (``machine.display_memory()``, which already picks the right bank on
+        both 48K and 128K, shadow screen included), openable by any Spectrum-aware
+        tool -- and it has no concept of a border, so it never carries one. .bmp is
+        a normal image anyone can view anywhere, taken from the view's own native
+        320x256 image (border included) rather than a grab of the widget itself,
+        which would only capture whatever size the dock happens to be scaling the
+        picture to right now.
+        """
+        # Falls back to the app's own folder (the same anchor layout.json uses) when no
+        # project is open -- e.g. after loading a .sna directly rather than a project.
+        folder = self.project.folder if self.project is not None else Path(__file__).resolve().parent.parent
+        screenshots_dir = folder / "screenshots"
+        screenshots_dir.mkdir(exist_ok=True)
+        base = screenshots_dir / f"screenshot_{datetime.now():%Y%m%d_%H%M%S}"
+
+        scr_path = base.with_suffix(".scr")
+        scr_path.write_bytes(bytes(self.machine.display_memory()[:6912]))
+
+        bmp_path = base.with_suffix(".bmp")
+        self.view.current_image().save(str(bmp_path), "BMP")
+
+        self._log(f"Saved screenshot: {scr_path.name}, {bmp_path.name}")
