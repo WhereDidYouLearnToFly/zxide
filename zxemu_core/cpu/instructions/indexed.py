@@ -9,6 +9,12 @@ to BASE_TABLE otherwise.
 Which index register is active (IX vs IY) is read at runtime from
 cpu._idx_pair / cpu._idx_hi / cpu._idx_lo, set by Z80._step_indexed, so one
 table serves both prefixes. Mnemonics below are written with IX for brevity.
+
+Timing note: the ``(IX+d)`` forms are not just "the (HL) form with a different
+register" -- the CPU has to *add* the displacement before it can address memory,
+and those extra internal T-states are what makes indexed addressing the slow way
+to reach memory on a Z80. ``_idx_addr`` below is where that cost is charged; see
+its comment for the per-instruction breakdown.
 """
 
 from __future__ import annotations
@@ -18,7 +24,23 @@ from ._dispatch import indexed, signed8
 from .arith8 import ALU_OPS
 
 
-def _idx_addr(cpu, displacement: int) -> int:
+# Forming (IX+d) is real work for the Z80: after reading the displacement it spends
+# internal (non-bus) T-states adding it to the index register before the address can
+# go out. Those cycles are invisible in the instruction's byte encoding but very much
+# audible -- code that times a loop by instruction cycles (beeper music, tape loaders,
+# raster effects) runs measurably fast without them.
+#
+# Most (IX+d) forms pay 5. LD (IX+d),n is the exception: its immediate operand is
+# fetched *while* the address is being computed, so only 2 internal states are left
+# over. (DDCB/FDCB builds its own address in indexed_bit.execute_ddcb and already
+# accounts for its timing there.)
+INDEX_CALC_TSTATES = 5
+INDEX_CALC_TSTATES_LD_N = 2
+
+
+def _idx_addr(cpu, displacement: int, internal: int = INDEX_CALC_TSTATES) -> int:
+    """(IX/IY + d), billing the CPU's internal address-calculation delay."""
+    cpu.add_t_states(internal)
     return (getattr(cpu.regs, cpu._idx_pair) + displacement) & 0xFFFF
 
 
@@ -495,7 +517,7 @@ def dec_memidx(cpu):
 def ld_memidx_n(cpu):
     "LD (IX+d),n"
     d = signed8(cpu.fetch_byte())
-    addr = _idx_addr(cpu, d)
+    addr = _idx_addr(cpu, d, INDEX_CALC_TSTATES_LD_N)  # operand fetch overlaps the calc
     n = cpu.fetch_byte()
     cpu.write_mem(addr, n)
 

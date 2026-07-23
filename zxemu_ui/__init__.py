@@ -31,6 +31,7 @@ it visible and interactive:
     inspector_view.py     Details of the selected asset/region (stub for now).
     main_window.py    The IDE shell: a Visual-Studio-style dock layout with the
                       editor central and the emulator + debug panels as docks.
+    layout_store.py   Saves/restores that dock layout to a readable layout.json.
     theme.py          Applies the dark Fusion palette + fonts used across the IDE.
 
 Keeping the UI separate from the core is what lets the same emulator run

@@ -66,6 +66,17 @@ class Project:
         """The machine model ("48k"/"128k"). Defaults to 48K for older manifests."""
         return self.load_manifest().get("model", DEFAULT_MODEL)
 
+    def set_model(self, model: str) -> None:
+        """Record a new machine model in the manifest, leaving everything else intact.
+
+        Switching model from the Model menu writes through to here, so the choice
+        survives closing and reopening the project rather than silently reverting to
+        whatever the manifest still said.
+        """
+        manifest = self.load_manifest()
+        manifest["model"] = model
+        self.save_manifest(manifest)
+
     def load_manifest(self) -> dict:
         try:
             return json.loads(self.manifest_path.read_text(encoding="utf-8"))

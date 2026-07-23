@@ -6,7 +6,8 @@ import math
 
 import pytest
 
-from zxemu_core.audio import Beeper, SoundMixer
+from zxemu_core.beeper import Beeper
+from zxemu_core.mixer import SoundMixer
 from zxemu_core.ay import AY8912
 
 FRAME_128 = 70908  # one 128K frame, matching Machine128

@@ -69,6 +69,11 @@ overview. When the IDE grows, `main.py` becomes the IDE shell and
   PC by 2 to repeat, like real hardware) — *changed from the old atomic loop*, which
   overshot the frame by ~1.2M T-states on the 128K boot RAM-clear and desynced audio.
   Now each iteration is correctly billed 21/16 T-states and the frame loop keeps control.
+- **Beeper models one bit, not two.** Real hardware sums port 0xFE bit 4 (EAR) *and*
+  bit 3 (MIC) into the speaker through different resistors, giving four output levels;
+  `ula.py` keeps only bit 4, so we produce two. Engines that use MIC for extra dynamic
+  range will sound flatter here than on hardware. (Checked against Danterrifik, which
+  never sets MIC — so this is not the cause of the outstanding artefact there.)
 - **Timing** is functional, not cycle-accurate: contention is modelled/tested
   but not applied to every memory access; no per-scanline border effects.
 - **Not a git repo yet** (user is handling version control separately).
@@ -93,25 +98,43 @@ the visual drag-drop memory management.
 **Milestone 3 — hardware & audio** (core work; make the machine complete):
 
 1. **Beeper (1-bit sound)** ✅ *done* — port 0xFE bit 4. Two-layer audio pipeline:
-   `zxemu_core/audio.py` (`Beeper`: timestamped speaker flips → float PCM, duty-
+   `zxemu_core/beeper.py` (`Beeper`: timestamped speaker flips → float PCM, duty-
    cycle resample + DC blocker) and `zxemu_ui/audio_output.py` (`AudioOutput`:
    QtMultimedia 16-bit push sink, fails quiet). Machine timestamps flips at the
    frame T-state; controller pushes samples per tick, mutes on pause/debug.
+   Sound sources live one-per-file (`beeper.py`, `ay.py`) and are summed by
+   `mixer.py` (`SoundMixer`) — the software stand-in for the resistor network that
+   does the mixing in hardware. Sources share a three-member contract (`enabled` /
+   `end_frame` / `take_samples`) and know nothing about each other.
 2. **128K machine + AY-3-8912** ✅ *done* — `Machine128(Machine)` on the existing paging
    abstraction: port 0x7FFD (RAM→slot3, ROM select, screen bank 5/7, paging lock),
    the two bundled 128 ROMs, 70908-T frame. `create_128k_memory` builds the 8-RAM +
    2-ROM pool. Shadow screen via `machine.display_memory()`. 128K `.sna` load added
    (`load_sna_128k`). The **AY-3-8912** (`zxemu_core/ay.py`: 3 tone + noise + 10-shape
-   envelope, log amplitude table) mixes into the beeper stream through a new
+   envelope, log amplitude table) mixes into the beeper stream through
    `SoundMixer` (`machine.audio`). Machine model is per-project (`zxide.json` `model`
    field); chosen at New Project, swapped on project open via `MainWindow.set_machine`
    / `controller.set_machine` / `machine_factory.build_machine`. Memory-map pane shows
    bank identities + a live 0x7FFD readout. `project128` sjasmplus template added.
    fuse (E:/github/fuse) was the behavioural reference (reference-only, GPLv2).
-3. **TAP support** *(next)* — load .tap tapes (ROM-trap fast load and/or edge replay via
-   port 0xFE bit 6).
+3. **TAP support** — *fast (ROM-trap) load done*. `zxemu_core/tape.py` parses `.tap`
+   into blocks (`parse_tap`/`TapeBlock`/`TapeDeck`) and `fast_load()` emulates the ROM's
+   `LD-BYTES` (0x0556) by delivering a whole block at once. Hooked via a generic
+   `Z80.set_trap(pc, handler)` (near-zero-cost: one int compare per step) and
+   `Machine._tape_trap`, which guards on a `LD-BYTES` byte signature so it fires on the
+   48K ROM and only when the 128K's 48-BASIC ROM (ROM1) is paged — correct for both
+   models. UI: a dedicated **Build ▸ Load Tape…** item (beside Load Snapshot…) inserts a
+   `.tap` (insert + reset + log; dev then types `LOAD ""`); also on Load-Recent. Fast
+   load is always on for now — the core flag `Machine.fast_load_enabled` exists but there
+   is deliberately **no UI toggle** yet, because with edge replay deferred "off" would
+   just hang the ROM (it would poll for tape pulses that nothing generates); reintroduce
+   the toggle when edge replay lands. Verified end-to-end: a real 48K boot + `LOAD ""`
+   loads a BASIC program into PROG with no error. **Deferred:** authentic edge-level replay
+   (pilot/sync/data pulses on port 0xFE bit 6 → loading stripes + tape sound); the block
+   model is the shared foundation for it.
 
-Order: beeper ✅ → 128K+AY ✅ → TAP, then back to Phase E (visual memory management).
+Order: beeper ✅ → 128K+AY ✅ → TAP fast-load ✅ → (optional TAP edge replay) → then
+Phase E (visual memory management).
 
 Still-optional backlog: full zexall pass under PyPy; the 3 undocumented-flag
 items; disassembly/watchpoint debugger polish.

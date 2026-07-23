@@ -29,6 +29,13 @@ class Z80:
         self._idx_pair = "ix"
         self._idx_hi = "ixh"
         self._idx_lo = "ixl"
+        # Execution trap: when PC reaches _trap_pc, step() calls _trap_handler instead of
+        # fetching. Used to intercept a ROM routine (tape fast-load traps LD-BYTES). Kept
+        # here, generic, so the CPU stays machine-agnostic; the machine supplies meaning.
+        # Disabled by default (-1 never matches a real PC); one int compare per step is
+        # its only cost when unused, so the hot loop is unaffected.
+        self._trap_pc = -1
+        self._trap_handler = None
 
     def reset(self) -> None:
         self.regs = Registers()
@@ -38,6 +45,18 @@ class Z80:
 
     def add_t_states(self, count: int) -> None:
         self.t_states += count
+
+    def set_trap(self, pc: int | None, handler) -> None:
+        """Install (or clear) an execution trap fired when the CPU reaches ``pc``.
+
+        ``handler()`` runs in place of the instruction at ``pc``; it does whatever the
+        trap is for and moves PC itself (e.g. a RET), returning the T-states to bill, or
+        None to decline -- in which case the real instruction executes normally. Pass
+        ``handler=None`` to remove the trap. Only one trap address is supported, which is
+        all tape fast-loading needs.
+        """
+        self._trap_pc = pc if handler is not None else -1
+        self._trap_handler = handler
 
     def read_opcode(self) -> int:
         """Fetch a byte via an M1 (opcode fetch) cycle: 4 T-states, increments R."""
@@ -109,6 +128,10 @@ class Z80:
 
     def step(self) -> int:
         """Execute one instruction, returning the T-states it consumed."""
+        if self.regs.pc == self._trap_pc:
+            billed = self._trap_handler()
+            if billed is not None:  # None = the handler declined; fall through to real execution
+                return billed
         start_t_states = self.t_states
         if self.halted:
             # While halted the CPU executes internal NOPs (refreshing R, burning

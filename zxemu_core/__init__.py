@@ -19,17 +19,24 @@ The parts, and how they fit together:
     ula.py       The ULA chip: video/frame timing, the border colour, the 1-bit
                  speaker, and the I/O port (0xFE) the keyboard and border share.
     keyboard.py  The Spectrum's 8x5 key matrix, which the ULA reads.
-    audio.py     Turns the beeper's 1-bit speaker flips into PCM sound, plus the
-                 SoundMixer that blends the beeper with the 128K's AY chip.
+    beeper.py    The 1-bit speaker: turns timestamped port-0xFE flips into PCM.
     ay.py        The AY-3-8912 sound chip -- three tone voices, noise and an
                  envelope generator -- the 128K's synthesiser.
+    mixer.py     Sums the sound sources above into the one stream that gets played,
+                 standing in for the resistor network that does the same job in
+                 hardware. Each sound chip gets its own file, like ula/keyboard.
     machine.py   Wires the pieces above into a whole "Spectrum" and runs it one
                  frame (1/50th of a second) at a time. ``Machine`` is the 48K;
                  ``Machine128`` subclasses it with 0x7FFD bank paging and the AY.
     snapshot.py  Loads .sna memory-snapshot files (48K and 128K) into a machine.
+    tape.py      Reads .tap cassette files into blocks, and fast-loads them by
+                 trapping the ROM's own tape routine -- so ``LOAD ""`` completes
+                 instantly instead of playing a tape in real time.
     disassembler.py  Turns bytes back into Z80 mnemonics, for the debugger.
 
 Learning path: read machine.py first (the big picture / how a frame runs), then
 dive into cpu/ (start at cpu/z80.py), then memory / ula / keyboard, and finally
-audio / ay for how sound is made.
+beeper / ay / mixer for how sound is made. snapshot.py and tape.py are best read last:
+both are about getting *someone else's* program into the machine, and tape.py in
+particular only makes sense once you know how the CPU and ROM interact.
 """

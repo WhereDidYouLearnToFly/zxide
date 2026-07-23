@@ -14,6 +14,53 @@ def load(cpu: Z80, address: int, data: bytes) -> None:
         cpu.memory.write_byte(address + offset, byte & 0xFF)
 
 
+"""Documented Z80 T-state costs for the (IX+d)/(IY+d) forms.
+
+Regression tests. These all used to run short because forming (IX+d) was treated
+as free -- the real CPU spends internal T-states adding the displacement to the
+index register. Nothing depends on the *result* of those cycles, so only timing
+catches it, and code that paces itself by instruction cycles (beeper music, tape
+loaders, raster effects) is what feels the difference.
+"""
+INDEXED_TIMINGS = [
+    ([0xDD, 0x46, 0x01], 19, "LD B,(IX+d)"),
+    ([0xDD, 0x7E, 0x01], 19, "LD A,(IX+d)"),
+    ([0xDD, 0x70, 0x01], 19, "LD (IX+d),B"),
+    ([0xDD, 0x86, 0x01], 19, "ADD A,(IX+d)"),
+    ([0xDD, 0xBE, 0x01], 19, "CP (IX+d)"),
+    ([0xDD, 0x34, 0x01], 23, "INC (IX+d)"),
+    ([0xDD, 0x35, 0x01], 23, "DEC (IX+d)"),
+    ([0xDD, 0x36, 0x01, 0x99], 19, "LD (IX+d),n"),
+    ([0xDD, 0xCB, 0x01, 0x46], 20, "BIT 0,(IX+d)"),
+    ([0xDD, 0xCB, 0x01, 0x86], 23, "RES 0,(IX+d)"),
+    ([0xDD, 0xCB, 0x01, 0xC6], 23, "SET 0,(IX+d)"),
+    ([0xDD, 0xCB, 0x01, 0x06], 23, "RLC (IX+d)"),
+    # Index-register forms with no memory operand pay no address calculation.
+    ([0xDD, 0x7C], 8, "LD A,IXH"),
+    ([0xDD, 0x19], 15, "ADD IX,DE"),
+    ([0xDD, 0x23], 10, "INC IX"),
+]
+
+
+def test_indexed_instruction_timings():
+    for encoding, expected, mnemonic in INDEXED_TIMINGS:
+        cpu = make_cpu()
+        cpu.regs.ix = 0x4000
+        load(cpu, 0, encoding)
+        used = cpu.step()
+        assert used == expected, f"{mnemonic}: {used}T, expected {expected}T"
+
+
+def test_iy_forms_cost_the_same_as_ix():
+    """The FD prefix is the DD prefix with a different register -- identical timing."""
+    for encoding, expected, mnemonic in INDEXED_TIMINGS:
+        cpu = make_cpu()
+        cpu.regs.iy = 0x4000
+        load(cpu, 0, [0xFD] + encoding[1:])
+        used = cpu.step()
+        assert used == expected, f"{mnemonic.replace('IX', 'IY')}: {used}T, expected {expected}T"
+
+
 def test_ld_ix_nnnn():
     cpu = make_cpu()
     load(cpu, 0, [0xDD, 0x21, 0xCD, 0xAB])  # LD IX,0xABCD

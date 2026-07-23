@@ -11,7 +11,7 @@ Instrument AY-3-8912 -- a real synthesiser the CPU only has to *configure*. It h
 
 The chip is driven through 16 registers, written via two IO ports (0xFFFD selects a
 register, 0xBFFD writes it). All the musicality lives in those register values and
-*when* they change -- so, exactly like the :class:`~zxemu_core.audio.Beeper`, this
+*when* they change -- so, exactly like the :class:`~zxemu_core.beeper.Beeper`, this
 class records register writes stamped with their frame T-state and renders the whole
 frame at once, keeping the AY and beeper aligned sample-for-sample in the mixer.
 
@@ -57,7 +57,7 @@ TONE_TICKS_PER_STEP = 2
 class AY8912:
     """An AY-3-8912 that turns timestamped register writes into mono float PCM.
 
-    Mirrors :class:`~zxemu_core.audio.Beeper`: an ``enabled`` gate (off = free),
+    Mirrors :class:`~zxemu_core.beeper.Beeper`: an ``enabled`` gate (off = free),
     ``end_frame(frame_tstates)`` renders one frame, ``take_samples()`` drains it.
     The register file is readable immediately (games poll it); the *audible* effect
     of a write is applied at its recorded T-state when the frame is rendered.

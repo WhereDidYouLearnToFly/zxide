@@ -12,9 +12,17 @@ docking model"):
 
 The window owns no timing: an ``EmulatorController`` drives the machine and the
 window merely wires its signals to the views (repaint the screen, refresh the live
-debug panels, update the status bar). File/View menus, a monospace console, an
-adjustable interface scale, and layout reset round it out. The Project tree and
-Output console are still stubs, filled in by the project system and build pipeline.
+debug panels, update the status bar).
+
+The menu bar is split by *what you are doing*, not by which code implements it:
+
+  * **File** -- projects and source files (new/open/save, recent projects),
+  * **Build** -- turning *your* project into a running program (sjasmplus, then
+    load the snapshot it produced), with or without breakpoints,
+  * **Load** -- running *somebody else's* program: a .sna snapshot or a .tap tape,
+  * **Model** -- which machine is emulated (48K/128K). A project declares a target
+    model and opening one switches to it, but the machine isn't owned by a project,
+  * **View** -- panel visibility, interface scale, and the saved dock layout.
 """
 
 from __future__ import annotations
@@ -37,7 +45,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from zxemu_core import snapshot
+from zxemu_core import snapshot, tape
 from zxemu_core.machine import Machine
 from zxemu_ui import builder, sld
 from zxemu_ui.controller import EmulatorController
@@ -60,6 +68,14 @@ INTERFACE_SCALE_CHOICES = (
     ("100%", 1.0), ("125%", 1.25), ("150%", 1.5), ("175%", 1.75), ("200%", 2.0),
 )
 
+# Machine models, as (menu label, model string). One list drives both the Model menu
+# and the New Project prompt, so the two can't drift apart. The model strings are the
+# ones stored in zxide.json and understood by machine_factory.build_machine.
+MACHINE_MODEL_CHOICES = (
+    ("ZX Spectrum 48K", "48k"),
+    ("ZX Spectrum 128K", "128k"),
+)
+
 
 class MainWindow(QMainWindow):
     """The IDE window: central editor, locked Project dock, floatable everything else."""
@@ -80,6 +96,10 @@ class MainWindow(QMainWindow):
         self.project: Project | None = None
         self._source_map = None  # line<->address map from the last build (for breakpoints)
         self._debugging = False  # True after Build & Debug (breakpoints active)
+        # Model-menu radio items, keyed by model string. Populated by _build_menu and
+        # kept in sync by set_machine, so the tick always follows the *live* machine --
+        # whether it changed from the menu or from opening a project.
+        self._model_actions: dict[str, QAction] = {}
 
         # Give the left/right dock areas the corners, so the side columns (Project +
         # Inspector, and the emulator/registers/memory-map stack) run the full height
@@ -224,24 +244,33 @@ class MainWindow(QMainWindow):
         self.registers.machine = machine
         self.memory_map.machine = machine
         self.controller.set_machine(machine)
+        # Keep the Model menu's tick on the machine that's actually running, however the
+        # switch was triggered (menu, or opening a project that targets the other model).
+        action = self._model_actions.get(machine_model(machine))
+        if action is not None:
+            action.setChecked(True)
         self.view.refresh()
         self.registers.refresh()
         self.memory_cells.refresh(force=True)
         self.memory_map.refresh()
 
     def _new_project(self) -> None:
+        # Model first: it decides which starter template is scaffolded into the folder,
+        # so asking for it up front means the folder picker is the last thing standing
+        # between you and a created project -- and cancelling costs you nothing.
+        labels = [label for label, _model in MACHINE_MODEL_CHOICES]
+        model_label, ok = QInputDialog.getItem(
+            self, "New Project", "Target machine:", labels, 0, False
+        )
+        if not ok:
+            return
+        model = dict((label, m) for label, m in MACHINE_MODEL_CHOICES)[model_label]
         folder = QFileDialog.getExistingDirectory(self, "Choose a folder for the new project")
         if not folder:
             return
         name, ok = QInputDialog.getText(self, "New Project", "Project name:", text=Path(folder).name)
         if not ok or not name.strip():
             return
-        model_label, ok = QInputDialog.getItem(
-            self, "Target machine", "Machine model:", ["48K", "128K"], 0, False
-        )
-        if not ok:
-            return
-        model = "128k" if model_label == "128K" else "48k"
         project = Project.create(folder, name.strip(), model)
         self._open_project(folder)
         main = project.folder / project.load_manifest().get("main", "main.asm")
@@ -382,6 +411,12 @@ class MainWindow(QMainWindow):
         if path:
             self._load_media(path)
 
+    def _load_tape_dialog(self) -> None:
+        start_dir = str(self.project.folder) if self.project else ""
+        path, _ = QFileDialog.getOpenFileName(self, "Load Tape", start_dir, "Tapes (*.tap)")
+        if path:
+            self._load_media(path)
+
     def _load_media(self, path) -> bool:
         """Load a user-chosen media file (snapshot/tape) and record it in Load Recent.
 
@@ -398,8 +433,7 @@ class MainWindow(QMainWindow):
         if suffix == ".sna":
             ok = self._load_snapshot(path)
         elif suffix == ".tap":
-            self._log("Tape (.tap) loading isn't supported yet.")
-            ok = False
+            ok = self._load_tape(path)
         else:
             self._log(f"Don't know how to load {path.name}.")
             ok = False
@@ -422,6 +456,37 @@ class MainWindow(QMainWindow):
         self.memory_map.refresh()
         self.view.setFocus()  # you just loaded something to run -- send the keyboard here
         self._log(f"Loaded {path.name} — running.")
+        return True
+
+    def _load_tape(self, path) -> bool:
+        """Insert a .tap into the deck and reset, ready for the ROM to LOAD it.
+
+        Unlike a snapshot (which *is* a running state), a tape has to be loaded by the
+        machine itself. We reset to a clean ROM prompt, insert the tape, and -- with
+        fast load on -- the LD-BYTES trap delivers each block instantly the moment the
+        ROM asks for it. The dev just kicks it off with the usual LOAD command.
+        """
+        path = Path(path)
+        try:
+            deck = tape.TapeDeck(tape.parse_tap(path.read_bytes()))
+        except (ValueError, OSError) as error:
+            self._log(f"Could not load {path.name}: {error}")
+            return False
+
+        self.controller.reset()             # clean power-on state before inserting
+        self.machine.insert_tape(deck)
+        self.controller.set_running(True)
+        self.view.refresh()
+        self.view.setFocus()
+
+        blocks = deck.blocks
+        self._log(f"Inserted {path.name} — {len(blocks)} block(s):")
+        for block in blocks:
+            self._log(f"    {block.describe()}")
+        if machine_model(self.machine) == "128k":
+            self._log('Choose "128 BASIC" (or "48 BASIC"), then type LOAD "" ⏎ to load.')
+        else:
+            self._log('Type LOAD "" ⏎ (the J key gives LOAD) to load.')
         return True
 
     # --- recent projects / files -----------------------------------------------
@@ -557,14 +622,23 @@ class MainWindow(QMainWindow):
         run_action.setToolTip("Build and run without debugging (ignore breakpoints)")
         run_action.triggered.connect(self._build_and_run)
         build_menu.addAction(run_action)
-        build_menu.addSeparator()
+
+        # Loading someone else's snapshot/tape has nothing to do with building your own
+        # project, so it gets its own menu rather than sharing Build's.
+        load_menu = self.menuBar().addMenu("&Load")
         load_snapshot = QAction("Load Snapshot…", self)
         load_snapshot.triggered.connect(self._load_snapshot_dialog)
-        build_menu.addAction(load_snapshot)
+        load_menu.addAction(load_snapshot)
+        load_tape = QAction("Load Tape…", self)
+        load_tape.setToolTip('Insert a .tap tape, then LOAD "" from BASIC')
+        load_tape.triggered.connect(self._load_tape_dialog)
+        load_menu.addAction(load_tape)
         # Load Recent: recently loaded snapshots/tapes, rebuilt each time it's shown.
-        self._load_recent_menu = build_menu.addMenu("Load &Recent")
+        self._load_recent_menu = load_menu.addMenu("Load &Recent")
         self._load_recent_menu.aboutToShow.connect(self._populate_load_recent)
         self._populate_load_recent()
+
+        self._build_model_menu()
 
         view_menu = self.menuBar().addMenu("&View")
         self._build_interface_scale_menu(view_menu)
@@ -587,6 +661,37 @@ class MainWindow(QMainWindow):
         # Top-level "Settings" in the menu bar, alongside File and View (opens directly).
         settings_action = self.menuBar().addAction("Settings")
         settings_action.triggered.connect(self._open_settings)
+
+    def _build_model_menu(self) -> None:
+        """Top-level Model menu: switch the emulated machine at any time.
+
+        A project still declares its target model (and opening one switches to it), but
+        the machine is not *owned* by the project -- you often want to try a tape or a
+        snapshot on the other model without creating a project at all. These are radio
+        items reflecting the live machine; see ``_switch_model``.
+        """
+        model_menu = self.menuBar().addMenu("&Model")
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for label, model in MACHINE_MODEL_CHOICES:
+            action = QAction(label, self, checkable=True)
+            action.setChecked(model == machine_model(self.machine))
+            action.triggered.connect(lambda _checked, m=model: self._switch_model(m))
+            group.addAction(action)
+            model_menu.addAction(action)
+            self._model_actions[model] = action
+
+    def _switch_model(self, model: str) -> None:
+        """Boot the other machine model, and remember it in the open project (if any)."""
+        if model == machine_model(self.machine):
+            return  # already there -- re-ticking the current item shouldn't reset the machine
+        self.set_machine(build_machine(model))
+        self._log(f"Switched to the {model.upper()} machine.")
+        # Persist to the project so the choice sticks; otherwise reopening the project
+        # would silently switch back, and its build template would no longer match.
+        if self.project is not None:
+            self.project.set_model(model)
+            self._log(f"Project target model set to {model.upper()}.")
 
     def _build_interface_scale_menu(self, view_menu) -> None:
         """A checkable group scaling all UI text, for readability on large displays."""

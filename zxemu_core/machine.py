@@ -4,18 +4,32 @@
 paging (port 0x7FFD) and AY sound chip. The 48K wiring is factored into ``_wire()``
 so the 128K subclass can build a different memory map first and then reuse the exact
 same CPU/ULA/sound plumbing.
+
+The machine is also where the pieces that need a *whole* Spectrum live, because no
+single chip owns them:
+
+  * **audio timestamps** -- the ULA records the speaker bit, but only the machine
+    knows the frame clock, so it is the machine that timestamps each flip,
+  * **the tape trap** -- fast tape loading means intercepting the ROM at a specific
+    address, which needs the CPU and the memory map together (see ``_tape_trap``).
 """
 
 from __future__ import annotations
 
 from typing import NamedTuple
 
-from .audio import Beeper, SoundMixer
+from . import tape
 from .ay import AY8912
+from .beeper import Beeper
+from .mixer import SoundMixer
 from .cpu.z80 import Z80
 from .keyboard import Keyboard
 from .memory import Memory, create_48k_memory, create_128k_memory
 from .ula import FRAME_TSTATES, FRAME_TSTATES_128K, Ula
+
+# The trap replaces the whole (real-time) LD-BYTES routine, so its exact T-state cost is
+# fictional; we bill a token amount just to advance the frame clock past the "instruction".
+TAPE_TRAP_TSTATES = 16
 
 
 class Machine:
@@ -46,6 +60,12 @@ class Machine:
         self.cpu.io_read = self._io_read
         self.cpu.io_write = self._io_write
         self.frame_t_state = 0
+        # Tape: a TapeDeck when a .tap is inserted, else None. Fast loading is on by
+        # default; the trap below only acts when a tape is present, so it's inert until
+        # then. Both models get this identically (the 48K and 128K share LD-BYTES).
+        self.tape: tape.TapeDeck | None = None
+        self.fast_load_enabled = True
+        self.cpu.set_trap(tape.LD_BYTES_ENTRY, self._tape_trap)
         self.reset()
 
     def reset(self) -> None:
@@ -62,6 +82,32 @@ class Machine:
     def paging_state(self):
         """Live 0x7FFD paging state for the memory-map view; None means 'unpaged' (48K)."""
         return None
+
+    # --- tape -----------------------------------------------------------------
+
+    def insert_tape(self, deck: tape.TapeDeck | None) -> None:
+        """Put a tape in the deck (or None to eject); rewound to its first block."""
+        self.tape = deck
+        if deck is not None:
+            deck.rewind()
+
+    def eject_tape(self) -> None:
+        self.tape = None
+
+    def _tape_trap(self):
+        """CPU trap at LD-BYTES: fast-load the next block, or decline (return None).
+
+        Declines -- letting the ROM run the routine for real -- when there's no tape or
+        fast loading is off. It also verifies the bytes at the trap address really are
+        LD-BYTES (``INC D`` / ``EX AF,AF'``): on the 128K that is only true while the
+        48-BASIC ROM is paged, so the trap never misfires inside the 128 menu ROM, and
+        on the 48K it is a cheap sanity guard. Returns the billed T-states when it acts.
+        """
+        if self.tape is None or not self.fast_load_enabled:
+            return None
+        if self.memory.read_byte(0x0556) != 0x14 or self.memory.read_byte(0x0557) != 0x08:
+            return None  # not the real LD-BYTES (wrong ROM paged) -- don't intercept
+        return TAPE_TRAP_TSTATES if tape.fast_load(self, self.tape) else None
 
     # --- IO + frame loop ------------------------------------------------------
 
@@ -88,8 +134,14 @@ class Machine:
         raster effects are a later refinement.
         """
         self.cpu.maskable_interrupt()
-        target = self.frame_t_state + self.frame_tstates
-        while self.frame_t_state < target:
+        # Run *up to* the frame length, not up to "wherever we started plus a frame":
+        # the target has to be absolute so the carried remainder is consumed by this
+        # frame instead of being added to again. Getting that wrong lets the remainder
+        # accumulate the overshoot of every frame forever, and since flips are
+        # timestamped with this same clock, the tail of each frame eventually lands
+        # past frame_tstates -- where the beeper clamps it -- silently destroying a
+        # growing slice of the waveform.
+        while self.frame_t_state < self.frame_tstates:
             self.frame_t_state += self.cpu.step()
         # Carry the sub-frame remainder so the average frame length stays exact. Block
         # instructions run one iteration per step() (see blockio.py), so a single step

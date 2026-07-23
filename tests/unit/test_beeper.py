@@ -1,4 +1,4 @@
-"""Tests for the 1-bit beeper's edge-list -> PCM resampling (zxemu_core.audio)."""
+"""Tests for the 1-bit beeper's edge-list -> PCM resampling (zxemu_core.beeper)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from zxemu_core.audio import Beeper
+from zxemu_core.beeper import Beeper
 
 FRAME_TSTATES = 69888  # one 50Hz frame, matching the Machine
 
@@ -84,6 +84,27 @@ def test_held_level_decays_to_silence():
         elif frame >= 57:
             late.extend(chunk)
     assert rms(late) < rms(early) * 0.1  # tail is far quieter than the onset
+
+
+def test_held_level_carries_across_the_frame_boundary():
+    """The speaker's position must survive into the next frame.
+
+    Regression test. The speaker holds whatever level the CPU last wrote until it
+    writes again -- possibly frames later -- so a frame with no flips at all must
+    continue the previous frame's level, not restart from low. When that carry was
+    lost, every frame boundary injected a full-amplitude step and sustained sounds
+    (menu music) picked up a loud 50Hz buzz.
+    """
+    beeper = Beeper(sample_rate=44100, frame_rate=50)
+    beeper.enabled = True
+    beeper.set_level(FRAME_TSTATES // 2, 1)  # go high mid-frame, then never flip again
+    beeper.end_frame(FRAME_TSTATES)
+    first = beeper.take_samples()
+    beeper.end_frame(FRAME_TSTATES)  # a frame with no flips: pure held level
+    second = beeper.take_samples()
+    # Nothing happened at the boundary, so the waveform has to be continuous across
+    # it. A jump means the held level was dropped and re-rendered as low.
+    assert abs(second[0] - first[-1]) < 0.02
 
 
 def test_samples_stay_in_range():

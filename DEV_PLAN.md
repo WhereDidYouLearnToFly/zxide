@@ -168,7 +168,7 @@ loading — before returning to the Phase-E visual tooling. All of this is **cor
 (`zxemu_core/`), UI-agnostic, with thin UI hooks. Chosen order and why:
 
 - **1. Beeper (1-bit sound)** ✅ *done* — port `0xFE` bit 4 drives the speaker. Establishes
-  the **audio output pipeline**, built in two layers: `zxemu_core/audio.py` (`Beeper`, a
+  the **audio output pipeline**, built in two layers: `zxemu_core/beeper.py` (`Beeper`, a
   UI-agnostic stage that resamples timestamped 1-bit speaker flips → float PCM via time-
   weighted duty-cycle averaging + a DC blocker so held levels fall silent), and
   `zxemu_ui/audio_output.py` (`AudioOutput`, a QtMultimedia push-mode 16-bit sink that fails
