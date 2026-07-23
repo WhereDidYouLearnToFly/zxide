@@ -2,47 +2,39 @@
 
 The emulator core (``zxemu_core``) is deliberately UI-agnostic: it knows how to
 *be* a Spectrum, but nothing about windows, pixels drawn on your screen, or your
-PC keyboard. This package is the other half -- it takes a running core and makes
-it visible and interactive:
+PC keyboard. This package is the other half -- it takes a running core and makes it
+visible and interactive.
 
-    emulator_view.py  A QWidget that, each frame, (a) reads the core's screen
-                      memory and paints it (bitmap + colour attributes + border
-                      + FLASH, with a green/gray keyboard-focus frame), and (b)
-                      translates your PC key presses into Spectrum key-matrix presses.
+The shell, at the top level:
+
+    main_window.py    The IDE itself: a Visual-Studio-style dock layout with the
+                      editor central and everything else as dockable panels, plus
+                      the menu bar that drives all of it. **Start here.**
     controller.py     Drives the machine in real time (the frame pump) and offers
-                      the IDE's run / pause / reset / step-into / step-over controls,
-                      talking to the rest of the UI purely through Qt signals.
-    emulator_panel.py Groups the emulator view with its own control strip (Run /
-                      Pause / Step / Reset on top) and fits the screen to its dock.
-    audio_output.py   Plays the core's PCM sound through the system audio device
-                      (a thin QtMultimedia sink that fails quiet if none is present).
-    machine_factory.py  Builds the right machine (48K or 128K) for a project's model.
-    editor.py         The central, multi-tab code/text editor (the dock anchor).
-    z80_highlighter.py    Syntax colouring for Z80 assembly in the editor.
-    project.py        A folder-based project + its zxide.json manifest (+ scaffolding).
-    settings.py       App settings (auto-created; sjasmplus auto-detected; recents).
-    settings_dialog.py    Dialog to override the build configuration.
-    builder.py        Runs sjasmplus on a project and reports the result.
-    sld.py            Parses sjasmplus's source-level-debug map (source line <-> address).
-    registers_view.py     Live read-out of the Z80 register file + flags.
-    memory_cells_view.py  Live hex dump of memory (address + hex + ASCII).
-    disassembly_view.py   Live disassembly around PC -- the same bytes as the hex
-                          dump, decoded back into Z80 mnemonics for single-stepping.
-    call_stack_view.py    "How did I get here?" -- infers the chain of callers from
-                          raw stack contents, since the Z80 records no call frames.
-    analysis_view.py      Results of whole-program queries: memory search, what refers
-                          to an address, coverage, and the execution trace. Double-click
-                          a result to open it in the disassembly.
-    memory_map_view.py    Visual, bank-oriented overview of memory with PC/SP markers
-                          and the live 128K paging state.
-    inspector_view.py     Details of the selected asset/region (stub for now).
-    main_window.py    The IDE shell: a Visual-Studio-style dock layout with the
-                      editor central and the emulator + debug panels as docks.
-    layout_store.py   Saves/restores that dock layout to a readable layout.json.
-    theme.py          Applies the dark Fusion palette + fonts used across the IDE.
+                      run / pause / reset / step / run-to controls, breakpoints and
+                      watchpoints -- talking to the rest of the UI purely through Qt
+                      signals, so nothing else needs to know how timing works.
+    editor.py         The central multi-tab code editor, with a breakpoint gutter
+                      and an execution-line marker.
+    z80_highlighter.py    Syntax colouring for Z80 assembly.
+    machine_factory.py    Builds the right machine (48K or 128K) for a model string.
+    audio_output.py   Plays the core's PCM through the system sound device (a thin
+                      QtMultimedia sink that fails quiet when there isn't one).
+    layout_store.py   Saves and restores the dock layout as readable JSON.
+    theme.py          The dark Fusion palette and the fonts used throughout.
 
-Keeping the UI separate from the core is what lets the same emulator run
-headless in tests, and lets the view be embedded as a panel inside the larger IDE
-window -- the way a game viewport sits inside an editor. The top-level ``main.py``
-is now just a composition root that wires these pieces together.
+And two groups, each with its own overview:
+
+    panels/     The dockable views onto the machine -- screen, registers, memory,
+                disassembly, call stack, analysis. They share one small contract
+                (``machine`` / ``refresh`` / ``set_mono_scale``), which is what lets
+                MainWindow treat them all alike.
+    workspace/  Your project rather than the machine: the folder and its manifest,
+                app settings, the sjasmplus build, and the SLD map that ties source
+                lines to addresses.
+
+Keeping the UI separate from the core is what lets the same emulator run headless in
+tests, and lets the screen be embedded as one panel inside a larger window -- the way
+a game viewport sits inside an editor. The top-level ``main.py`` is just a
+composition root that wires these pieces together.
 """

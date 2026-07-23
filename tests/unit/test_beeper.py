@@ -1,4 +1,4 @@
-"""Tests for the 1-bit beeper's edge-list -> PCM resampling (zxemu_core.beeper)."""
+"""Tests for the 1-bit beeper's edge-list -> PCM resampling (zxemu_core.sound.beeper)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from zxemu_core.beeper import Beeper
+from zxemu_core.sound.beeper import Beeper
 
 FRAME_TSTATES = 69888  # one 50Hz frame, matching the Machine
 

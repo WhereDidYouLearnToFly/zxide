@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from zxemu_ui.settings import Settings
+from zxemu_ui.workspace.settings import Settings
 
 
 def _settings(tmp_path) -> Settings:

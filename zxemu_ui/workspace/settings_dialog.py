@@ -26,8 +26,8 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
-from zxemu_ui.project import DEFAULT_BUILD_ARGS
-from zxemu_ui.settings import detect_assembler
+from zxemu_ui.workspace.project import DEFAULT_BUILD_ARGS
+from zxemu_ui.workspace.settings import detect_assembler
 
 
 class SettingsDialog(QDialog):

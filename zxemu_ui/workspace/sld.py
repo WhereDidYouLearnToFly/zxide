@@ -11,7 +11,7 @@ Two record types matter here:
     a given ``file``:``line``. From those we build both directions: line -> address (to
     place a breakpoint) and address -> line (to show where execution stopped).
   * ``F`` (definition) -- a label and the address it ended up at. These give the
-    disassembly your *own* names, the way ``zxemu_core.rom_symbols`` does for the ROM,
+    disassembly your *own* names, the way ``zxemu_core.debug.rom_symbols`` does for the ROM,
     and let you jump to a label instead of hunting for its address.
 
 The ``page`` column is the memory bank; it matters for 128K and is ignored for now

@@ -22,7 +22,8 @@ The menu bar is split by *what you are doing*, not by which code implements it:
   * **Load** -- running *somebody else's* program: a .sna snapshot or a .tap tape,
   * **Disassembly** -- the disassembly panel and where it points,
   * **Breaks** -- conditions on breakpoints, and run-to-cursor/address,
-  * **Analyse** -- whole-program questions: search, cross-references, coverage, trace,
+  * **Reversing** -- understanding someone else's program: search, cross-references,
+    coverage, execution trace,
   * **Watch** -- pause when a value or a port is *touched* (as against a breakpoint,
     which pauses when execution *reaches* somewhere),
   * **Compression** -- optional addons (ZX0) copied into the open project on request,
@@ -51,26 +52,26 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from zxemu_core import snapshot, tape
+from zxemu_core.storage import snapshot, tape
 from zxemu_core.machine import Machine
-from zxemu_core import debug_expr
-from zxemu_ui import builder, sld
+from zxemu_core.debug import debug_expr
+from zxemu_ui.workspace import builder, sld
 from zxemu_ui.controller import EmulatorController
 from zxemu_ui.editor import EditorArea
-from zxemu_ui.emulator_panel import EmulatorPanel
-from zxemu_ui.emulator_view import EmulatorView
+from zxemu_ui.panels.emulator_panel import EmulatorPanel
+from zxemu_ui.panels.emulator_view import EmulatorView
 from zxemu_ui import layout_store
-from zxemu_ui.inspector_view import InspectorView
+from zxemu_ui.panels.inspector_view import InspectorView
 from zxemu_ui.machine_factory import build_machine, machine_model
-from zxemu_ui.analysis_view import AnalysisView
-from zxemu_ui.call_stack_view import CallStackView
-from zxemu_ui.disassembly_view import DisassemblyView
-from zxemu_ui.memory_cells_view import MemoryCellsView
-from zxemu_ui.memory_map_view import MemoryMapView
-from zxemu_ui.project import Project, is_text_file
-from zxemu_ui.registers_view import RegistersView
-from zxemu_ui.settings import Settings
-from zxemu_ui.settings_dialog import SettingsDialog
+from zxemu_ui.panels.analysis_view import AnalysisView
+from zxemu_ui.panels.call_stack_view import CallStackView
+from zxemu_ui.panels.disassembly_view import DisassemblyView
+from zxemu_ui.panels.memory_cells_view import MemoryCellsView
+from zxemu_ui.panels.memory_map_view import MemoryMapView
+from zxemu_ui.workspace.project import Project, is_text_file
+from zxemu_ui.panels.registers_view import RegistersView
+from zxemu_ui.workspace.settings import Settings
+from zxemu_ui.workspace.settings_dialog import SettingsDialog
 from zxemu_ui.theme import apply_ui_scale, monospace_font
 
 # Interface-scale choices offered in the View menu, as multiples of the base font size.
@@ -777,8 +778,10 @@ class MainWindow(QMainWindow):
         clear_watch.triggered.connect(self._clear_watchpoints)
         watch_menu.addAction(clear_watch)
 
-        # Analyse: questions about the program as a whole rather than its current state.
-        analyse_menu = self.menuBar().addMenu("&Analyse")
+        # Reversing: understanding somebody else's program -- questions about the whole
+        # of it rather than its current state. The planned memory->sources dumper lands
+        # here too, since it consumes exactly these results (see DEV_PLAN 1b).
+        analyse_menu = self.menuBar().addMenu("&Reversing")
         find_bytes = QAction("Find Bytes…", self)
         find_bytes.setToolTip("Search memory for a hex byte sequence")
         find_bytes.triggered.connect(lambda: self._find_in_memory(as_text=False))
@@ -868,7 +871,7 @@ class MainWindow(QMainWindow):
             self.project.set_model(model)
             self._log(f"Project target model set to {model.upper()}.")
 
-    # --- analysis (thin: the work is in analysis_view / zxemu_core.analysis) --------
+    # --- analysis (thin: the work is in analysis_view / zxemu_core.debug.analysis) --------
 
     def _show_analysis(self) -> None:
         self._analysis_dock.show()

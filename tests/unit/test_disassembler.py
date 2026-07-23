@@ -1,6 +1,6 @@
 """Unit tests for the Z80 disassembler, covering each prefix group."""
 
-from zxemu_core import disassembler
+from zxemu_core.debug import disassembler
 
 
 class Mem:

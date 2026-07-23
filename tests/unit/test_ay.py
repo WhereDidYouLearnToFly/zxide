@@ -1,4 +1,4 @@
-"""Tests for the AY-3-8912 sound chip (zxemu_core.ay) and its mixing."""
+"""Tests for the AY-3-8912 sound chip (zxemu_core.sound.ay) and its mixing."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ import math
 
 import pytest
 
-from zxemu_core.beeper import Beeper
-from zxemu_core.mixer import SoundMixer
-from zxemu_core.ay import AY8912
+from zxemu_core.sound.beeper import Beeper
+from zxemu_core.sound.mixer import SoundMixer
+from zxemu_core.sound.ay import AY8912
 
 FRAME_128 = 70908  # one 128K frame, matching Machine128
 

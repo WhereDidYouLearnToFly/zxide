@@ -4,7 +4,7 @@ import importlib.resources as res
 
 import pytest
 
-from zxemu_core import snapshot
+from zxemu_core.storage import snapshot
 from zxemu_core.machine import Machine
 
 

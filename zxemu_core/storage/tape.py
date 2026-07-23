@@ -28,7 +28,7 @@ model here is deliberately the shared foundation both loaders would sit on.
 
 from __future__ import annotations
 
-from .cpu.registers import FLAG_C
+from ..cpu.registers import FLAG_C
 
 # The ROM's LD-BYTES routine lives here. The fast-load trap fires when the CPU
 # reaches this address *and* the bytes there are LD-BYTES (see the signature check in

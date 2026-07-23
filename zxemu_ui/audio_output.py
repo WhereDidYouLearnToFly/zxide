@@ -1,7 +1,7 @@
 """AudioOutput -- plays the beeper's PCM through the system sound device.
 
 This is layer 2 of the audio pipeline; layer 1 is the toolkit-agnostic
-:class:`~zxemu_core.beeper.Beeper`, which produces float samples in [-1, 1]. This
+:class:`~zxemu_core.sound.beeper.Beeper`, which produces float samples in [-1, 1]. This
 thin adapter is the *only* place that knows about Qt's sound API. It opens a
 ``QAudioOutput`` in "push" mode -- Qt hands back a device we write bytes to -- and
 converts each batch of float samples to signed 16-bit PCM on the way out.

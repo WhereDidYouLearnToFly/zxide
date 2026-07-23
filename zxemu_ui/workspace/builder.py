@@ -12,7 +12,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from zxemu_ui.project import DEFAULT_BUILD_ARGS
+from zxemu_ui.workspace.project import DEFAULT_BUILD_ARGS
 
 
 @dataclass

@@ -21,7 +21,7 @@ A "sound source" is anything exposing three members:
     source.end_frame(frame_tstates) # render one 50Hz frame into an internal queue
     source.take_samples()           # drain and return that queue
 
-:class:`~zxemu_core.beeper.Beeper` and :class:`~zxemu_core.ay.AY8912` each implement
+:class:`~zxemu_core.sound.beeper.Beeper` and :class:`~zxemu_core.sound.ay.AY8912` each implement
 exactly that and nothing more, so neither has any idea the other exists. A 48K
 machine registers one source, a 128K registers two, and nothing else in the codebase
 has to care which -- ``machine.audio`` is always a mixer, and the UI drives *it*

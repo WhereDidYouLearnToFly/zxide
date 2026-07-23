@@ -1,10 +1,10 @@
-"""Tests for the conditional-breakpoint expression language (zxemu_core.debug_expr)."""
+"""Tests for the conditional-breakpoint expression language (zxemu_core.debug.debug_expr)."""
 
 from __future__ import annotations
 
 import pytest
 
-from zxemu_core import debug_expr
+from zxemu_core.debug import debug_expr
 from zxemu_core.machine import Machine
 
 

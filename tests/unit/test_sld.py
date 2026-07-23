@@ -1,6 +1,6 @@
 """Unit tests for the SLD (source-level debug) parser."""
 
-from zxemu_ui import sld
+from zxemu_ui.workspace import sld
 
 # A small SLD sample: a metadata (Z) record, two executable (T) records, and a
 # define (D) record that must be ignored.

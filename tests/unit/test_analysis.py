@@ -1,8 +1,8 @@
-"""Tests for memory search, cross-references and coverage (zxemu_core.analysis)."""
+"""Tests for memory search, cross-references and coverage (zxemu_core.debug.analysis)."""
 
 from __future__ import annotations
 
-from zxemu_core import analysis
+from zxemu_core.debug import analysis
 from zxemu_core.machine import Machine
 
 

@@ -65,23 +65,21 @@ zxemu_core/        emulator core, no Qt dependency
                     jump, call_return, control, blockio, exchange, indexed)
                    + indexed_bit.py (DDCB/FDCB, kept compact as a loop demo)
                    + _dispatch.py (tables + @base/@cb/@ed/@indexed decorators)
+  machine.py       wires it together; run_frame() = one 50Hz frame  <- read first
   memory.py        16K-bank paged model (paging-ready for 128K) + the instrumented
                    variant memory watchpoints switch on
   ula.py           port 0xFE (border/keyboard), frame timing, contention table
   keyboard.py      8x5 matrix
-  beeper.py        1-bit speaker flips -> PCM      } one file per sound source,
-  ay.py            AY-3-8912 (128K)                } summed by...
-  mixer.py         ...the resistor network's software stand-in
-  tape.py          .tap parsing + ROM-trap fast load
-  snapshot.py      .sna load (48K/128K)
-  disassembler.py  bytes -> Z80 mnemonics
-  rom_symbols.py   names for 48K ROM entry points
-  debug_expr.py    conditional-breakpoint expressions
-  analysis.py      search / cross-references / coverage
-  machine.py       wires it together; run_frame() = one 50Hz frame
-zxemu_ui/          IDE shell + panels (see its __init__.py for the full list;
-                   debug panels: disassembly, call stack, analysis, registers,
-                   memory cells, memory map)
+  sound/           beeper.py + ay.py, summed by mixer.py (the resistor network's
+                   software stand-in). Sources share a 3-member contract.
+  storage/         tape.py (.tap + ROM-trap fast load), snapshot.py (.sna)
+  debug/           disassembler.py, rom_symbols.py, debug_expr.py, analysis.py
+                   -- no Qt, so the debugger's reasoning is testable headless
+zxemu_ui/          shell at top level (main_window, controller, editor, theme, ...)
+  panels/          the dockable views: emulator, registers, memory cells, memory
+                   map, disassembly, call stack, analysis, inspector
+  workspace/       project.py, settings*, builder.py, sld.py -- your project and
+                   how it gets built, as opposed to the machine
 tests/             unit, integration (ROM boot), zexall harness
 dev-support/       this file, screenshots, ZEXALL binaries (git-ignored .com)
 ```

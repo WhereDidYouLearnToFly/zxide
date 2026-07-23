@@ -7,7 +7,7 @@ from PyQt5.QtCore import QEvent, Qt  # noqa: E402
 from PyQt5.QtGui import QKeyEvent  # noqa: E402
 from PyQt5.QtWidgets import QApplication  # noqa: E402
 
-from zxemu_ui.emulator_view import EmulatorView  # noqa: E402
+from zxemu_ui.panels.emulator_view import EmulatorView  # noqa: E402
 from zxemu_core.keyboard import Keyboard  # noqa: E402
 
 

@@ -8,7 +8,7 @@ the fast path is purely an optimization, not a behavior change.
 import numpy as np
 import pytest
 
-from zxemu_ui.emulator_view import (
+from zxemu_ui.panels.emulator_view import (
     BYTES_PER_PIXEL,
     FULL_HEIGHT,
     FULL_WIDTH,

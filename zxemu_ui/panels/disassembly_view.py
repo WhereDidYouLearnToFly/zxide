@@ -2,7 +2,7 @@
 
 The debugger's third view of the same memory. Registers say *what the CPU holds*,
 the hex dump says *what the bytes are*, and this says *what those bytes mean* --
-decoding them back into Z80 mnemonics through :mod:`zxemu_core.disassembler`.
+decoding them back into Z80 mnemonics through :mod:`zxemu_core.debug.disassembler`.
 
 It is the view you actually single-step in: with "Follow PC" on it re-centres on the
 program counter after every step, so F11/F10/Shift+F11 walk down the listing.
@@ -32,7 +32,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from zxemu_core import disassembler, rom_symbols
+from zxemu_core.debug import disassembler, rom_symbols
 from zxemu_ui.theme import monospace_font
 
 INSTRUCTION_COUNT = 24  # how many instructions to decode per refresh

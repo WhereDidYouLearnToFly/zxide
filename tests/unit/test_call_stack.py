@@ -1,4 +1,4 @@
-"""Tests for inferring a call stack from raw stack contents (zxemu_ui.call_stack_view).
+"""Tests for inferring a call stack from raw stack contents (zxemu_ui.panels.call_stack_view).
 
 The Z80 records nothing about call frames, so these check the *inference*: that real
 return addresses are recognised by the call instruction that must have pushed them,
@@ -8,7 +8,7 @@ and that unrelated pushed data is not mistaken for a frame.
 from __future__ import annotations
 
 from zxemu_core.machine import Machine
-from zxemu_ui.call_stack_view import call_frames
+from zxemu_ui.panels.call_stack_view import call_frames
 
 
 def _machine(program: dict) -> Machine:

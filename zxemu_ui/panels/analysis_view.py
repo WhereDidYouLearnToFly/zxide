@@ -11,7 +11,7 @@ disassembly. So results are plain ``$xxxx`` lines, and the view emits
 :attr:`address_activated` when you double-click one, which MainWindow wires to the
 disassembly panel.
 
-The analysis itself lives in :mod:`zxemu_core.analysis` (no Qt, independently
+The analysis itself lives in :mod:`zxemu_core.debug.analysis` (no Qt, independently
 testable); this file is only presentation.
 
 A word on trust
@@ -32,7 +32,7 @@ from __future__ import annotations
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import QPlainTextEdit, QVBoxLayout, QWidget
 
-from zxemu_core import analysis, rom_symbols
+from zxemu_core.debug import analysis, rom_symbols
 from zxemu_ui.theme import monospace_font
 
 MAX_RESULTS = 500  # a search that matches thousands of addresses is a question, not an answer
@@ -56,7 +56,7 @@ class AnalysisView(QWidget):
         self._output.mouseDoubleClickEvent = self._on_double_click
         root.addWidget(self._output, 1)
 
-        self._show(["Analyse ▸ pick a query from the menu."])
+        self._show(["Reversing ▸ pick a query from the menu."])
 
     # --- presentation ----------------------------------------------------------
 
@@ -124,7 +124,7 @@ class AnalysisView(QWidget):
         for start, end in shown:
             lines.append(f"  ${start:04X}-${end - 1:04X}   {end - start} bytes")
         if not runs:
-            lines.append("  (nothing recorded — switch on Analyse ▸ Record Coverage and run)")
+            lines.append("  (nothing recorded — switch on Reversing ▸ Record Coverage and run)")
         self._show(lines + ([note] if note else []))
 
     def show_trace(self, entries) -> None:
@@ -135,7 +135,7 @@ class AnalysisView(QWidget):
         for address, sp in entries[-MAX_RESULTS:]:
             lines.append(f"{self._describe(address)}   sp=${sp:04X}")
         if not entries:
-            lines.append("  (nothing recorded — switch on Analyse ▸ Record Trace and run)")
+            lines.append("  (nothing recorded — switch on Reversing ▸ Record Trace and run)")
         self._show(lines)
 
     def set_mono_scale(self, scale: float) -> None:

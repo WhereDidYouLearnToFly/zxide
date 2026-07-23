@@ -29,7 +29,7 @@ from PyQt5.QtWidgets import (
 )
 
 from zxemu_ui.controller import EmulatorController
-from zxemu_ui.emulator_view import FULL_HEIGHT, FULL_WIDTH, EmulatorView
+from zxemu_ui.panels.emulator_view import FULL_HEIGHT, FULL_WIDTH, EmulatorView
 
 
 class EmulatorStage(QWidget):

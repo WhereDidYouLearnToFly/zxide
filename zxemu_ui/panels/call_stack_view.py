@@ -43,7 +43,7 @@ from __future__ import annotations
 
 from PyQt5.QtWidgets import QPlainTextEdit, QVBoxLayout, QWidget
 
-from zxemu_core import rom_symbols
+from zxemu_core.debug import rom_symbols
 from zxemu_ui.theme import monospace_font
 
 MAX_FRAMES = 16      # how many plausible frames to report

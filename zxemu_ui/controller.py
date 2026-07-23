@@ -31,7 +31,7 @@ from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
 
 from collections import deque
 
-from zxemu_core import analysis, debug_expr
+from zxemu_core.debug import analysis, debug_expr
 from zxemu_core import memory as memory_module
 from zxemu_core.machine import Machine
 

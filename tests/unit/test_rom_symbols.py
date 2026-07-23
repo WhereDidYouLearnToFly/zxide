@@ -1,10 +1,10 @@
-"""Tests for 48K ROM routine names (zxemu_core.rom_symbols)."""
+"""Tests for 48K ROM routine names (zxemu_core.debug.rom_symbols)."""
 
 from __future__ import annotations
 
 import importlib.resources as res
 
-from zxemu_core import rom_symbols
+from zxemu_core.debug import rom_symbols
 from zxemu_core.machine import Machine, Machine128
 
 
@@ -24,7 +24,7 @@ def test_unknown_address_has_no_name():
 
 def test_ld_bytes_matches_the_address_the_tape_trap_uses():
     """The tape fast-loader and the symbol table must agree on where LD-BYTES is."""
-    from zxemu_core import tape
+    from zxemu_core.storage import tape
 
     assert rom_symbols.name_for(tape.LD_BYTES_ENTRY) == "LD-BYTES"
 

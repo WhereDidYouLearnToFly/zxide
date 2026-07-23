@@ -18,13 +18,13 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
-from . import tape
-from .ay import AY8912
-from .beeper import Beeper
-from .mixer import SoundMixer
 from .cpu.z80 import Z80
 from .keyboard import Keyboard
 from .memory import Memory, create_48k_memory, create_128k_memory
+from .sound.ay import AY8912
+from .sound.beeper import Beeper
+from .sound.mixer import SoundMixer
+from .storage import tape
 from .ula import FRAME_TSTATES, FRAME_TSTATES_128K, Ula
 
 # The trap replaces the whole (real-time) LD-BYTES routine, so its exact T-state cost is
@@ -87,7 +87,7 @@ class Machine:
 
         Always true on a 48K -- there is only one ROM. Machine128 overrides this,
         because with the 128 editor ROM paged those addresses hold different code and
-        labelling them would actively mislead (see zxemu_core.rom_symbols).
+        labelling them would actively mislead (see zxemu_core.debug.rom_symbols).
         """
         return True
 

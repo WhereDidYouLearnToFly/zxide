@@ -24,7 +24,9 @@ TEXT_SUFFIXES = {".asm", ".s", ".z80", ".z80asm", ".inc", ".i", ".txt", ".md", "
 # The starter templates scaffolded into a new project, one per machine model (each a
 # buildable visible demo). The model is chosen at New-Project time and recorded in the
 # manifest, so opening a project later knows which machine to boot.
-_TEMPLATE_ROOT = Path(__file__).resolve().parent / "templates"
+# Templates and addons are package *data*, so they live at the zxemu_ui root rather
+# than beside this module -- hence parent.parent, not parent.
+_TEMPLATE_ROOT = Path(__file__).resolve().parent.parent / "templates"
 TEMPLATE_DIRS = {"48k": _TEMPLATE_ROOT / "project48", "128k": _TEMPLATE_ROOT / "project128"}
 DEFAULT_MODEL = "48k"
 
@@ -32,7 +34,7 @@ DEFAULT_MODEL = "48k"
 # the templates above which are scaffolded once at New-Project time. Keeping them out
 # of the templates is the point -- a project only carries what it actually uses, which
 # matters when every byte of a 48K is spoken for.
-_ADDON_ROOT = Path(__file__).resolve().parent / "addons"
+_ADDON_ROOT = Path(__file__).resolve().parent.parent / "addons"
 ADDON_DIRS = {"zx0": _ADDON_ROOT / "zx0addon"}
 
 # Default sjasmplus invocation for a new project. {main}/{output} are filled in per

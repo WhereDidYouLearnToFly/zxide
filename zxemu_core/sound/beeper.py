@@ -13,7 +13,7 @@ the value.
 toolkit-agnostic: it consumes timestamped 1-bit level changes and produces plain
 floating-point PCM samples in [-1.0, 1.0]. A UI layer feeds those to a real sound
 device. On a 128K the AY chip (``ay.py``) is a second, independent source, and the
-two are summed by :class:`~zxemu_core.mixer.SoundMixer` -- the beeper knows nothing
+two are summed by :class:`~zxemu_core.sound.mixer.SoundMixer` -- the beeper knows nothing
 about the AY.
 
 How a 1-bit square wave becomes samples

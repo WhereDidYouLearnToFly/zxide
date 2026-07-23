@@ -167,7 +167,7 @@ audio** (128K, AY, beeper, TAP) — see below.
   subclass swapped in only while watches exist. **Run to Cursor / Run to Address**
   (one-shot breakpoints), plus **editing**: poke a byte in the Memory panel, click a
   register to set it. The **RE toolkit** landed too (`analysis.py` + `analysis_view.py`,
-  own Analyse menu): memory search, cross-references, a coverage map, and a bounded
+  own Reversing menu): memory search, cross-references, a coverage map, and a bounded
   execution trace; plus a **symbol database** — `sld.py` now reads the SLD's label
   records, so your own names appear in the disassembly and Go-to-Label works.
 - **Phase E — Visual memory management** ⏸ *deferred* *(the centerpiece)*: the bank-oriented
@@ -241,6 +241,89 @@ understand what the machine is doing." Grouped by theme, not strictly ordered; t
 - **Memory search** -- find bytes / text / patterns; mark regions as code vs data.
 - **★ Register/flag tooltips & a T-state (cycle) counter** -- hover a flag to learn what it
   means; show the selected instruction's cycle cost.
+
+### 1b. Memory → sources: turn a running program into a debuggable project ★
+
+*Menu home: **Reversing**, alongside the RE toolkit above — the dumper consumes exactly
+those results (coverage decides what is code, cross-references supply the labels), so
+they belong under one heading rather than as a separate feature.*
+
+Dump a machine's RAM into `.asm` sources plus a `zxide.json`, so an existing program
+becomes a project you can build, step through, and annotate. The educational payoff is
+large — "here is a game, here is its source, now step through it" is a far better
+on-ramp than an empty `main.asm` — and it is the natural consumer of the RE toolkit
+above rather than a separate feature.
+
+**The whole difficulty is telling code from data**, which is undecidable statically:
+the same bytes are a valid instruction stream *and* a valid bitmap. So don't decide
+statically.
+
+- **Coverage is the ground truth.** An address that executed *is* code — observed, not
+  inferred. Load the snapshot, run it while recording coverage (play the menu, trigger
+  the thing you care about), then dump: executed regions become disassembly, everything
+  else stays `db`. The more you exercise, the better the source gets.
+- **Degrade gracefully.** A region wrongly left as `db` still assembles to the right
+  bytes and still runs — you just have a blob you have not understood yet. So v1 can
+  dump *everything* as `db`: correct, useless, and a complete foundation.
+- **The invariant that makes it trustworthy: assemble the dump and compare bytes with
+  the original memory.** Byte-identical means the source provably represents the
+  program. Build this check *first* — it works from day one against an all-`db` dump,
+  before any classification exists, and then every promotion of a region from `db` to
+  disassembly is individually verifiable by the same test.
+- Labels come from cross-references (anything called/jumped to becomes `label_8123:`)
+  and `rom_symbols` for ROM targets.
+
+Known traps: skip the ROM (`$0000-$3FFF` is not yours); self-modifying code makes a
+mid-run dump differ from a load-time one (dump both and diff); a 128K dump must record
+which bank each region came from; 48K of RAM is too much for one file, so split by
+region.
+
+**Classifying the leftover blobs** — in cost order, cheapest first, because the early
+steps do most of the work:
+
+1. **Where it is copied to.** A block `LDIR`'d to `$4000-$57FF` is a screen bitmap; to
+   `$5800-$5AFF`, attributes. That is the hardware memory map, not a guess, and
+   cross-references already tell us what loads a pointer to the region.
+2. **Render it.** Draw the blob as a 1bpp Spectrum bitmap in the Inspector and a human
+   recognises a sprite sheet or a font instantly. The screen renderer already exists;
+   pointing it at an arbitrary address is nearly free. Nothing beats eyes here.
+3. **Cheap statistics.** Attribute bytes cluster in a narrow range; text is ASCII-ish;
+   ZX0-compressed data is high-entropy; a region where many bytes decode to illegal
+   opcodes is not code.
+4. **ML, last.** Its real niche is the residue — "a structured table, 6 bytes per entry,
+   but of what?" — which is stride/field-regularity detection. Smallest slice, and it
+   needs labelled examples from already-disassembled games to train on.
+
+**The dump should be *runnable*, not just readable** — it is a snapshot, expressed as
+assembly. That means it must carry what a snapshot carries: not only RAM but the CPU
+state — PC, SP, AF/BC/DE/HL and their shadows, IX, IY, I, R, the interrupt mode and
+IFF, the border, and on a 128K the `$7FFD` latch.
+
+That creates one genuinely awkward problem: **you cannot restore registers without
+using registers.** It needs a small stub that sets SP, pushes the saved values, pops
+them into place and ends with `RET` — which is precisely how `.sna` itself works, with
+PC left on the stack for that final `RET` to jump to. So the assembly can mirror the
+format it came from.
+
+But the stub has to *live* somewhere, and the dump has already claimed every byte of
+RAM. That is the one place the output cannot be byte-faithful. Usual homes: the printer
+buffer at `$5B00` (256 bytes, almost nothing uses it) or screen memory, if the program
+redraws it on entry anyway.
+
+**So emit two artefacts, not one** — otherwise the correctness invariant gets littered
+with "except these twelve bytes":
+
+  * a **faithful dump** — pure `db`/code, no stub, byte-identical to the original. This
+    is what the round-trip test checks, and it stays exact.
+  * a **runnable project** — the same data plus the restore stub and a `SAVESNA`. This
+    is what you build and step through, and it gets its *own* exact test: build it,
+    load the resulting `.sna`, and compare the emulator's full state — registers
+    included — against the original snapshot's.
+
+Two tests, each precise about its own thing, instead of one test with excuses.
+
+Note the symmetry with Phase E: that places assets *into* memory, this pulls them
+*out*. Both need the same "what lives where" model, so they should share it.
 
 ### 2. Tape & snapshot formats
 - **TAP loading** (ROM-trap fast load + edge replay) -- closes Milestone 3.

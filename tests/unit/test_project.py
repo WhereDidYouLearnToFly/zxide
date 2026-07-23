@@ -1,8 +1,8 @@
-"""Tests for the folder-based project model and its manifest (zxemu_ui.project)."""
+"""Tests for the folder-based project model and its manifest (zxemu_ui.workspace.project)."""
 
 from __future__ import annotations
 
-from zxemu_ui.project import DEFAULT_MODEL, Project, default_manifest
+from zxemu_ui.workspace.project import DEFAULT_MODEL, Project, default_manifest
 
 
 def test_default_manifest_records_the_model():

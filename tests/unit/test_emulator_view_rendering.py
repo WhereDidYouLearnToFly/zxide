@@ -12,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest  # noqa: E402
 
-from zxemu_ui.emulator_view import (  # noqa: E402
+from zxemu_ui.panels.emulator_view import (  # noqa: E402
     BORDER_MARGIN,
     BYTES_PER_PIXEL,
     FLASH_TOGGLE_FRAMES,

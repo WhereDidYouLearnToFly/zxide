@@ -4,7 +4,7 @@ import importlib.resources as res
 
 import pytest
 
-from zxemu_core import tape
+from zxemu_core.storage import tape
 from zxemu_core.cpu.registers import FLAG_C
 from zxemu_core.machine import TAPE_TRAP_TSTATES, Machine, Machine128
 
