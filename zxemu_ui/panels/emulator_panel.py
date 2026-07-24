@@ -109,7 +109,7 @@ class EmulatorPanel(QWidget):
 
         # Debugger step into: one Z80 instruction at a time (one LDIR iteration, or
         # into a called subroutine).
-        self.step_action = QAction(style.standardIcon(QStyle.SP_MediaSeekForward), "Step Into", self)
+        self.step_action = QAction(style.standardIcon(QStyle.SP_ArrowDown), "Step Into", self)
         self.step_action.setToolTip("Step one instruction — into calls, one block-op iteration (F11)")
         self.step_action.setShortcut("F11")
         self.step_action.triggered.connect(self.controller.step_instruction)
@@ -153,7 +153,7 @@ class EmulatorPanel(QWidget):
         for action in actions:
             button = QToolButton()
             button.setDefaultAction(action)
-            button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            button.setToolButtonStyle(Qt.ToolButtonIconOnly)
             row.addWidget(button)
         row.addStretch()
         return bar
