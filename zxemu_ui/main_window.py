@@ -88,6 +88,11 @@ INTERFACE_SCALE_CHOICES = (
     ("100%", 1.0), ("125%", 1.25), ("150%", 1.5), ("175%", 1.75), ("200%", 2.0),
 )
 
+# How long an inserted tape may go unread before the Output explains why (in emulated
+# frames, so 50 = one second). Long enough that booting the ROM and typing LOAD "" at a
+# human pace doesn't trip it.
+TAPE_STALL_FRAMES = 400
+
 # Machine models, as (menu label, model string). One list drives both the Model menu
 # and the New Project prompt, so the two can't drift apart. The model strings are the
 # ones stored in zxide.json and understood by machine_factory.build_machine.
@@ -118,6 +123,10 @@ class MainWindow(QMainWindow):
         # source map, breakpoints, conditions, watchpoints -- lives in one object.
         self.debug = DebugSession(controller, machine)
         self._last_search = ""   # pre-filled into Find in Project, so Ctrl+F repeats cheaply
+        # Tape-stall watch (see _check_tape_progress): frames since a block was last read.
+        self._tape_idle_frames = 0
+        self._tape_watch_index = 0
+        self._tape_stall_reported = True  # nothing inserted yet, so nothing to report
         # Model-menu radio items, keyed by model string. Populated by _build_menu and
         # kept in sync by set_machine, so the tick always follows the *live* machine --
         # whether it changed from the menu or from opening a project.
@@ -185,6 +194,7 @@ class MainWindow(QMainWindow):
         # paused -- on a breakpoint, a manual pause, or after each Step.
         self.controller.running_changed.connect(self._on_running_marker)
         self.controller.frame_ready.connect(self._on_frame_marker)
+        self.controller.frame_ready.connect(self._check_tape_progress)
 
         self._reopen_last_project()  # reopen whatever project was last used
 
@@ -649,18 +659,34 @@ class MainWindow(QMainWindow):
         return ok
 
     def _load_snapshot(self, path) -> bool:
-        """Load a .sna or .z80 into the machine and refresh the views. Returns success."""
+        """Load a .sna or .z80 into the machine, resume it, and refresh the views."""
         path = Path(path)
         try:
             media.load_snapshot(self.machine, path)
         except (ValueError, NotImplementedError, OSError) as error:
             self._log(f"Could not load {path.name}: {error}")
             return False
-        # Repaint the screen and the live debug panels from the new state.
+        # Resume. A snapshot *is* a running machine, so loading one into a paused
+        # emulator -- paused by the Pause button, or by a breakpoint from an earlier
+        # Build & Debug -- and leaving it paused looks exactly like a broken load: the
+        # screen shows the game (the panels repainted) but nothing moves and the
+        # keyboard does nothing. The tape path has always resumed; this one only said
+        # it did.
+        self.controller.set_running(True)
         self._refresh_all_panels()
-        self.view.setFocus()  # you just loaded something to run -- send the keyboard here
+        self._focus_emulator()
         self._log(f"Loaded {path.name} — running.")
         return True
+
+    def _focus_emulator(self) -> None:
+        """Send the keyboard to the emulator, once the file dialog has finished closing.
+
+        Deferred rather than immediate: the modal file dialog restores focus to whatever
+        held it before, and on Windows that happens as its native window is destroyed --
+        potentially *after* this handler returns, undoing a plain ``setFocus()`` and
+        leaving your keystrokes going to the editor instead of the Spectrum.
+        """
+        QTimer.singleShot(0, self.view.setFocus)
 
     def _load_tape(self, path) -> bool:
         """Insert a .tap or .tzx into the deck and reset, ready for the ROM to LOAD it.
@@ -681,10 +707,46 @@ class MainWindow(QMainWindow):
         self.machine.insert_tape(media.make_deck(blocks))
         self.controller.set_running(True)
         self.view.refresh()
-        self.view.setFocus()
+        self._focus_emulator()
         for line in media.tape_summary(path.name, blocks, notes, machine_model(self.machine)):
             self._log(line)
+        # Start watching for a tape that never gets read -- see _check_tape_progress.
+        self._tape_idle_frames = 0
+        self._tape_watch_index = 0
+        self._tape_stall_reported = False
         return True
+
+    def _check_tape_progress(self, _frames: int) -> None:
+        """Say something when an inserted tape stops being read.
+
+        A stalled tape looks identical whichever way it happened -- the border sits there,
+        often flashing red, and nothing loads -- but the two causes need opposite actions
+        from you, so guessing is worse than asking. Either the machine is waiting for you
+        to start the load, or the game's own loader is bit-banging its own bits and fast
+        loading cannot feed it at all (see zxemu_core/storage/tape.py). Reported once per
+        tape, not per frame.
+        """
+        deck = self.machine.tape
+        if deck is None or deck.at_end or self._tape_stall_reported:
+            return
+        if deck.index != self._tape_watch_index:
+            self._tape_watch_index = deck.index   # progress: reset the clock
+            self._tape_idle_frames = 0
+            return
+        self._tape_idle_frames += 1
+        if self._tape_idle_frames < TAPE_STALL_FRAMES:
+            return
+        self._tape_stall_reported = True
+        blocks_read = deck.index
+        self._log(f"No tape block has been read for {TAPE_STALL_FRAMES // 50}s "
+                  f"({blocks_read} of {len(deck.blocks)} loaded).")
+        if blocks_read == 0:
+            self._log('  The machine is waiting for you to start it — type LOAD "" ⏎ '
+                      "(or pick Tape Loader from the 128K menu).")
+        else:
+            self._log("  If the loading screen is showing and the border is flashing, this "
+                      "game has its own turbo loader: it reads the tape without the ROM, so "
+                      "fast load can't feed it. Edge-level replay isn't implemented yet.")
 
     # --- recent projects / files -----------------------------------------------
 
@@ -833,16 +895,20 @@ class MainWindow(QMainWindow):
         self._populate_load_recent()
 
     def _switch_model(self, model: str) -> None:
-        """Boot the other machine model, and remember it in the open project (if any)."""
+        """Boot the other machine model, and retarget the open project to match.
+
+        The switch sticks: without writing it to the manifest, reopening the project would
+        silently switch back, and its build template would no longer match the machine you
+        chose. The same field can also be set directly in Settings ▸ Project ▸ Target
+        machine, for changing what a project builds for without rebooting the emulator.
+        """
         if model == machine_model(self.machine):
             return  # already there -- re-ticking the current item shouldn't reset the machine
         self.set_machine(build_machine(model))
         self._log(f"Switched to the {model.upper()} machine.")
-        # Persist to the project so the choice sticks; otherwise reopening the project
-        # would silently switch back, and its build template would no longer match.
         if self.project is not None:
             self.project.set_model(model)
-            self._log(f"Project target model set to {model.upper()}.")
+            self._log(f'Project "{self.project.name}" now targets {model.upper()}.')
 
     # --- analysis (thin: the work is in analysis_view / zxemu_core.debug.analysis) --------
 

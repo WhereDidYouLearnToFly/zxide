@@ -4,9 +4,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest  # noqa: E402
 from PyQt5.QtCore import QEvent, Qt  # noqa: E402
-from PyQt5.QtGui import QKeyEvent  # noqa: E402
+from PyQt5.QtGui import QFocusEvent, QKeyEvent  # noqa: E402
 from PyQt5.QtWidgets import QApplication  # noqa: E402
 
+from zxemu_ui.panels import emulator_view  # noqa: E402
 from zxemu_ui.panels.emulator_view import EmulatorView  # noqa: E402
 from zxemu_core.keyboard import Keyboard  # noqa: E402
 
@@ -41,6 +42,111 @@ def test_letter_key_press_reaches_keyboard_matrix(qapp):
     view = EmulatorView(machine)
     view.keyPressEvent(_key_event(QEvent.KeyPress, Qt.Key_H))
     assert machine.keyboard.read(0xBFFE) == 0b01111  # row6=ENTER,L,K,J,H; H is bit4
+
+
+# --- keyboard layouts --------------------------------------------------------
+#
+# Windows set-1 scan codes for the positions these tests use.
+SCAN_J, SCAN_P, SCAN_CTRL, SCAN_RETURN, SCAN_H = 0x24, 0x19, 0x1D, 0x1C, 0x23
+CYRILLIC_O, CYRILLIC_ZE = 0x041E, 0x0417   # what J and P report under a Russian layout
+
+
+def _positional_event(kind, qt_key: int, scancode: int) -> QKeyEvent:
+    """A key event carrying both a logical key and a physical position, as Qt delivers."""
+    return QKeyEvent(kind, qt_key, Qt.NoModifier, scancode, 0, 0)
+
+
+def test_a_cyrillic_layout_still_reaches_the_spectrum_by_key_position(qapp, monkeypatch):
+    """The bug: `event.key()` is layout-dependent, so under a Cyrillic layout the physical
+    J key reports Cyrillic О -- matching no Spectrum key. Nothing worked at all: you could
+    not even type LOAD "" to start a tape."""
+    monkeypatch.setattr(emulator_view, "_SCANCODE_OFFSET", 0)  # as on Windows
+    machine = FakeMachine()
+    view = EmulatorView(machine)
+
+    view.keyPressEvent(_positional_event(QEvent.KeyPress, CYRILLIC_O, SCAN_J))
+
+    assert machine.keyboard.read(0xBFFE) == 0b10111  # row6 bit3 = J (LOAD)
+
+
+def test_load_quote_quote_is_typable_under_a_cyrillic_layout(qapp, monkeypatch):
+    """The whole point: SYM SHIFT + P is the `"` a tape load needs."""
+    monkeypatch.setattr(emulator_view, "_SCANCODE_OFFSET", 0)
+    machine = FakeMachine()
+    view = EmulatorView(machine)
+
+    view.keyPressEvent(_positional_event(QEvent.KeyPress, Qt.Key_Control, SCAN_CTRL))
+    view.keyPressEvent(_positional_event(QEvent.KeyPress, CYRILLIC_ZE, SCAN_P))
+
+    assert machine.keyboard.read(0xDFFE) == 0b11110  # row5 bit0 = P
+    assert machine.keyboard.read(0x7FFE) == 0b11101  # row7 bit1 = SYM SHIFT
+
+
+def test_the_logical_key_wins_when_it_means_something(qapp, monkeypatch):
+    """A Latin layout must behave exactly as before -- position is only a fallback."""
+    monkeypatch.setattr(emulator_view, "_SCANCODE_OFFSET", 0)
+    machine = FakeMachine()
+    view = EmulatorView(machine)
+
+    # A deliberately mismatched pair: logical H, sitting at J's position.
+    view.keyPressEvent(_positional_event(QEvent.KeyPress, Qt.Key_H, SCAN_J))
+
+    assert machine.keyboard.read(0xBFFE) == 0b01111  # row6 bit4 = H, not J
+
+
+def test_the_scancode_offset_is_decided_per_platform_not_guessed():
+    """X11 keycodes are set-1 codes +8, and the ranges overlap (X11 J == set-1 Z), so
+    trying both would hand Linux users the wrong letters."""
+    assert emulator_view._scancode_offset("win32") == 0
+    assert emulator_view._scancode_offset("linux") == 8
+    assert emulator_view._scancode_offset("darwin") is None  # unrelated numbering: no guess
+
+    assert emulator_view._position_key(SCAN_J, offset=0) == Qt.Key_J
+    assert emulator_view._position_key(SCAN_J + 8, offset=8) == Qt.Key_J
+    assert emulator_view._position_key(SCAN_J, offset=None) is None   # macOS: nothing inferred
+    assert emulator_view._position_key(0, offset=0) is None           # synthetic event
+
+
+def test_an_unknown_position_changes_nothing(qapp, monkeypatch):
+    monkeypatch.setattr(emulator_view, "_SCANCODE_OFFSET", 0)
+    machine = FakeMachine()
+    view = EmulatorView(machine)
+
+    view.keyPressEvent(_positional_event(QEvent.KeyPress, 0x0424, 0x70))  # F-key row, unmapped
+
+    assert machine.keyboard.read(0xBFFE) == 0x1F  # nothing pressed
+
+
+def test_losing_focus_releases_every_held_key(qapp):
+    """A widget that has lost focus never gets the matching key *release*.
+
+    So a key that was down when focus moved away -- a menu shortcut, or a file dialog
+    opening over the emulator -- stayed down in the matrix forever, and the machine
+    behaved as though somebody were leaning on it: the ROM auto-repeats, `LOAD ""`
+    becomes unusable, and the keyboard looks broken.
+    """
+    machine = FakeMachine()
+    view = EmulatorView(machine)
+    view.keyPressEvent(_key_event(QEvent.KeyPress, Qt.Key_H))
+    assert machine.keyboard.read(0xBFFE) != 0x1F  # H is down
+
+    view.focusOutEvent(QFocusEvent(QEvent.FocusOut))
+
+    assert machine.keyboard.read(0xBFFE) == 0x1F  # ...and no longer is
+    assert not view._held_keys
+
+
+def test_a_key_pressed_after_regaining_focus_still_works(qapp):
+    """Clearing on focus-out must not leave the view unable to register new presses."""
+    machine = FakeMachine()
+    view = EmulatorView(machine)
+    view.keyPressEvent(_key_event(QEvent.KeyPress, Qt.Key_H))
+    view.focusOutEvent(QFocusEvent(QEvent.FocusOut))
+    view.focusInEvent(QFocusEvent(QEvent.FocusIn))
+
+    view.keyPressEvent(_key_event(QEvent.KeyPress, Qt.Key_J))
+
+    assert machine.keyboard.read(0xBFFE) == 0b10111  # row6 bit3 = J
 
 
 def test_key_release_restores_matrix(qapp):

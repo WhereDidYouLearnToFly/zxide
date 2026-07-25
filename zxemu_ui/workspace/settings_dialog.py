@@ -4,8 +4,13 @@ Two groups, matching where the settings actually live:
 
   * Global -- the sjasmplus location. One install per machine, shared by every
     project; saved to the app Settings.
-  * Project -- the build arguments and snapshot output for the *open* project.
-    Saved to that project's ``zxide.json`` manifest, so each project can differ.
+  * Project -- the target machine, build arguments and snapshot output for the *open*
+    project. Saved to that project's ``zxide.json`` manifest, so each project can differ.
+
+The target machine lives here rather than on the Model menu because the two mean
+different things: the Model menu switches the *emulator* so you can try somebody else's
+48K tape, which must not quietly retarget the project you happen to have open. Changing
+what a project builds for is a deliberate act, so it needs a deliberate place.
 
 Both already have working defaults (sjasmplus auto-detected; the manifest seeded
 when the project was created), so this dialog is only for overriding.
@@ -14,6 +19,7 @@ when the project was created), so this dialog is only for overriding.
 from __future__ import annotations
 
 from PyQt5.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -28,6 +34,10 @@ from PyQt5.QtWidgets import (
 
 from zxemu_ui.workspace.project import DEFAULT_BUILD_ARGS
 from zxemu_ui.workspace.settings import detect_assembler
+
+# (label, model) for the target-machine chooser. Mirrors MainWindow's menu choices; kept
+# here rather than imported to avoid a dialog depending on the window that opens it.
+MACHINE_MODELS = (("ZX Spectrum 48K", "48k"), ("ZX Spectrum 128K", "128k"))
 
 
 class SettingsDialog(QDialog):
@@ -79,7 +89,19 @@ class SettingsDialog(QDialog):
             form.addRow(QLabel("Open a project to edit its build settings."))
             self._args_edit = None
             self._output_edit = None
+            self._model_combo = None
             return group
+
+        self._model_combo = QComboBox()
+        for label, model in MACHINE_MODELS:
+            self._model_combo.addItem(label, model)
+        current = self._model_combo.findData(self.project.model)
+        self._model_combo.setCurrentIndex(max(0, current))
+        self._model_combo.setToolTip(
+            "Which machine this project builds for. Opening the project boots it. "
+            "The Model menu switches the emulator without changing this."
+        )
+        form.addRow("Target machine", self._model_combo)
 
         build = self.project.load_manifest().get("build", {})
         self._args_edit = QLineEdit(" ".join(build.get("args", DEFAULT_BUILD_ARGS)))
@@ -111,6 +133,7 @@ class SettingsDialog(QDialog):
         self.settings.set("assembler_path", self._assembler_edit.text().strip())
         if self.project is not None and self._args_edit is not None:
             manifest = self.project.load_manifest()
+            manifest["model"] = self._model_combo.currentData()
             build = manifest.setdefault("build", {})
             build["args"] = self._args_edit.text().split()
             build["output"] = self._output_edit.text().strip() or "main.sna"

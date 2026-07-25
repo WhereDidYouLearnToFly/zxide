@@ -4,7 +4,7 @@ _Last updated: 2026-07-24._ A snapshot to make it easy to pick the project back 
 
 ## Latest session (2026-07-24) — build target, tape trap, new formats, editor navigation
 
-**658 tests pass** (`pytest tests/unit tests/integration`).
+**682 tests pass** (`pytest tests/unit tests/integration`).
 
 1. **F5 assembles the file you have open**, not a hard-coded `main.asm`. The manifest's
    `main` is only a fallback now, because a folder zxide didn't scaffold names its entry
@@ -27,7 +27,34 @@ _Last updated: 2026-07-24._ A snapshot to make it easy to pick the project back 
    `_reveal_dock()` seven `show()`+`raise_()` pairs. 37 new tests came with it, including a
    menu-shape test — nothing about a menu fails loudly, so a dropped shortcut or an
    unconnected handler would otherwise look like a working IDE until you reached for it.
-6. **Two test-infrastructure repairs**, both pre-existing and both worth knowing about:
+6. **Three bugs found by using the IDE, none of which raised anything:**
+   * **Loading a snapshot left a paused machine paused** while logging "— running". After a
+     Build & Debug breakpoint or a Pause, a loaded `.z80`/`.sna` showed its screen and then
+     did nothing — which reads as a dead keyboard, not a paused emulator. It resumes now,
+     as the tape path always did.
+   * **The emulated keyboard was completely dead under a non-Latin keyboard layout.**
+     The key maps were keyed on `event.key()`, which is layout-dependent: with a Cyrillic
+     layout active the physical J key reports Cyrillic О, matching no Spectrum key, so
+     *nothing* worked — you could not even type `LOAD ""` to start a tape. There is now a
+     physical-position fallback (`_SCANCODE_TO_QT_KEY`), used only when the logical key
+     means nothing to a Spectrum, so Latin layouts behave exactly as before. The scan-code
+     offset is chosen per platform, not guessed: X11 keycodes are set-1 codes +8 and the
+     ranges overlap (X11's J is set-1's Z), so trying both would hand Linux users the wrong
+     letters; macOS numbering is unrelated, so the fallback is disabled there.
+   * **Keys held when the emulator lost focus were never released.** A widget that loses
+     focus gets no key-*release*, so pressing a menu shortcut or opening a file dialog over
+     the emulator could leave a key down in the matrix forever: the ROM auto-repeats it and
+     `LOAD ""` becomes untypable. `focusOutEvent` now clears the held keys.
+   * The Model menu retargets the open project's manifest as well as switching the
+     emulator — kept deliberately (the choice has to stick, or reopening the project
+     switches back), but it now logs exactly what it changed, and the same field is
+     settable directly in **Settings ▸ Project ▸ Target machine**.
+
+   Also new: an inserted tape that goes unread for ~8s now explains itself in the Output —
+   either "type LOAD ''" (nothing loaded yet) or "this game has its own turbo loader, fast
+   load can't feed it" (some blocks loaded, then it stopped). A stalled tape looks identical
+   either way, and the two need opposite actions.
+7. **Two test-infrastructure repairs**, both pre-existing and both worth knowing about:
    `tests/` now has `__init__.py` files (an unrelated `tests` package in site-packages was
    shadowing it, so five test modules couldn't even be collected), and `tests/conftest.py`
    redirects `MainWindow`'s settings path — every MainWindow test used to write the
@@ -70,7 +97,7 @@ Two design decisions worth knowing, both about not taxing the fast path:
   than building a replacement object, because the CPU, the machine and the 128K paging
   code all hold that same reference.
 
-**342 tests pass** *(at the time of that session — 658 now)*.
+**342 tests pass** *(at the time of that session — 682 now)*.
 
 ## Where we are
 

@@ -9,6 +9,8 @@ changes) aren't modeled -- one border color is used for the whole frame.
 
 from __future__ import annotations
 
+import sys
+
 import numpy as np
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QImage, QPainter
@@ -237,6 +239,71 @@ _CHORD_KEY_MAP = {
     Qt.Key_Period: ("SYM SHIFT", "M"),  # .
 }
 
+# Physical-position fallback: hardware scan code -> the Qt key that position carries on a
+# US layout.
+#
+# Both maps above are keyed on ``event.key()``, which is *layout-dependent*. Switch Windows
+# to a Cyrillic (or Greek, or Hebrew) layout and the physical J key no longer reports
+# ``Qt.Key_J`` -- it reports Cyrillic О (U+041E), which matches nothing, so the emulated
+# keyboard goes completely dead. Not "some keys wrong": nothing works at all, and you
+# cannot even type ``LOAD ""`` to start a tape.
+#
+# A Spectrum is played and typed by key *position*, so position is the right thing to fall
+# back to. These are PC/AT set-1 scan codes, which is what Qt reports on Windows. X11
+# reports the same numbers plus 8 -- and the two ranges *overlap* (X11's J, 0x2C, is set-1's
+# Z), so the offset has to be decided by platform rather than guessed per key, or Linux
+# users would silently get the wrong letters. macOS uses an unrelated numbering, so the
+# fallback is disabled there and behaviour stays as it was: correct on any Latin layout.
+_SCANCODE_ROWS = (
+    (0x02, "1234567890"),      # the digit row
+    (0x10, "QWERTYUIOP"),
+    (0x1E, "ASDFGHJKL"),
+    (0x2C, "ZXCVBNM"),
+)
+_SCANCODE_TO_QT_KEY: dict[int, int] = {}
+for _first_code, _row in _SCANCODE_ROWS:
+    for _offset, _character in enumerate(_row):
+        _SCANCODE_TO_QT_KEY[_first_code + _offset] = getattr(Qt, f"Key_{_character}")
+_SCANCODE_TO_QT_KEY.update({
+    0x1C: Qt.Key_Return,
+    0x39: Qt.Key_Space,
+    0x0E: Qt.Key_Backspace,
+    0x2A: Qt.Key_Shift,      # left shift
+    0x36: Qt.Key_Shift,      # right shift
+    0x1D: Qt.Key_Control,    # SYMBOL SHIFT
+    # Punctuation, so the SYM SHIFT chords above keep working on a non-Latin layout.
+    0x28: Qt.Key_Apostrophe,  # ' and " live on this key
+    0x27: Qt.Key_Semicolon,
+    0x33: Qt.Key_Comma,
+    0x34: Qt.Key_Period,
+    0x35: Qt.Key_Slash,
+    0x0C: Qt.Key_Minus,
+    0x0D: Qt.Key_Equal,
+})
+def _scancode_offset(platform: str) -> int | None:
+    """How far this platform's codes sit from set-1, or None if they don't relate at all."""
+    if platform.startswith("win"):
+        return 0
+    if platform.startswith("linux") or platform.startswith("freebsd"):
+        return 8  # X11 keycode = set-1 scan code + 8
+    return None   # macOS and anything unknown: don't guess
+
+
+_SCANCODE_OFFSET = _scancode_offset(sys.platform)
+
+
+def _position_key(scancode: int, offset: int | None) -> int | None:
+    """The Qt key at a physical position, or None if the position can't be identified.
+
+    ``offset`` is passed rather than defaulted because ``None`` is a meaningful value here
+    ("this platform's numbering is unknown"), which a default could not also express.
+    """
+    if not scancode or offset is None:
+        # No scan code (synthetic events, some virtual keyboards), or a platform whose
+        # numbering we don't know -- either way, there is nothing safe to infer.
+        return None
+    return _SCANCODE_TO_QT_KEY.get(scancode - offset)
+
 
 class EmulatorView(QWidget):
     """Renders a Machine's display (border + screen); call refresh() once per frame to repaint."""
@@ -286,8 +353,18 @@ class EmulatorView(QWidget):
         self.update()  # repaint so the focus border turns green
 
     def focusOutEvent(self, event) -> None:  # noqa: N802 (Qt override name)
+        """Release every held key, then repaint the (now gray) focus border.
+
+        A widget that has lost focus never receives the matching key *release*, so a key
+        that was down when focus moved away -- pressing a menu shortcut, or a file dialog
+        opening over the emulator -- would stay down in the Spectrum's key matrix forever.
+        The machine then behaves as though somebody is leaning on that key: the ROM
+        auto-repeats it, `LOAD ""` becomes unusable, and the keyboard looks broken.
+        """
         super().focusOutEvent(event)
-        self.update()  # repaint so the focus border goes gray
+        self._held_keys.clear()
+        self._rebuild_matrix()
+        self.update()
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -313,7 +390,9 @@ class EmulatorView(QWidget):
     def keyPressEvent(self, event) -> None:
         if event.isAutoRepeat():
             return
-        self._held_keys[self._key_identity(event)] = event.key()
+        # Both the logical key and the physical position are kept: the position is only
+        # consulted when the logical key means nothing to a Spectrum (see _resolve_key).
+        self._held_keys[self._key_identity(event)] = (event.key(), event.nativeScanCode())
         self._rebuild_matrix()
 
     def keyReleaseEvent(self, event) -> None:
@@ -321,6 +400,21 @@ class EmulatorView(QWidget):
             return
         self._held_keys.pop(self._key_identity(event), None)
         self._rebuild_matrix()
+
+    @staticmethod
+    def _resolve_key(held) -> int:
+        """Which Qt key a held key counts as: its own, or the one at its position.
+
+        The logical key wins whenever it means something to a Spectrum, so nothing changes
+        for a Latin layout. It is only when the logical key matches nothing -- which is
+        every letter under a Cyrillic or Greek layout -- that the physical position is used
+        instead. Without that fallback the emulated keyboard is entirely dead on those
+        layouts (see ``_SCANCODE_TO_QT_KEY``).
+        """
+        qt_key, scancode = held
+        if qt_key in _SINGLE_KEY_MAP or qt_key in _CHORD_KEY_MAP:
+            return qt_key
+        return _position_key(scancode, _SCANCODE_OFFSET) or qt_key
 
     def _rebuild_matrix(self) -> None:
         """Recompute the whole Spectrum key matrix from the set of held PC keys.
@@ -337,7 +431,7 @@ class EmulatorView(QWidget):
         symbol_chord_active = False
         caps_from_bare_shift = False
 
-        for qt_key in self._held_keys.values():
+        for qt_key in map(self._resolve_key, self._held_keys.values()):
             chord = _CHORD_KEY_MAP.get(qt_key)
             if chord is not None:
                 matrix_keys.update(chord)

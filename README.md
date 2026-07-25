@@ -10,7 +10,7 @@ CPU with 48K and 128K machine models (memory paging, ULA, keyboard, beeper,
 AY-3-8912), tape and snapshot loading (`.tap`/`.tzx` fast loading, `.sna`/`.z80`
 snapshots), wrapped in a dockable IDE with an assembler build pipeline, a
 source-level debugger, and an asset workflow that imports art and audio, places it in
-memory and generates the assembly to include it. 658 tests pass; the CPU is
+memory and generates the assembly to include it. 682 tests pass; the CPU is
 cross-checked against the FUSE reference emulator. See `dev-support/STATUS.md` for
 the full state and `DEV_PLAN.md` for what's next.
 
@@ -64,7 +64,7 @@ Menus are grouped by what you're doing rather than by which code implements them
 | **Edit** | finding your way around your own text: find in project, go to line |
 | **Build** | turning *your* project into a running program |
 | **Load** | running *someone else's* — one item per format: `.tap`, `.tzx`, `.sna`, `.z80` |
-| **Model** | which machine is emulated (48K / 128K), switchable any time |
+| **Model** | which machine is emulated (48K / 128K), switchable any time; retargets the open project too |
 | **Disassembly** | the disassembly panel and where it points |
 | **Breaks** | breakpoint conditions, run-to-cursor |
 | **Watch** | pause when a value or port is *touched* |
@@ -85,6 +85,10 @@ Menus are grouped by what you're doing rather than by which code implements them
 | `Ctrl+F` | Find in Project — results in Output, click one to jump to it |
 | `Ctrl+G` | Go to Line |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / Save All |
+
+The emulator's keys work by **physical position**, so a non-Latin keyboard layout (Cyrillic,
+Greek…) still types on the Spectrum: `LOAD ""` is the J key, then Ctrl+P twice, then Enter,
+wherever your layout puts those letters.
 
 **F5 assembles the file you have open**, falling back to the manifest's `main` when the
 focused tab isn't a source file. A folder zxide didn't scaffold calls its entry point
