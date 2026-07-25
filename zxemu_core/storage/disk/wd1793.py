@@ -46,6 +46,26 @@ from .trd import SECTOR_SIZE, SECTORS_PER_TRACK
 REVOLUTION_TSTATES = 700_000
 INDEX_PULSE_TSTATES = 15_000
 
+#: How long a raised DRQ may go unanswered before the transfer is declared lost.
+#:
+#: Real hardware cannot hang here, and the reason is worth understanding: the disk is
+#: *physically spinning*, so a byte the host fails to collect has gone past the head for
+#: good. The chip's answer is LOST DATA -- raise the flag, end the command, move on. It
+#: has no option to wait.
+#:
+#: Emulation has exactly that option, and it is a trap. Our "disk" is a bytearray that
+#: will wait patiently for ever, so a host that abandons a transfer -- crashes, takes an
+#: error path, gets reset mid-sector -- leaves the controller holding DRQ and BUSY until
+#: the session ends. TR-DOS polls, sees BUSY, and waits for a byte that will never be
+#: asked for. The machine looks hung, and nothing says why.
+#:
+#: One revolution is deliberately generous: a real chip gives the host about 32
+#: microseconds per byte, but instruction-granular timing here would make that trip on
+#: perfectly healthy transfers. 200ms is far beyond any legitimate gap between bytes --
+#: an interrupt routine in the middle of a load is orders of magnitude quicker -- while
+#: still recovering an abandoned transfer in a fifth of a second.
+DRQ_TIMEOUT_TSTATES = REVOLUTION_TSTATES
+
 MAX_TRACK = 86  # the head stop; a Restore that gets this far has failed
 
 # --- status bits ---------------------------------------------------------------
@@ -87,7 +107,8 @@ class WD1793:
         self.sector = 1
         self.data = 0
         self.status = 0
-        self.drq = False
+        self._drq = False
+        self._last_service = 0   # when DRQ was last raised or a byte last moved
         self.intrq = False
         self.drive_index = 0
         self.side = 0
@@ -102,6 +123,44 @@ class WD1793:
         self._type1 = True    # was the last command a seek-family one? (see read_status)
         self._write_target: tuple[int, int, int] | None = None
         self._multiple = False
+
+    # --- DRQ, and the deadline that goes with it ------------------------------
+
+    @property
+    def drq(self) -> bool:
+        """Whether a byte is waiting to move -- checking the deadline as it answers.
+
+        A property rather than a plain flag so that *every* observer enforces the
+        timeout, whoever asks and however they got here. The Beta's port 0xFF read, the
+        status register and the data register all funnel through this, so an abandoned
+        transfer cannot survive by being polled through a path that forgot to check.
+        """
+        self._expire_stalled_transfer()
+        return self._drq
+
+    @drq.setter
+    def drq(self, value: bool) -> None:
+        self._drq = bool(value)
+        if self._drq:
+            self._last_service = self.clock()
+
+    def _expire_stalled_transfer(self) -> None:
+        """Give up on a transfer nobody is servicing: LOST DATA, and end the command.
+
+        This is the emulated stand-in for a spinning disk (see DRQ_TIMEOUT_TSTATES).
+        Without it the controller can be parked mid-sector for ever, which reads to the
+        machine as a permanently busy drive.
+        """
+        if not self._drq or self._state not in (READING, WRITING):
+            return
+        if self.clock() - self._last_service < DRQ_TIMEOUT_TSTATES:
+            return
+        self.status |= S_LOST_DATA
+        self._buffer = bytearray()
+        self._cursor = 0
+        self._state = IDLE
+        self._drq = False
+        self.intrq = True
 
     # --- wiring ---------------------------------------------------------------
 
@@ -143,7 +202,13 @@ class WD1793:
         Reading it also clears INTRQ, which is how TR-DOS acknowledges a completed
         command -- so this is not a pure query, and calling it from a debugger view would
         change the machine's behaviour.
+
+        The stall check runs *first*, before BUSY is computed: leave it to the ``drq``
+        property further down and the very call that expires a dead transfer would still
+        report the drive busy, so a host polling once and giving up would see the old
+        answer.
         """
+        self._expire_stalled_transfer()
         self.intrq = False
         if self._type1:
             return self._type1_status()
@@ -191,8 +256,10 @@ class WD1793:
 
     def read_data(self) -> int:
         """Take the next byte of a read transfer (or the last value, once it is over)."""
+        self._expire_stalled_transfer()
         if self._state != READING:
             return self.data
+        self._last_service = self.clock()   # the host is keeping up; reset the deadline
         self.data = self._buffer[self._cursor]
         self._cursor += 1
         if self._cursor >= len(self._buffer):
@@ -222,8 +289,10 @@ class WD1793:
 
     def write_data(self, value: int) -> None:
         """Hand the controller the next byte of a write transfer."""
+        self._expire_stalled_transfer()
         self.data = value & 0xFF
         if self._state == WRITING:
+            self._last_service = self.clock()   # still being fed; reset the deadline
             self._buffer.append(self.data)
             if len(self._buffer) >= SECTOR_SIZE:
                 self._commit_write()
@@ -394,33 +463,35 @@ class WD1793:
         self.drq = True
 
     def _write_track(self) -> None:
-        """Format a track: blank it, and finish immediately.
+        """Format a track -- and, deliberately, **touch nothing on the disk**.
 
-        A real Write Track streams raw MFM -- gaps, address marks, data, CRCs -- and the
-        chip lays down whatever it is given, ending at the next index pulse. We store
-        sectors rather than flux, so there is nothing useful to do with that stream: the
-        track is blanked, which is all FORMAT actually needs from us, and the command
-        reports done.
+        A real Write Track streams raw MFM (gaps, address marks, data, CRCs) and lays
+        down whatever the host feeds it, ending at the next index pulse. We store sectors
+        rather than flux, so that stream is unusable to us. It ends immediately.
 
-        **It must report done straight away**, and that is the whole reason this comment
-        exists. An earlier version parked in a FORMATTING state waiting to be fed a
-        track's worth of bytes, with DRQ raised and no completion condition at all --
-        so anything that issued this command and then did *not* write 6250 bytes wedged
-        the controller for ever. TR-DOS issues a 0xFF here during its start-up probing,
-        which decodes to Write Track, and the machine hung solid: no INTRQ, no error, no
-        way back, and the Reset button could not save it either.
+        This method has now been wrong in both directions, which is why it is worth the
+        space:
 
-        Ending at once costs nothing, because the bytes were being discarded regardless.
+        * It first *waited* to be fed a track's worth of bytes, with DRQ raised and no
+          completion condition. Anything issuing the command without feeding 6250 bytes
+          wedged the controller for ever -- no INTRQ, no error, and Reset could not clear
+          it either.
+        * Then it **blanked the track and finished at once**. That unwedged the machine
+          and quietly destroyed data instead: TR-DOS and disk loaders write ``0xFF`` to
+          the command register while probing, that decodes to Write Track, and the target
+          at the time is *track 0* -- the catalogue and the disk-information block. The
+          disk was erased out from under the loader, which then reported "Disk Error" on
+          a disk that had been perfectly good a moment earlier.
+
+        So: finish immediately, and write nothing. A command we cannot interpret
+        faithfully must not be allowed to modify the disk -- an unimplemented format is a
+        missing feature, an erased catalogue is lost work. Nothing is lost in practice
+        either: a disk image starts blank, and TR-DOS's FORMAT lays down its catalogue
+        and information block afterwards through ordinary Write Sector commands, which
+        *are* implemented.
         """
         self._type1 = False
         self.status = 0
-        image = self.image
-        if image is None or image.write_protected:
-            self._state = IDLE
-            self.intrq = True
-            return
-        for sector in range(1, SECTORS_PER_TRACK + 1):
-            image.write_sector(self.position, self.side, sector, b"\x00" * SECTOR_SIZE)
         self._buffer = bytearray()
         self._state = IDLE
         self.drq = False

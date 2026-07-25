@@ -54,10 +54,15 @@ with a sense of humour.
 **Then four bugs turned up in minutes of hands-on use, none of which 762 tests had caught.**
 They share a shape worth remembering — each was *a state machine with no way out*:
 
-* **`RUN` wedged the machine.** TR-DOS writes `0xFF` to the command register while probing;
-  that decodes to **Write Track**, which parked with DRQ raised waiting for a track's worth
-  of bytes that never came. No completion condition existed at all. It now blanks the track
-  and finishes at once — free, since the stream was discarded anyway.
+* **`RUN` wedged the machine, and the first fix was worse.** TR-DOS writes `0xFF` to the
+  command register while probing; that decodes to **Write Track**, which parked with DRQ
+  raised waiting for a track's worth of bytes that never came. Fixing it by *blanking the
+  track and finishing* unwedged the machine and started **erasing disks**: the probe lands
+  while the head is on **track 0**, so it wiped the catalogue and information block, and
+  the loader reported "Disk Error" on a disk that had been fine seconds before. Write Track
+  now completes immediately and **writes nothing**. The rule: *a command we cannot interpret
+  faithfully must not modify the disk.* Nothing is lost — images start blank and `FORMAT`
+  lays down its catalogue through ordinary Write Sector commands.
 * **Reset couldn't rescue it.** `Machine128.reset()` re-pages slot 0 via `rom_for_slot0()`,
   which answers "TR-DOS" while the Beta is paged — so resetting from inside TR-DOS restarted
   the CPU *executing TR-DOS from address 0*. That was the garbage screen. The reset line
@@ -66,6 +71,35 @@ They share a shape worth remembering — each was *a state machine with no way o
   so `0x90`/`0xB0` served one sector and stopped — anything bigger than 256 bytes would stall.
 * **Switching model left the new machine unbooted**, so doing it while paused gave a black
   screen and a dead keyboard that read as a broken model. `set_machine` now power-cycles.
+* **An abandoned transfer hung the drive for ever** (`STUCK-FDC`, found by sweeping real
+  disks — Spectrofon 15). A real chip is attached to a spinning disk, so an uncollected
+  byte is *gone*: it raises LOST DATA and ends the command. Ours is a bytearray that waits
+  patiently, so any abandoned transfer left DRQ and BUSY raised until the session ended.
+  There is now a one-revolution deadline (`DRQ_TIMEOUT_TSTATES`), enforced through the
+  `drq` property so every observer applies it whichever port is polled; each byte moved
+  resets it, so slow-but-living transfers are untouched.
+
+**The pattern in all five:** *a state machine with no way out* — a command that could be
+entered and never left, or a reset that didn't reach far enough. **None** was a mistake
+about what the bytes mean; the format work was right from the start. They were all about
+what happens when something goes wrong, which is precisely what a test suite written by
+the author of the code will not think to probe. Two things found them where unit tests
+could not: sweeping real disks, and using the IDE by hand.
+
+**Also settled this session:**
+* The disk primer — what TR-DOS *is*, for someone who has only used tapes — now lives in
+  `zxemu_core/storage/disk/__init__.py`, per the project's convention that a package's
+  `__init__` is its educational overview. `TRDOS.md` links to it and stays the design
+  record. Every other `__init__.py` was audited for staleness at the same time; four were
+  out of date (no Pentagon, no disks, no `m1_hook`) and are fixed.
+* **Load dialogs share a remembered folder** (`last_media_dir` in settings): media lives in
+  a collection, not in your project, so all six formats plus Mount B and Save Disk As open
+  where you last were. Recorded on load rather than in the dialog, so Load Recent updates
+  it too; a folder that has since vanished is forgotten rather than reopened.
+* **`RUN` sweep over 40 disks**: 13 RAN, 1 MOVED, 1 STUCK-FDC (now fixed), 25 NO-CHANGE.
+  The 25 are **not** a bug — those disks hold a single `.B` file named after the issue and
+  are started with `RUN "NAME"`; bare `RUN` looks for a file literally called `boot`. The
+  harness was naive, not the emulator. Worth remembering before reading that sweep again.
 
 **Spectrofon N1 (1994) now boots from a `.trd` and runs**, and Reset returns to a clean
 Pentagon menu. 770 tests, with a regression test per bug.

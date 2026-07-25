@@ -217,6 +217,32 @@ def test_run_boots_the_disk_and_reset_gets_back_out_of_it():
     assert "TR-DOS" in "\n".join(_screen_text(machine))   # ...back at the Pentagon menu
 
 
+def test_a_probing_write_track_does_not_erase_the_disk():
+    """End-to-end guard for the worst bug in this subsystem so far.
+
+    A disk loader selects a file, TR-DOS probes with 0xFF (= Write Track) while sitting
+    on track 0, and an implementation that honours that literally erases the catalogue
+    and the information block. The symptom is "Disk Error" on a disk that was readable
+    seconds earlier -- and the disk stays broken for the rest of the session.
+    """
+    machine = build_machine("pentagon")
+    image = _disk_with_files()
+    machine.beta_drives[0] = image
+    track0 = bytes(image.data[:TRACK_SIZE])
+
+    _enter_trdos(machine)
+    controller = machine.beta.controller
+    controller.select(0, 0)
+    controller.write_command(0x00)      # Restore: park on track 0, where a probe lands
+    controller.write_command(0xFF)      # ...and probe
+
+    assert bytes(image.data[:TRACK_SIZE]) == track0
+    assert [f.name for f in image.catalogue()] == ["HELLO", "WORLD"]
+
+    _type_cat(machine)
+    assert "2 File" in "\n".join(_screen_text(machine))
+
+
 def test_a_write_through_the_controller_is_read_back_by_tr_dos():
     """Writes reach the image *and* TR-DOS sees them -- the two halves of the write path,
     checked together by changing the disk label and asking TR-DOS for the title."""

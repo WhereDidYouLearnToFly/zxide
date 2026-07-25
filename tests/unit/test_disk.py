@@ -22,7 +22,9 @@ from zxemu_core.storage.disk.trd import (
     sector_offset,
 )
 from zxemu_core.storage.disk.wd1793 import (
+    DRQ_TIMEOUT_TSTATES,
     IDLE,
+    S_LOST_DATA,
     S_NOT_READY,
     S_RECORD_NOT_FOUND,
     WD1793,
@@ -401,14 +403,99 @@ def test_write_track_finishes_instead_of_waiting_to_be_fed():
     assert fdc.intrq and not fdc.drq
 
 
-def test_formatting_a_track_blanks_it():
+def test_an_abandoned_read_gives_up_instead_of_holding_drq_for_ever():
+    """The failure mode emulation invents and hardware cannot have.
+
+    A real chip is attached to a spinning disk: a byte the host fails to collect has gone
+    past the head, so the chip raises LOST DATA and ends the command. It has no option to
+    wait. Ours is a bytearray, which will wait for ever -- so a host that abandons a
+    transfer leaves DRQ and BUSY raised until the session ends, and TR-DOS sits polling a
+    drive that is permanently busy. Found by sweeping real disks, on Spectrofon 15.
+    """
     image = _formatted()
+    fdc, clock = _controller(image)
+    fdc.sector = 1
+    fdc.write_command(0x80)
+    fdc.read_data()                          # one byte, then the host wanders off
+    assert fdc.drq
+
+    clock["t"] += DRQ_TIMEOUT_TSTATES + 1
+
+    assert not fdc.drq                       # the poll itself expires it
+    assert fdc._state == IDLE
+    assert fdc.intrq                         # ...and the host is told the command ended
+    # Checked last: reading the status register is what *acknowledges* INTRQ, so asking
+    # it first would clear the very flag the line above is testing for.
+    assert fdc.read_status() & S_LOST_DATA
+
+
+def test_a_slow_but_still_living_transfer_is_not_killed():
+    """Each byte moved resets the deadline, so a transfer interrupted by an interrupt
+    routine -- orders of magnitude quicker than the timeout -- survives."""
+    image = _formatted()
+    image.write_sector(0, 0, 1, bytes(range(256)))
+    fdc, clock = _controller(image)
+    fdc.sector = 1
+    fdc.write_command(0x80)
+
+    got = bytearray()
+    for _ in range(SECTOR_SIZE):
+        clock["t"] += DRQ_TIMEOUT_TSTATES // 2   # slow, but always answering
+        got.append(fdc.read_data())
+
+    assert bytes(got) == bytes(range(256))
+    assert not fdc.read_status() & S_LOST_DATA
+
+
+def test_an_abandoned_write_expires_too_and_does_not_commit():
+    """Half a sector fed and then silence must not land on the disk as half a sector."""
+    image = _formatted()
+    image.write_sector(0, 0, 5, b"\xEE" * SECTOR_SIZE)
+    image.dirty = False
+    fdc, clock = _controller(image)
+    fdc.sector = 5
+    fdc.write_command(0xA0)
+    for _ in range(100):
+        fdc.write_data(0x11)
+
+    clock["t"] += DRQ_TIMEOUT_TSTATES + 1
+
+    assert not fdc.drq and fdc._state == IDLE
+    assert image.read_sector(0, 0, 5) == b"\xEE" * SECTOR_SIZE
+    assert not image.dirty
+
+
+def test_write_track_never_modifies_the_disk():
+    """The bug that erased a working disk, and the reason this rule is absolute.
+
+    TR-DOS and disk loaders write 0xFF to the command register while probing. That
+    decodes to Write Track, and the head is usually sitting on **track 0** at the time --
+    the catalogue and the disk-information block. An implementation that blanked the
+    track on this command destroyed the disk out from under the loader, which then
+    reported "Disk Error" on an image that had been perfectly good a moment before.
+
+    A command we cannot interpret faithfully must not be allowed to modify the disk. An
+    unimplemented format is a missing feature; an erased catalogue is lost work.
+    """
+    image = _formatted(label="KEEPME")
     for sector in range(1, SECTORS_PER_TRACK + 1):
-        image.write_sector(3, 0, sector, b"\xEE" * SECTOR_SIZE)
+        image.write_sector(0, 0, sector, b"\xEE" * SECTOR_SIZE)
+    image.dirty = False
     fdc, _ = _controller(image)
-    fdc.data = 3
-    fdc.write_command(0x10)                  # seek to track 3
 
-    fdc.write_command(0xF0)                  # Write Track
+    fdc.write_command(0xF0)                  # Write Track, sitting on track 0
 
-    assert image.read_sector(3, 0, 1) == b"\x00" * SECTOR_SIZE
+    assert image.read_sector(0, 0, 1) == b"\xEE" * SECTOR_SIZE
+    assert not image.dirty
+    assert fdc._state == IDLE and fdc.intrq and not fdc.drq
+
+
+def test_write_track_leaves_a_write_protected_disk_alone_too():
+    image = _formatted()
+    image.write_protected = True
+    fdc, _ = _controller(image)
+
+    fdc.write_command(0xF0)
+
+    assert not image.dirty
+    assert fdc._state == IDLE

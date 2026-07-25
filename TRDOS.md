@@ -35,6 +35,22 @@ block. Pinned by `test_decorative_entries_past_the_file_count_are_not_files`.
 
 ---
 
+## What TR-DOS actually is
+
+If you have only met the Spectrum through tapes, the disk system is unfamiliar territory:
+a filesystem, a prompt, drives A-D, and a ROM that appears out of nowhere when you type
+`RANDOMIZE USR 15616`.
+
+**The primer lives in [`zxemu_core/storage/disk/__init__.py`](zxemu_core/storage/disk/__init__.py)**
+— the Beta 128 hardware, how you get into TR-DOS, the command set, the four file types,
+the on-disk layout, contiguous allocation and why `ERASE` doesn't free space, and the two
+numbering traps (1-based sectors on the wire vs 0-based in the catalogue; logical tracks
+that fold the two sides together). It is written for someone who has never used TR-DOS,
+and it sits in the package rather than here because that is where a reader of the code
+will meet it.
+
+This document is the other half: *how zxide implements it, and what went wrong doing so.*
+
 ## Why
 
 zxide emulates the Sinclair line — 48K and 128K, loading from tape. The entire Soviet and
@@ -215,11 +231,23 @@ driving the thing by hand. Worth recording as a set, because they share a shape:
 a *state machine with no way out*.
 
 1. **`RUN` wedged the machine solid.** TR-DOS writes `0xFF` to the command register while
-   probing at start-up. That decodes to **Write Track**, and the implementation parked in a
-   formatting state with DRQ raised, waiting to be fed a track's worth of bytes that were
-   never coming — no completion condition at all. Write Track now blanks the track and
-   finishes immediately, which costs nothing since the incoming stream was being discarded
-   anyway.
+   probing. That decodes to **Write Track**, and the implementation parked in a formatting
+   state with DRQ raised, waiting to be fed a track's worth of bytes that were never
+   coming — no completion condition at all.
+
+   The first fix — blank the track and finish at once — unwedged the machine and
+   **destroyed data instead**. The probe happens while the head sits on **track 0**, so it
+   erased the catalogue and the disk-information block; the loader then reported
+   *"Disk Error"* on a disk that had been readable seconds earlier, and the disk stayed
+   broken for the rest of the session. Found by the user selecting a game in a compilation
+   menu, not by any test.
+
+   Write Track now finishes immediately and **writes nothing at all**. The rule this
+   settled on is worth stating plainly: *a command we cannot interpret faithfully must not
+   be allowed to modify the disk.* An unimplemented format is a missing feature; an erased
+   catalogue is lost work. Nothing is lost in practice either — images start blank, and
+   TR-DOS's `FORMAT` writes its catalogue and information block afterwards through ordinary
+   Write Sector commands, which are implemented.
 2. **Reset could not rescue it.** `Machine128.reset()` re-pages slot 0 through
    `rom_for_slot0()`, which answers *"TR-DOS"* while the interface is paged in — so
    resetting from inside TR-DOS restarted the CPU **executing the disk operating system
@@ -230,13 +258,46 @@ a *state machine with no way out*.
    stopped. That is how a loader reads a whole file without issuing a command per 256
    bytes, so anything larger than a sector would have stalled.
 
+4. **A transfer nobody serviced hung the drive for ever** (`STUCK-FDC`, found by sweeping
+   real disks — Spectrofon 15). This one is a failure mode *emulation invents and hardware
+   cannot have*, which makes it worth understanding rather than just fixing.
+
+   The controller moves a sector one byte at a time, raising **DRQ** to say "take this
+   one". A real chip is bolted to a **spinning disk**: a byte the host fails to collect
+   has physically gone past the head, so the chip raises **LOST DATA**, ends the command,
+   and the software retries on the next revolution. It has no option to wait.
+
+   Ours is a `bytearray`, which waits patiently for ever. So a host that abandons a
+   transfer — crashes, takes an error path, is reset mid-sector — left the controller
+   holding DRQ and BUSY until the session ended, with TR-DOS politely polling a drive
+   that would never finish.
+
+   There is now a deadline (`DRQ_TIMEOUT_TSTATES`, one revolution): an unanswered DRQ
+   expires into LOST DATA and ends the command, and every byte moved resets it, so a slow
+   but living transfer is untouched. Enforced through the `drq` property so that *every*
+   observer applies it, whichever port the host happens to poll.
+
 Plus one in the UI: **switching model left the new machine unbooted**. A freshly built
 machine has never executed an instruction, so switching while paused gave a black screen
 and a dead keyboard — indistinguishable from "the new model is broken". Swapping the
 machine is a power-cycle, and now behaves like one.
 
-With those fixed, **Spectrofon N1 (1994) boots from a `.trd` and runs**, and Reset returns
-to a clean Pentagon menu.
+With those fixed, real software runs: **Spectrofon N1 and 15 (1994-95)** boot from `.trd`
+and reach their front pages, **GAMES041** loads a game from its compilation menu, and
+Reset returns to a clean Pentagon menu from any of them.
+
+### The pattern in all five
+
+Every one was **a state machine with no way out** — a command that could be entered and
+never left, or a reset that didn't reach far enough. None was a mistake about *what the
+bytes mean*; the format work was right from the start. They were all about what happens
+when something goes wrong, which is exactly the part that a test suite written by the
+same person who wrote the code will not think to probe: my tests drove the controller
+correctly, so they never issued the malformed command a real ROM issues, never abandoned
+a transfer, and never reset from a state a person reaches in ten seconds.
+
+Two ways of finding them worked where unit tests didn't: **sweeping real disks** (which
+found the stuck transfer) and **using the IDE by hand** (which found the other four).
 
 ### The bug that test was worth catching
 

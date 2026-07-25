@@ -647,12 +647,34 @@ class MainWindow(QMainWindow):
         one format's files rather than a mixed bag -- ``.tap`` and ``.tzx`` are both
         tapes but behave differently enough to be worth choosing between deliberately.
         """
-        start_dir = str(self.project.folder) if self.project else ""
         path, _ = QFileDialog.getOpenFileName(
-            self, f"Load {fmt.label}", start_dir, fmt.file_filter
+            self, f"Load {fmt.label}", self._media_dir(), fmt.file_filter
         )
         if path:
             self._load_media(path)
+
+    def _media_dir(self) -> str:
+        """Where a Load dialog should open: wherever you last loaded something from.
+
+        Shared by every format deliberately. Tapes, disks and snapshots live together in
+        a collection folder and almost never inside the project you have open, so
+        starting at the project -- the old behaviour -- meant navigating the same long
+        path again for each one. One folder rather than one per format, because a .tzx
+        and a .trd from the same collection sit side by side.
+
+        Falls back to the project, then to the dialog's own default, and forgets a folder
+        that has since been deleted rather than opening somewhere arbitrary.
+        """
+        remembered = self.settings.get("last_media_dir", "")
+        if remembered and Path(remembered).is_dir():
+            return remembered
+        return str(self.project.folder) if self.project else ""
+
+    def _remember_media_dir(self, path) -> None:
+        """Record the folder a media file came from, for the next Load dialog."""
+        folder = Path(path).parent
+        if folder.is_dir():
+            self.settings.set("last_media_dir", str(folder))
 
     def _load_media(self, path) -> bool:
         """Load a user-chosen media file (snapshot/tape) and record it in Load Recent.
@@ -678,6 +700,10 @@ class MainWindow(QMainWindow):
             ok = False
         if ok:
             self.settings.push_recent("recent_files", str(path))
+            # Recorded here rather than in the dialog, so it also follows Load Recent and
+            # anything else that loads by path -- the useful folder is the one you last
+            # actually loaded from, however you got there.
+            self._remember_media_dir(path)
         return ok
 
     def _load_snapshot(self, path) -> bool:
@@ -797,9 +823,8 @@ class MainWindow(QMainWindow):
 
     def _mount_disk_dialog(self, drive: int) -> None:
         """Pick a disk image for a specific drive (drive A is Load TRD/SCL's own target)."""
-        start = str(self.project.folder) if self.project else ""
         path, _ = QFileDialog.getOpenFileName(
-            self, f"Mount in drive {'AB'[drive]}", start,
+            self, f"Mount in drive {'AB'[drive]}", self._media_dir(),
             "TR-DOS disk image (*.trd *.scl)",
         )
         if path:
@@ -830,7 +855,7 @@ class MainWindow(QMainWindow):
         image = self._disk_image(drive)
         if image is None:
             return False
-        start = str(self.project.folder) if self.project else ""
+        start = self._media_dir()
         suggested = Path(image.name or "disk").with_suffix(".trd").name
         path, _ = QFileDialog.getSaveFileName(
             self, "Save disk image", str(Path(start) / suggested) if start else suggested,
@@ -845,6 +870,7 @@ class MainWindow(QMainWindow):
             return False
         image.dirty = False
         image.name = Path(path).name
+        self._remember_media_dir(path)   # saving somewhere is just as good a hint as loading
         self._log(f"Saved disk to {path}.")
         return True
 

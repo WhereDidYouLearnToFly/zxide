@@ -32,6 +32,11 @@ def default_settings() -> dict:
         "show_special": False,  # editor: render whitespace markers
         "recent_projects": [],  # project folders, most-recent first (Open Recent menu)
         "recent_files": [],     # loaded .sna/.tap files, most-recent first (Load Recent menu)
+        # Where the last tape/disk/snapshot came from. Media lives in a collection folder,
+        # not in your project, so every Load dialog should reopen where you were rather
+        # than sending you back to the project each time -- and one shared folder rather
+        # than one per format, because a .tzx and a .trd usually sit side by side.
+        "last_media_dir": "",
     }
 
 
