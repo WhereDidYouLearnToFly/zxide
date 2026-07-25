@@ -49,6 +49,7 @@ from PyQt5.QtWidgets import (
     QInputDialog,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QTreeView,
     QWidget,
 )
@@ -99,6 +100,7 @@ TAPE_STALL_FRAMES = 400
 MACHINE_MODEL_CHOICES = (
     ("ZX Spectrum 48K", "48k"),
     ("ZX Spectrum 128K", "128k"),
+    ("Pentagon 128 (TR-DOS)", "pentagon"),
 )
 
 
@@ -131,6 +133,9 @@ class MainWindow(QMainWindow):
         # builds a *new* machine: kept here, your choice survives the swap (see set_machine).
         self._fast_load = True
         self._tape_audible = True
+        # Write protection can be ticked before a disk is in the drive; remember it so
+        # the next disk mounted honours what the menu already claims.
+        self._pending_write_protect = False
         # Model-menu radio items, keyed by model string. Populated by _build_menu and
         # kept in sync by set_machine, so the tick always follows the *live* machine --
         # whether it changed from the menu or from opening a project.
@@ -345,6 +350,13 @@ class MainWindow(QMainWindow):
         action = self._model_actions.get(machine_model(machine))
         if action is not None:
             action.setChecked(True)
+        # Boot it. A freshly built machine has never run an instruction, so if the
+        # emulator was paused -- at a breakpoint, or by the Pause button -- switching
+        # model would hand you a black screen and a dead keyboard that looks like the new
+        # model is broken. Swapping the machine is a power-cycle by any reasonable
+        # reading, so it behaves like one.
+        self.controller.reset()
+        self.controller.set_running(True)
         self._refresh_all_panels()
 
     def _new_project(self) -> None:
@@ -659,6 +671,8 @@ class MainWindow(QMainWindow):
             ok = self._load_snapshot(path)
         elif kind == media.TAPE:
             ok = self._load_tape(path)
+        elif kind == media.DISK:
+            ok = self._load_disk(path)
         else:
             self._log(f"Don't know how to load {path.name}.")
             ok = False
@@ -722,6 +736,116 @@ class MainWindow(QMainWindow):
         self._tape_idle_frames = 0
         self._tape_watch_index = 0
         self._tape_stall_reported = False
+        return True
+
+    # --- the disk drives --------------------------------------------------------
+
+    def _load_disk(self, path, drive: int = 0) -> bool:
+        """Mount a .trd/.scl in a drive, switching to a machine that has drives at all.
+
+        A disk image is meaningless on a 48K or a Sinclair 128: neither has a disk
+        interface, so there is nowhere to put it. Rather than refuse, we switch to the
+        Pentagon -- clicking "Load TRD" is an unambiguous statement of intent, and the
+        alternative is an error message telling you to go and do the obvious thing
+        yourself. It is logged, because a silent machine swap would be worse.
+        """
+        path = Path(path)
+        try:
+            image = media.read_disk(path)
+        except (ValueError, OSError) as error:
+            self._log(f"Could not load {path.name}: {error}")
+            return False
+
+        if getattr(self.machine, "beta", None) is None:
+            self._log("This machine has no disk interface — switching to Pentagon 128.")
+            self._switch_model("pentagon")
+
+        image.write_protected = self._pending_write_protect
+        self.machine.beta_drives[drive] = image
+        self.controller.set_running(True)
+        self.view.refresh()
+        self._focus_emulator()
+        for line in media.disk_summary(path.name, image, "AB"[drive] if drive < 2 else str(drive)):
+            self._log(line)
+        return True
+
+    def _disk_image(self, drive: int = 0):
+        """The image in a drive, or None (with an explanatory log line)."""
+        drives = getattr(self.machine, "beta_drives", None)
+        if not drives or drives[drive] is None:
+            self._log("No disk in the drive.")
+            return None
+        return drives[drive]
+
+    def _eject_disk(self, drive: int = 0) -> None:
+        image = self._disk_image(drive)
+        if image is None:
+            return
+        if image.dirty:
+            # Ejecting a written-to disk is how you lose a game's save file, so it asks.
+            reply = QMessageBox.question(
+                self, "Eject disk",
+                f"{image.name or 'This disk'} has unsaved changes. Eject anyway?",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            )
+            if reply == QMessageBox.Cancel:
+                return
+            if reply == QMessageBox.Save and not self._save_disk_as(drive):
+                return
+        self.machine.beta_drives[drive] = None
+        self._log("Disk ejected.")
+
+    def _mount_disk_dialog(self, drive: int) -> None:
+        """Pick a disk image for a specific drive (drive A is Load TRD/SCL's own target)."""
+        start = str(self.project.folder) if self.project else ""
+        path, _ = QFileDialog.getOpenFileName(
+            self, f"Mount in drive {'AB'[drive]}", start,
+            "TR-DOS disk image (*.trd *.scl)",
+        )
+        if path:
+            self._load_disk(path, drive)
+
+    def _set_disk_write_protect(self, protected: bool, drive: int = 0) -> None:
+        """Checkable menu item, so the handler takes the new state rather than toggling.
+
+        Toggling would drift out of step with the tick the moment anything else changed
+        the flag -- and the tick is the only thing telling you which way round it is.
+        """
+        drives = getattr(self.machine, "beta_drives", None)
+        if not drives or drives[drive] is None:
+            if protected:
+                self._log("No disk in the drive — write protection will apply once one is in.")
+            self._pending_write_protect = protected
+            return
+        drives[drive].write_protected = protected
+        self._log("Disk is now write-protected." if protected else "Disk is now writable.")
+
+    def _save_disk_as(self, drive: int = 0) -> bool:
+        """Write the mounted image back out as a .trd.
+
+        Always .trd, never .scl, even if that is what was loaded: an SCL cannot express
+        free space or a disk label, both of which exist by the time the machine has
+        written anything, so saving back to one would quietly throw work away.
+        """
+        image = self._disk_image(drive)
+        if image is None:
+            return False
+        start = str(self.project.folder) if self.project else ""
+        suggested = Path(image.name or "disk").with_suffix(".trd").name
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save disk image", str(Path(start) / suggested) if start else suggested,
+            "TR-DOS disk image (*.trd)",
+        )
+        if not path:
+            return False
+        try:
+            Path(path).write_bytes(image.to_bytes(pad=True))
+        except OSError as error:
+            self._log(f"Could not save {path}: {error}")
+            return False
+        image.dirty = False
+        image.name = Path(path).name
+        self._log(f"Saved disk to {path}.")
         return True
 
     # --- the tape deck ----------------------------------------------------------

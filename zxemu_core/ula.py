@@ -10,9 +10,16 @@ from __future__ import annotations
 
 FRAME_TSTATES = 69888  # 48K PAL: 312 lines * 224 T-states/line
 FRAME_TSTATES_128K = 70908  # 128K PAL: 311 lines * 228 T-states/line
+FRAME_TSTATES_PENTAGON = 71680  # Pentagon 128: 224 lines * 320 T-states/line
 # The 128K ULA runs a slightly longer frame than the 48K, so its 50Hz interrupt
 # falls on a different T-state cadence -- code timed against one model runs a hair
 # off on the other. Machine128 selects this length; see Machine.frame_tstates.
+#
+# The Pentagon's frame is longer again, and its line is a round 320 T-states. That
+# tidiness is the point: the clone's designers rebuilt the ULA's timing in discrete
+# logic, and while they were there they dropped memory contention altogether (see
+# MachinePentagon). Soviet-era demos are written against *this* cadence, which is why
+# emulating a Pentagon as "a 128K with a disk drive" makes them run visibly wrong.
 LINE_TSTATES = 224
 TOP_BORDER_LINES = 64
 SCREEN_LINES = 192

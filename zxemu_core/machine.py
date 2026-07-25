@@ -1,9 +1,9 @@
 """Spectrum machines: wire CPU + paged memory + ULA + sound together and run frames.
 
-``Machine`` is the 48K; ``Machine128`` (below) extends it with the 128K's bank
-paging (port 0x7FFD) and AY sound chip. The 48K wiring is factored into ``_wire()``
-so the 128K subclass can build a different memory map first and then reuse the exact
-same CPU/ULA/sound plumbing.
+``Machine`` is the 48K; ``Machine128`` extends it with the 128K's bank paging (port
+0x7FFD) and AY sound chip; ``MachinePentagon`` extends *that* into the Soviet clone.
+The 48K wiring is factored into ``_wire()`` so each subclass can build a different
+memory map first and then reuse the exact same CPU/ULA/sound plumbing.
 
 The machine is also where the pieces that need a *whole* Spectrum live, because no
 single chip owns them:
@@ -22,12 +22,14 @@ from typing import NamedTuple
 
 from .cpu.z80 import Z80
 from .keyboard import Keyboard
-from .memory import Memory, create_48k_memory, create_128k_memory
+from .memory import Bank, Memory, create_48k_memory, create_128k_memory
 from .sound.ay import AY8912
 from .sound.beeper import Beeper
 from .sound.mixer import SoundMixer
 from .storage import pulse, tape
-from .ula import FRAME_TSTATES, FRAME_TSTATES_128K, Ula
+from .storage.disk.beta import DRIVE_COUNT, Beta128
+from .storage.disk.wd1793 import WD1793
+from .ula import FRAME_TSTATES, FRAME_TSTATES_128K, FRAME_TSTATES_PENTAGON, Ula
 
 # The trap replaces the whole (real-time) LD-BYTES routine, so its exact T-state cost is
 # fictional; we bill a token amount just to advance the frame clock past the "instruction".
@@ -286,12 +288,22 @@ class Machine128(Machine):
     the display/paging hooks, and reset.
     """
 
+    #: PAL frame length. A class attribute rather than a literal in __init__ so
+    #: MachinePentagon can state its own without re-implementing the constructor.
+    FRAME_TSTATES = FRAME_TSTATES_128K
+
+    #: Whether the odd RAM banks share the memory bus with the ULA. True on a Sinclair
+    #: 128K; MachinePentagon sets it False, because the clone's ULA contends with nothing.
+    contended_ram = True
+
     def __init__(self, rom0_data: bytes, rom1_data: bytes):
-        self.memory, self.rom_banks, self.ram_banks = create_128k_memory(rom0_data, rom1_data)
+        self.memory, self.rom_banks, self.ram_banks = create_128k_memory(
+            rom0_data, rom1_data, contended=self.contended_ram
+        )
         self.port_7ffd = 0
         self._locked = False
         self._wire()  # cpu/ula/keyboard/beeper/mixer + reset (see base Machine)
-        self.frame_tstates = FRAME_TSTATES_128K
+        self.frame_tstates = self.FRAME_TSTATES
         # The AY joins the beeper in the mixer, so both play through one stream.
         self.ay = AY8912(sample_rate=self.beeper.sample_rate)
         self.audio.add_source(self.ay)
@@ -313,9 +325,22 @@ class Machine128(Machine):
         if self._locked and not force:
             return
         self.port_7ffd = value
-        self.memory.page(0, self.rom_banks[(value >> 4) & 1])
+        self.memory.page(0, self.rom_for_slot0())
         self.memory.page(3, self.ram_banks[value & 0x07])
         self._locked = bool(value & 0x20)
+
+    def rom_for_slot0(self):
+        """Which ROM bank belongs at 0x0000 for the current paging latch.
+
+        A seam, not ceremony: on a Pentagon the Beta 128 interface can have substituted
+        TR-DOS for the ROM, and a 0x7FFD write must not silently undo that -- a program
+        switching RAM banks mid-load would otherwise pull TR-DOS out from under itself.
+        """
+        return self.rom_banks[(self.port_7ffd >> 4) & 1]
+
+    def restore_rom_slot(self) -> None:
+        """Put the paging latch's ROM back in slot 0 (used when TR-DOS pages out)."""
+        self.memory.page(0, self.rom_banks[(self.port_7ffd >> 4) & 1])
 
     def _io_write(self, port: int, value: int) -> None:
         # Decode order matters only for clarity: the masks are mutually exclusive
@@ -351,3 +376,101 @@ class Machine128(Machine):
         screen_bank = 7 if self.port_7ffd & 0x08 else 5
         labels = (f"ROM{rom_index}", "RAM5", "RAM2", f"RAM{ram_bank}")
         return Paging128(self.port_7ffd, rom_index, ram_bank, screen_bank, self._locked, labels)
+
+
+class MachinePentagon(Machine128):
+    """A Pentagon 128: the Soviet-bloc clone that most of the demoscene was written on.
+
+    Electrically it is a 128K rebuilt in discrete logic rather than a Ferranti ULA, and
+    for emulation purposes that reduces to exactly three differences:
+
+      * **A 71680 T-state frame** (224 lines of 320 T) instead of the Sinclair's 70908.
+        A 50Hz interrupt therefore lands on a different cadence, and code timed against
+        one model runs visibly wrong on the other -- which is the whole reason this is a
+        separate machine and not "a 128K with a disk drive".
+      * **No memory contention at all.** The clone's designers did not reproduce the
+        ULA's habit of stalling the CPU when it wants the same bank. Note that this makes
+        us *more* faithful here than on the Sinclair models, not less: there is nothing
+        to approximate.
+      * **A Beta 128 disk interface, built in and live from reset**, with TR-DOS in a
+        third ROM (see ``zxemu_core/storage/disk/beta.py``). That is what the machine is
+        actually for; tape was already a legacy format by the time it shipped.
+
+    Paging, the AY, the bank pool and the screen are pure 128K, which is why this class
+    is as short as it is -- ``Machine128`` already does all of that.
+    """
+
+    FRAME_TSTATES = FRAME_TSTATES_PENTAGON
+    contended_ram = False
+
+    def reset(self) -> None:
+        """Power-cycle, which on this machine has to take the disk interface with it.
+
+        The reset line reaches the Beta 128 too: its ROM drops out of the map and the
+        controller aborts whatever it was doing. Skipping that is not a cosmetic
+        omission -- ``Machine128.reset`` re-pages slot 0 through ``rom_for_slot0()``,
+        which answers "TR-DOS" while the interface is paged in, so a reset performed
+        from inside TR-DOS would leave TR-DOS sitting at 0x0000 and start executing it
+        from address 0. The machine comes up as garbage and the Reset button looks
+        broken, which is exactly how this was found.
+        """
+        if getattr(self, "beta", None) is not None:
+            self.beta.paged = False
+            if self.beta.controller is not None:
+                self.beta.controller.master_reset()
+        super().reset()
+
+    def __init__(self, rom0_data: bytes, rom1_data: bytes, trdos_rom_data: bytes | None = None):
+        # Declared *before* the base constructor, not after: it runs reset() -> set_paging()
+        # -> rom_for_slot0(), which asks whether the Beta has taken over slot 0. Assigning
+        # afterwards leaves that first call reading an attribute that does not exist yet.
+        self.beta = None
+        # Four drive slots, as the interface's connector has. Each holds a mounted image
+        # or None; the UI mounts into them and the controller reads through them.
+        self.beta_drives: list = [None] * DRIVE_COUNT
+        super().__init__(rom0_data, rom1_data)
+        # TR-DOS lives in a *third* ROM that isn't part of the 0x7FFD pool -- the Beta
+        # interface substitutes it for whatever slot 0 holds, rather than being selected
+        # by the paging latch. Optional so a Pentagon can still be constructed in tests
+        # (and by anyone who deleted the ROM over its licensing) without a disk system.
+        if trdos_rom_data is not None:
+            self.trdos_rom = Bank.from_bytes(trdos_rom_data, readonly=True)
+            # The controller's only use for a clock is the index pulse, and tape_tstate is
+            # already exactly what it needs: a count that never restarts.
+            controller = WD1793(self.beta_drives, clock=lambda: self.tape_tstate)
+            self.beta = Beta128(self, self.trdos_rom, controller)
+            # The interface watches the address bus, so it needs to see every fetch.
+            self.cpu.m1_hook = self.beta.m1
+
+    def rom_for_slot0(self):
+        # While TR-DOS is paged, a 0x7FFD write changes which ROM *would* be visible
+        # without disturbing what actually is -- see Machine128.rom_for_slot0.
+        if self.beta is not None and self.beta.paged:
+            return self.trdos_rom
+        return super().rom_for_slot0()
+
+    def _io_read(self, port: int) -> int:
+        if self.beta is not None and self.beta.handles(port):
+            return self.beta.read_port(port)
+        return super()._io_read(port)
+
+    def _io_write(self, port: int, value: int) -> None:
+        if self.beta is not None and self.beta.handles(port):
+            self.beta.write_port(port, value)
+            return
+        super()._io_write(port, value)
+
+    def rom_symbols_valid(self) -> bool:
+        # With TR-DOS paged, 0x0000-0x3FFF is the disk operating system, so the 48K ROM's
+        # routine names would label the wrong code entirely.
+        if self.beta is not None and self.beta.paged:
+            return False
+        return super().rom_symbols_valid()
+
+    def paging_state(self) -> Paging128:
+        state = super().paging_state()
+        if self.beta is None or not self.beta.paged:
+            return state
+        # Say what is actually at 0x0000. The memory map showing "ROM1" while TR-DOS is
+        # running is the kind of quiet lie that costs an hour in the debugger.
+        return state._replace(slot_labels=("TR-DOS",) + state.slot_labels[1:])

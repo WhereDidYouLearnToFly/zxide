@@ -1,7 +1,8 @@
 """Storage: getting somebody else's program *into* the machine.
 
-Two kinds of file, two completely different philosophies, which is why they are
-separate modules rather than one "loader":
+Three kinds of medium, three completely different philosophies, which is why these are
+separate modules rather than one "loader". A snapshot restores a machine; a tape is a
+signal the machine has to listen to; a disk is a filesystem it can read *and write*.
 
     snapshot.py  ``.sna`` -- a photograph of the machine. Registers, and every byte
                  of RAM, captured mid-run. Loading one doesn't *run* anything; it
@@ -18,6 +19,12 @@ separate modules rather than one "loader":
                  keeps everything else for playing.
     pulse.py     the same tape as a *signal*: blocks turned back into the pilot, sync
                  and bit pulses a real ULA samples on port 0xFE bit 6.
+    disk/        ``.trd``/``.scl`` -- TR-DOS floppies, plus the Beta 128 interface and
+                 the WD1793 controller that read them. A subpackage rather than a
+                 module because a disk brings its own *hardware* with it: the other
+                 formats here are read by the machine we already have, while a disk
+                 needs a controller, drives, and a ROM that pages itself in. See its
+                 own overview. Only a Pentagon has one.
 
 The tape side is the interesting one, because it is loaded **two entirely different
 ways** and the choice is the user's (Load ▸ Tape Deck ▸ Fast Load):
@@ -38,6 +45,6 @@ loader partway through.
 
 from __future__ import annotations
 
-from zxemu_core.storage import pulse, snapshot, tape, tzx, z80
+from zxemu_core.storage import disk, pulse, snapshot, tape, tzx, z80
 
-__all__ = ["pulse", "snapshot", "tape", "tzx", "z80"]
+__all__ = ["disk", "pulse", "snapshot", "tape", "tzx", "z80"]

@@ -50,7 +50,9 @@ def test_kind_of_classifies_by_suffix(name, kind):
 def test_the_format_table_covers_every_suffix_the_loaders_handle():
     """FORMATS is the single source of truth: the Load menu, the file dialogs' filters
     and the suffix sets all come from it, so a format added here needs nothing else."""
-    assert [f.suffix for f in media.FORMATS] == [".tap", ".tzx", ".sna", ".z80"]
+    assert [f.suffix for f in media.FORMATS] == [
+        ".tap", ".tzx", ".trd", ".scl", ".sna", ".z80",
+    ]
     assert media.TAPE_SUFFIXES == {".tap", ".tzx"}
     assert media.SNAPSHOT_SUFFIXES == {".sna", ".z80"}
 

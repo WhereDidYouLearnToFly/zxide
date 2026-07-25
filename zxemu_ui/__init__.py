@@ -17,8 +17,8 @@ The shell, at the top level:
                       map from the last build, breakpoints and their conditions, and
                       the watched addresses and ports. One object rather than six
                       attributes scattered through the window.
-    media.py          Somebody else's program: which loader a file needs (.sna/.z80 vs
-                      .tap/.tzx) and what the log should say about it. No Qt.
+    media.py          Somebody else's program: which loader a file needs (snapshots vs
+                      tapes vs disks) and what the log should say about it. No Qt.
     controller.py     Drives the machine in real time (the frame pump) and offers
                       run / pause / reset / step / run-to controls, breakpoints and
                       watchpoints -- talking to the rest of the UI purely through Qt
@@ -26,7 +26,9 @@ The shell, at the top level:
     editor.py         The central multi-tab code editor, with a breakpoint gutter
                       and an execution-line marker.
     z80_highlighter.py    Syntax colouring for Z80 assembly.
-    machine_factory.py    Builds the right machine (48K or 128K) for a model string.
+    machine_factory.py    Builds the right machine (48K, 128K or Pentagon 128) for a
+                      model string, and loads that model's ROMs. The one place either
+                      choice is made.
     audio_output.py   Plays the core's PCM through the system sound device (a thin
                       QtMultimedia sink that fails quiet when there isn't one).
     layout_store.py   Saves and restores the dock layout as readable JSON.

@@ -45,7 +45,14 @@ SOURCE_SUFFIXES = {".asm", ".s", ".z80asm"}
 # Templates and addons are package *data*, so they live at the zxemu_ui root rather
 # than beside this module -- hence parent.parent, not parent.
 _TEMPLATE_ROOT = Path(__file__).resolve().parent.parent / "templates"
-TEMPLATE_DIRS = {"48k": _TEMPLATE_ROOT / "project48", "128k": _TEMPLATE_ROOT / "project128"}
+TEMPLATE_DIRS = {
+    "48k": _TEMPLATE_ROOT / "project48",
+    "128k": _TEMPLATE_ROOT / "project128",
+    # Pentagon scaffolds the 128K starter: the address space, paging and AY are
+    # identical, so the source would be the same file twice. What differs (frame length,
+    # no contention, the disk interface) is the machine's business, not the project's.
+    "pentagon": _TEMPLATE_ROOT / "project128",
+}
 DEFAULT_MODEL = "48k"
 
 # Optional addons: extra source files a project can opt into *after* creation, unlike
@@ -120,7 +127,7 @@ class Project:
 
     @property
     def model(self) -> str:
-        """The machine model ("48k"/"128k"). Defaults to 48K for older manifests."""
+        """The machine model ("48k"/"128k"/"pentagon"). Defaults to 48K for older manifests."""
         return self.load_manifest().get("model", DEFAULT_MODEL)
 
     def set_model(self, model: str) -> None:

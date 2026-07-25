@@ -5,13 +5,16 @@ panels, move focus, write to the log. *Which* loader to call, and what the log s
 is neither Qt's business nor the window's, so it lives here: no Qt import, so it can be
 tested by asking questions rather than by driving a window.
 
-The four formats fall into two kinds, and the difference is not cosmetic:
+The formats fall into three kinds, and the differences are not cosmetic:
 
     snapshots (.sna, .z80)   A photograph of a machine mid-run. Loading one *is* the
                              program running; there is nothing to start.
     tapes (.tap, .tzx)       A cassette. Loading one only puts it in the deck -- the
                              emulated machine still has to be told to LOAD it, which is
                              why this module also produces the "now type LOAD" hint.
+    disks (.trd, .scl)       A TR-DOS floppy. Like a tape it only gets mounted, but
+                             unlike either of the others it needs a machine that *has* a
+                             disk interface -- so loading one implies a Pentagon.
 """
 
 from __future__ import annotations
@@ -20,9 +23,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from zxemu_core.storage import snapshot, tape, tzx, z80
+from zxemu_core.storage.disk import scl, trd
 
 SNAPSHOT = "snapshot"
 TAPE = "tape"
+DISK = "disk"
 
 
 @dataclass(frozen=True)
@@ -51,6 +56,8 @@ class Format:
 FORMATS = (
     Format(".tap", "TAP", "TAP tape image", TAPE),
     Format(".tzx", "TZX", "TZX tape image", TAPE),
+    Format(".trd", "TRD", "TR-DOS disk image", DISK),
+    Format(".scl", "SCL", "SCL disk image", DISK),
     Format(".sna", "SNA", "SNA snapshot", SNAPSHOT),
     Format(".z80", "Z80", "Z80 snapshot", SNAPSHOT),
 )
@@ -58,6 +65,7 @@ FORMATS = (
 FORMATS_BY_SUFFIX = {fmt.suffix: fmt for fmt in FORMATS}
 SNAPSHOT_SUFFIXES = frozenset(f.suffix for f in FORMATS if f.kind == SNAPSHOT)
 TAPE_SUFFIXES = frozenset(f.suffix for f in FORMATS if f.kind == TAPE)
+DISK_SUFFIXES = frozenset(f.suffix for f in FORMATS if f.kind == DISK)
 
 
 def format_of(path: str | Path) -> Format | None:
@@ -106,20 +114,58 @@ def make_deck(items) -> tape.TapeDeck:
     return tape.TapeDeck(items)
 
 
+def read_disk(path: str | Path):
+    """Mount a ``.trd`` or ``.scl`` as a disk image, picking the reader by suffix.
+
+    An ``.scl`` is *converted* rather than read (see ``storage/disk/scl.py``): it holds a
+    list of files with no disk around them, so one has to be built. Both end up as the
+    same TrdImage, so nothing downstream needs to care which arrived.
+    """
+    path = Path(path)
+    data = path.read_bytes()
+    if path.suffix.lower() == ".scl":
+        return scl.parse_scl(data, path.name)
+    return trd.parse_trd(data, path.name)
+
+
+def disk_summary(name: str, image, drive_letter: str = "A") -> list[str]:
+    """Log lines describing a freshly mounted disk, and how to get at it.
+
+    Lists the catalogue because that is the question you actually have -- "what is on
+    this disk?" -- and because it is TR-DOS's own first move too.
+    """
+    info = image.info()
+    label = info.label or "(unlabelled)"
+    lines = [f"Mounted {name} in drive {drive_letter}: {label} — "
+             f"{info.file_count} file(s), {info.free_sectors} free sector(s)"]
+    for entry in image.catalogue()[:24]:
+        lines.append(f"    {entry.display_name:<14} <{entry.extension}> "
+                     f"{entry.length:>6} bytes, {entry.sectors} sector(s)")
+    remaining = len(image.catalogue()) - 24
+    if remaining > 0:
+        lines.append(f"    …and {remaining} more")
+    if not info.valid:
+        # Not fatal: an unformatted disk is a legitimate thing to mount, and TR-DOS's
+        # own FORMAT has to start from one.
+        lines.append("    · no TR-DOS identifier on this disk — it may be unformatted.")
+    lines.append('Choose "TR-DOS" from the menu (or RANDOMIZE USR 15616), then CAT to list it.')
+    return lines
+
+
 def tape_summary(name: str, items, notes: list[str], model: str) -> list[str]:
     """The log lines describing a freshly inserted tape, including how to start it.
 
     Counts and lists only the *loadable* items: a pilot tone is part of the signal, not
     something you would ever call a block on the tape.
 
-    The instruction differs by model because the 128K boots to its own menu: there is no
-    ``LOAD ""`` prompt until you have chosen a BASIC from it.
+    The instruction differs by model because the 128K and Pentagon boot to their own
+    menu: there is no ``LOAD ""`` prompt until you have chosen a BASIC from it.
     """
     blocks = tape.data_blocks(items)
     lines = [f"Inserted {name} — {len(blocks)} loadable block(s):"]
     lines += [f"    {block.describe()}" for block in blocks]
     lines += [f"    · {note}" for note in notes]
-    if model == "128k":
+    if model in ("128k", "pentagon"):
         lines.append('Choose "128 BASIC" (or "48 BASIC"), then type LOAD "" ⏎ to load.')
     else:
         lines.append('Type LOAD "" ⏎ (the J key gives LOAD) to load.')

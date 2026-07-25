@@ -37,7 +37,11 @@ from zxemu_ui.workspace.settings import detect_assembler
 
 # (label, model) for the target-machine chooser. Mirrors MainWindow's menu choices; kept
 # here rather than imported to avoid a dialog depending on the window that opens it.
-MACHINE_MODELS = (("ZX Spectrum 48K", "48k"), ("ZX Spectrum 128K", "128k"))
+MACHINE_MODELS = (
+    ("ZX Spectrum 48K", "48k"),
+    ("ZX Spectrum 128K", "128k"),
+    ("Pentagon 128 (TR-DOS)", "pentagon"),
+)
 
 
 class SettingsDialog(QDialog):

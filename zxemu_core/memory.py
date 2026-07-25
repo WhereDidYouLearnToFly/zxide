@@ -160,7 +160,7 @@ def create_48k_memory(rom_data: bytes) -> Memory:
     return Memory([rom_bank, screen_bank, ram_bank_2, ram_bank_3])
 
 
-def create_128k_memory(rom0_data: bytes, rom1_data: bytes):
+def create_128k_memory(rom0_data: bytes, rom1_data: bytes, *, contended: bool = True):
     """Build the 128K memory: a bank *pool* plus its power-on mapping.
 
     Unlike the fixed 48K map, the 128K pages banks in and out of the four slots via
@@ -171,13 +171,15 @@ def create_128k_memory(rom0_data: bytes, rom1_data: bytes):
         (memory, rom_banks, ram_banks)
 
     - ``ram_banks``: eight 16K RAM banks (0-7). The odd banks (1, 3, 5, 7) are
-      contended on real hardware -- they share the memory bus with the ULA.
+      contended on a Sinclair 128K -- they share the memory bus with the ULA. Pass
+      ``contended=False`` for a Pentagon, whose rebuilt ULA contends with nothing at
+      all; that is a real difference in the hardware, not a shortcut.
     - ``rom_banks``: two 16K ROMs -- ROM 0 is the 128 editor/menu, ROM 1 is 48 BASIC.
     - Power-on map (0x7FFD = 0): ROM0 at 0x0000, RAM5 (the normal screen) at 0x4000,
       RAM2 at 0x8000, RAM0 at 0xC000. Slots 1 and 2 never change; paging only ever
       swaps ROM into slot 0 and a RAM bank into slot 3.
     """
-    ram_banks = [Bank(contended=(n in (1, 3, 5, 7))) for n in range(8)]
+    ram_banks = [Bank(contended=contended and n in (1, 3, 5, 7)) for n in range(8)]
     rom_banks = [
         Bank.from_bytes(rom0_data, readonly=True),
         Bank.from_bytes(rom1_data, readonly=True),

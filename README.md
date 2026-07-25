@@ -6,11 +6,11 @@ PyQt5 UI.
 ## Status
 
 **Milestones 1–4 complete, plus a full debugger.** A from-scratch pure-Python Z80
-CPU with 48K and 128K machine models (memory paging, ULA, keyboard, beeper,
+CPU with 48K, 128K and Pentagon 128 machine models (memory paging, ULA, keyboard, beeper,
 AY-3-8912), tape and snapshot loading (`.tap`/`.tzx`, both instant and at
 authentic pulse-level tape speed; `.sna`/`.z80` snapshots), wrapped in a dockable IDE with an assembler build pipeline, a
 source-level debugger, and an asset workflow that imports art and audio, places it in
-memory and generates the assembly to include it. 716 tests pass; the CPU is
+memory and generates the assembly to include it. 760 tests pass; the CPU is
 cross-checked against the FUSE reference emulator. See `dev-support/STATUS.md` for
 the full state and `DEV_PLAN.md` for what's next.
 
@@ -27,7 +27,8 @@ the full state and `DEV_PLAN.md` for what's next.
     `beeper_preview.py` for auditioning an effect without a running machine.
   - `storage/` — `tape.py` (.tap + the ROM-trap fast loader), `tzx.py`,
     `pulse.py` (edge-level replay: blocks back into the pulses a ULA hears),
-    `snapshot.py` (.sna), `z80.py` (.z80).
+    `snapshot.py` (.sna), `z80.py` (.z80), and `disk/` — the Beta 128
+    interface, a WD1793, and `.trd`/`.scl` TR-DOS images.
   - `assets/` — converters (`bmp_convert.py`, `tilemap_convert.py`,
     `binary_convert.py`, `pt3_convert.py`, `beeper_sfx.py`, `native_sprite.py`),
     the `manifest.py` that records them, and `preview.py` that draws them.
@@ -64,8 +65,8 @@ Menus are grouped by what you're doing rather than by which code implements them
 | **File** | projects and source files |
 | **Edit** | finding your way around your own text: find in project, go to line |
 | **Build** | turning *your* project into a running program |
-| **Load** | running *someone else's* — one item per format (`.tap`, `.tzx`, `.sna`, `.z80`), plus the tape deck |
-| **Model** | which machine is emulated (48K / 128K), switchable any time; retargets the open project too |
+| **Load** | running *someone else's* — one item per format (`.tap`, `.tzx`, `.trd`, `.scl`, `.sna`, `.z80`), plus the tape deck and disk drive |
+| **Model** | which machine is emulated (48K / 128K / Pentagon 128), switchable any time; retargets the open project too |
 | **Disassembly** | the disassembly panel and where it points |
 | **Breaks** | breakpoint conditions, run-to-cursor |
 | **Watch** | pause when a value or port is *touched* |
@@ -134,7 +135,7 @@ previous build's SLD to avoid where your code landed last time — so on a proje
 first build, before any SLD exists, it can still place an asset on top of hand-written
 code. Build twice, or place it by hand.
 
-### Tapes and snapshots
+### Tapes, disks and snapshots
 
 There are two loaders, and **Load ▸ Tape Deck ▸ Fast Load** picks between them.
 
@@ -154,6 +155,24 @@ stripes**, because the loader itself is painting the border between samples, and
 Real commercial tapes load this way (1942 is the worked example), but the heavily
 protected loaders are not all there yet — Speedlock plays its whole tape without coming
 up. If a tape stalls, the Output says which of the two loaders to reach for.
+
+### Disks (Pentagon + TR-DOS)
+
+**Load ▸ Load TRD… / Load SCL…** mounts a TR-DOS disk. Neither a 48K nor a Sinclair 128 has
+anywhere to put one, so doing this switches the machine to a **Pentagon 128** — the Soviet
+clone the whole disk world ran on — and says so in the Output.
+
+Inside the machine, choose **TR-DOS** from the Pentagon menu (or `RANDOMIZE USR 15616`) and
+type `CAT`. **Load ▸ Disk Drive** handles the disk you already mounted: drive B, write
+protect, Save Disk As, eject. Disks are **writable** — TR-DOS can `SAVE` onto them and the
+image saves back out, which is what makes a disk a development target and not just another
+way to load somebody else's game.
+
+`.scl` images are converted to a real disk on load, since an SCL is a list of files with no
+disk around them. Saving always writes `.trd`, because an SCL cannot express free space or a
+disk label. See **[TRDOS.md](TRDOS.md)** for how it works and what it can't do — chiefly
+copy-protected disks, which hide their protection in the gaps between sectors that a
+sector-level emulation has nowhere to put.
 
 `.tzx` files are read for everything audible, in order — data blocks with their own pulse
 timings, plus bare tones, pulse sequences and pauses. Anything else in the container

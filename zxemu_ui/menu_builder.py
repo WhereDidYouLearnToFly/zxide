@@ -134,6 +134,7 @@ def build(window, *, model_choices, scale_choices) -> Menus:
     load_menu = bar.addMenu("&Load")
     tips = {
         media.TAPE: 'Insert the tape, then LOAD "" from BASIC',
+        media.DISK: "Mount a TR-DOS disk — implies a Pentagon, and switches to one",
         media.SNAPSHOT: "Restore a machine mid-run — it resumes immediately",
     }
     previous_kind = None
@@ -165,6 +166,22 @@ def build(window, *, model_choices, scale_choices) -> Menus:
         Item("&Rewind", window._tape_rewind, tip="Back to the first block"),
         SEPARATOR,
         Item("&Eject", window._eject_tape),
+    ])
+
+    # The disk drives, beside the deck for the same reason: these operate the medium you
+    # already mounted rather than choosing a new one. Only a Pentagon has them, and
+    # mounting a disk on anything else switches to one (see MainWindow._load_disk).
+    add_items(window, load_menu.addMenu("&Disk Drive"), [
+        Item("Mount in Drive &B…", lambda: window._mount_disk_dialog(1),
+             tip="Drive A is where Load TRD/SCL puts a disk; this is the second drive"),
+        SEPARATOR,
+        Item("&Write Protect", window._set_disk_write_protect, checkable=True,
+             tip="Stop the machine writing to the mounted disk"),
+        Item("&Save Disk As…", window._save_disk_as,
+             tip="Write the mounted image back out as a .trd, including anything the "
+                 "machine has saved onto it"),
+        SEPARATOR,
+        Item("E&ject Disk", window._eject_disk),
     ])
 
     model_actions = _build_model_menu(window, model_choices)

@@ -2,6 +2,83 @@
 
 _Last updated: 2026-07-25._ A snapshot to make it easy to pick the project back up.
 
+## Latest session (2026-07-25, later) — Pentagon 128, Beta 128, TR-DOS, disks
+
+**760 tests pass**, up from 727. Design document: **[../TRDOS.md](../TRDOS.md)** — read that
+for the architecture and the hardware facts; this is the narrative.
+
+A third machine model, and with it a whole storage medium. `Load ▸ Load TRD…` mounts a disk,
+the Pentagon menu's TR-DOS entry works, `CAT` lists the disk, and the machine can write back.
+**1852 images from the local library parse, 0 refused** (946 `.trd`, 906 `.scl`).
+
+**Three things worth knowing before touching this code again:**
+
+1. **The ROM identification was checked, not assumed.** `128p-0.rom` differs from the stock
+   `128-0.rom` in **65 bytes**: the menu string `"Tape Tester"` becomes `"TR-DOS"`, and new
+   code appears containing the literal `"15616"`. `RANDOMIZE USR 15616` is 0x3D00 — the exact
+   address the Beta 128 watches for. The ROM patch and the interface agree, which is what
+   confirms the pair. `128p-1.rom` is byte-identical to `128-1.rom`.
+2. **`LICENSE-roms.txt` now separates three cases** rather than implying one. Amstrad's
+   permission covers `48.rom`/`128-*.rom`/`128p-1.rom`. **No distribution statement could be
+   located** for `trdos.rom` or `128p-0.rom`'s patch — they are in the fuse checkout but in
+   neither its `Makefile.am` nor its `README.copyright`. Bundled deliberately, with the
+   position stated.
+3. **The CPU gained an `m1_hook`** because the Beta pages its ROM by watching the *address
+   bus* during instruction fetch, which neither a port write nor the single-address trap can
+   express. Measured cost: **48K 11.0ms, 128K 15.3ms, Pentagon 16.6ms per frame** — ~8% on
+   Pentagon only, nothing elsewhere (the hook is `None`). Inside the 20ms budget, so it stands.
+
+**The bug worth remembering.** The first `CAT` on a good disk said **"No disk"**. Everything
+checked out: the catalogue parsed, the geometry was right, TR-DOS had seeked to track 0 and
+asked for sector 9. Port tracing found it — TR-DOS polls **port 0xFF** for DRQ/INTRQ and never
+reads the status register mid-transfer, so a **stale INTRQ from the previous Restore** made the
+first Read Sector look already-finished. It took one byte and gave up. The datasheet clears
+INTRQ on a status read *or a command write*; only the first was implemented. One line, now
+pinned by `test_writing_a_command_clears_intrq` — nothing about the symptom points at the cause.
+
+**Also worth knowing:** a catalogue "track" is a *logical* track with the two sides folded in
+(cylinder = track // sides, head = track % sides), which is why the TRD layout interleaves
+sides. My own first test asserted otherwise and was wrong, not the code.
+
+**The boot sweep, and what it was worth.** 60 disks sampled at random from the library, each
+booted into TR-DOS with `CAT` typed on the emulated keyboard and the screen decoded back to
+text; TR-DOS's file count compared against the parser's. **59/60 agreed immediately.** The
+60th (*Spectrum Progress 01*) said 27 against TR-DOS's 12 — catalogue slots past the file
+count held a maker's **signature** rather than files, with zero length and a start position
+of track 0 sector 0, and no 0x00 terminator in front of them. `catalogue()` now bounds itself
+by the information block's file count when that block is genuine, which is the number TR-DOS
+trusts, falling back to the terminator when it isn't. Worth noting the shape of this: three
+disks by hand all passed, and it took an arbitrary sample to turn up a disk built by someone
+with a sense of humour.
+
+**Then four bugs turned up in minutes of hands-on use, none of which 762 tests had caught.**
+They share a shape worth remembering — each was *a state machine with no way out*:
+
+* **`RUN` wedged the machine.** TR-DOS writes `0xFF` to the command register while probing;
+  that decodes to **Write Track**, which parked with DRQ raised waiting for a track's worth
+  of bytes that never came. No completion condition existed at all. It now blanks the track
+  and finishes at once — free, since the stream was discarded anyway.
+* **Reset couldn't rescue it.** `Machine128.reset()` re-pages slot 0 via `rom_for_slot0()`,
+  which answers "TR-DOS" while the Beta is paged — so resetting from inside TR-DOS restarted
+  the CPU *executing TR-DOS from address 0*. That was the garbage screen. The reset line
+  reaches the interface now, as it does in hardware.
+* **Multi-sector transfers were never implemented.** `_multiple` was decoded and then unused,
+  so `0x90`/`0xB0` served one sector and stopped — anything bigger than 256 bytes would stall.
+* **Switching model left the new machine unbooted**, so doing it while paused gave a black
+  screen and a dead keyboard that read as a broken model. `set_machine` now power-cycles.
+
+**Spectrofon N1 (1994) now boots from a `.trd` and runs**, and Reset returns to a clean
+Pentagon menu. 770 tests, with a regression test per bug.
+
+The lesson to carry: the automated tests all drove the *controller* correctly, so they never
+issued the malformed command a real ROM issues, and never reset from a state a person can
+easily reach. Hands-on use found in minutes what a test suite built from my own assumptions
+could not.
+
+**Deliberately not done:** `.fdi` (needs bit-level geometry), a dedicated disk *panel* (the
+menu plus the Output catalogue listing covers the function), and `Write Track` beyond blanking
+a track — enough for `FORMAT`, not for a copier that inspects the format.
+
 ## Latest session (2026-07-25) — tape edge replay, and Milestone 3 finally closes
 
 **716 tests pass** (`pytest tests/unit tests/integration`), up from 682.

@@ -26,23 +26,35 @@ from zxemu_core.memory import BANK_SIZE, SCREEN_BYTES
 Range = tuple[int, int]  # (start_offset, length), both in bytes within one bank
 
 
+#: Models with a real, independently-pageable bank pool behind port 0x7FFD.
+#:
+#: A Pentagon's address space is a 128K's, bank for bank -- the clone changed the frame
+#: timing and bolted on a disk interface, it did not touch the memory map. Everything
+#: that reasons about banks therefore treats the two identically, and asks *here* rather
+#: than scattering ``model in ("128k", "pentagon")`` through the codebase, where the next
+#: clone would have to be added in a dozen places and would be missed in two of them.
+PAGED_MODELS = frozenset({"128k", "pentagon"})
+
+
 def bank_ids_for_model(model: str) -> list[str]:
     """The addressable banks for a machine model, in a stable, model-appropriate order.
 
     48K's RAM is wired statically to slots, never independently swapped, so its banks
     are named by the slot they occupy (``ram1``/``ram2``/``ram3``) rather than an
     arbitrary bank number -- there's no other bank a 48K's "ram1" could ever mean. 128K
-    has a real, independently-pageable bank pool, so its names are the actual bank
-    numbers (``ram0``..``ram7``) rather than whichever slot they happen to sit in *now*.
+    and Pentagon have a real, independently-pageable bank pool, so their names are the
+    actual bank numbers (``ram0``..``ram7``) rather than whichever slot they happen to
+    sit in *now*.
     """
-    if model == "128k":
+    if model in PAGED_MODELS:
         return ["rom0", "rom1"] + [f"ram{n}" for n in range(8)]
     return ["rom", "ram1", "ram2", "ram3"]
 
 
 def _screen_bank_ids(model: str) -> set[str]:
-    """Which bank(s) hold display memory -- the normal screen, and on 128K the shadow screen too."""
-    return {"ram5", "ram7"} if model == "128k" else {"ram1"}
+    """Which bank(s) hold display memory -- the normal screen, and the shadow screen too
+    on the models that have one."""
+    return {"ram5", "ram7"} if model in PAGED_MODELS else {"ram1"}
 
 
 def _hardware_reserved(bank_id: str, model: str) -> list[Range]:

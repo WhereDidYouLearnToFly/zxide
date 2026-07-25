@@ -8,10 +8,14 @@ handoff notes.
 
 **Where things stand:** Milestones 1–4 are done (emulator core → IDE shell + debugger →
 hardware & audio → asset workflow), and Milestone 3's last deferred piece — **tape edge
-replay** — has now landed too, so M3 is complete. The milestone sections below are kept as
-written, with ✅ marks and follow-up notes added as work landed, because *why* something
-was sequenced the way it was outlives the sequencing. **Next up** is in "Recommended
-sequence" and the Milestone 5 section: the memory-dumper, then Visual Logic.
+replay** — has landed too, so M3 is complete. Since then the emulator has grown a third
+machine: **Pentagon 128 with a Beta 128 interface, TR-DOS, and `.trd`/`.scl` disks**, which
+has its own design document — see **[TRDOS.md](TRDOS.md)**, not repeated here.
+
+The milestone sections below are kept as written, with ✅ marks and follow-up notes added as
+work landed, because *why* something was sequenced the way it was outlives the sequencing.
+**Next up** is in "Recommended sequence" and the Milestone 5 section: the memory-dumper,
+then Visual Logic.
 
 The raw original vision notes are preserved verbatim at the end ("Appendix: original vision").
 

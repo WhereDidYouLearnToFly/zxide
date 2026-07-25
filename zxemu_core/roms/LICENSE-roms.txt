@@ -1,6 +1,16 @@
-These ROM images (48.rom, 128-0.rom, 128-1.rom) are copyright Amstrad.
-Amstrad has given permission for them to be distributed, provided that
-they are not sold and are not embedded in hardware, per the statement at:
+This directory holds ROM binaries from sources with three different licensing
+positions. They are set out separately because they are genuinely not the same,
+and lumping them together would overstate our position on two of them.
+
+None of this applies to any other code in this repository, which is original
+work. All of these files are unmodified binaries.
+
+
+1. 48.rom, 128-0.rom, 128-1.rom  --  permission granted
+------------------------------------------------------
+Copyright Amstrad. Amstrad has given permission for them to be distributed,
+provided that they are not sold and are not embedded in hardware, per the
+statement at:
 
   https://groups.google.com/group/comp.sys.amstrad.8bit/msg/c092cc4d4943131e
 
@@ -8,5 +18,35 @@ They were obtained unmodified from the Fuse emulator project
 (https://fuse-emulator.sourceforge.net/), whose own roms/README.copyright
 documents these same terms.
 
-This license covers only these ROM binaries. It does not apply to any
-other code in this repository, which is original work.
+
+2. 128p-1.rom  --  covered by (1)
+---------------------------------
+The Pentagon ROM set's second half is byte-for-byte identical to 128-1.rom (the
+48 BASIC ROM); Pentagon leaves that half of the 128K ROM alone. It is therefore
+the same Amstrad binary under the same permission, and is kept as a separate
+file only so the Pentagon ROM pair can be loaded by name.
+
+
+3. 128p-0.rom, trdos.rom  --  NO DISTRIBUTION STATEMENT LOCATED
+---------------------------------------------------------------
+Be clear about this one.
+
+  trdos.rom   The TR-DOS operating system for the Beta 128 disk interface,
+              copyright Technology Research Ltd.
+  128p-0.rom  The Pentagon variant of the 128K editor ROM: Amstrad's 128-0.rom
+              with 65 bytes changed, replacing the "Tape Tester" menu entry with
+              "TR-DOS" and adding code to enter it via RANDOMIZE USR 15616.
+              Derived from Amstrad code, so (1) applies to that portion; the
+              authorship of the patch itself is unattributed.
+
+We could not find a distribution statement for either. Both are present in the
+Fuse checkout used as this project's hardware reference, but -- unlike the
+Amstrad ROMs above -- they appear in neither Fuse's roms/Makefile.am nor its
+roms/README.copyright, so they are not covered by Fuse's documented terms
+either.
+
+They are included because the Pentagon machine model cannot boot without them,
+and they have circulated freely in the Spectrum community for decades. That is
+an explanation, not a licence. If you redistribute this project or use it
+commercially, satisfy yourself about these two files -- or delete them and point
+zxide at your own copies.

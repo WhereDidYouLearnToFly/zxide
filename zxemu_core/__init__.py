@@ -6,17 +6,20 @@ that make up the screen) and, step by step, does exactly what the real chips
 would do with that state. Run the original ROM and games on top of that
 faithful pretence and they can't tell they aren't on real silicon.
 
-This package is that pretence for the ZX Spectrum -- both the 48K and the 128K --
-in pure Python with no GUI dependency (the user interface lives separately in
-``zxemu_ui``), so the emulator can be read, tested, and reused entirely on its own.
+This package is that pretence for the ZX Spectrum -- the 48K, the 128K, and the
+Soviet-era **Pentagon 128** clone -- in pure Python with no GUI dependency (the user
+interface lives separately in ``zxemu_ui``), so the emulator can be read, tested, and
+reused entirely on its own.
 
 The machine itself sits at the top level -- these four files *are* the Spectrum:
 
 
     machine.py   Wires everything below into a whole "Spectrum" and runs it one
-                 frame (1/50th of a second) at a time. ``Machine`` is the 48K;
-                 ``Machine128`` subclasses it with 0x7FFD bank paging and the AY.
-                 **Start here**: it is the big picture in one short file.
+                 frame (1/50th of a second) at a time. Three machines, each
+                 subclassing the last: ``Machine`` is the 48K, ``Machine128`` adds
+                 0x7FFD bank paging and the AY, and ``MachinePentagon`` adds the
+                 clone's own frame timing, no memory contention, and a built-in
+                 disk interface. **Start here**: it is the big picture in one file.
     memory.py    The 64K address space, modelled as four swappable 16K banks.
                  The 48K wires them statically; the 128K pages RAM and ROM banks
                  in and out through this same abstraction. Also holds the optional
@@ -38,7 +41,9 @@ Everything else is grouped by subsystem, each with its own overview:
     sound/       The beeper, the AY chip, and the mixer that sums them the way a
                  resistor network does in hardware.
     storage/     Getting somebody else's program in: .sna and .z80 snapshots,
-                 .tap and .tzx tapes.
+                 .tap and .tzx tapes (loaded instantly *or* as real pulses), and
+                 -- in ``storage/disk/`` -- the Beta 128 interface, a WD1793
+                 floppy controller and TR-DOS .trd/.scl disks.
     assets/      Turning your source material into Spectrum bytes: bitmaps and
                  sprite sheets, fonts, tilemaps, binaries, PT3 tunes, beeper SFX --
                  plus the manifest that records them and the previews that draw them.

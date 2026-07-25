@@ -36,6 +36,16 @@ class Z80:
         # its only cost when unused, so the hot loop is unaffected.
         self._trap_pc = -1
         self._trap_handler = None
+        # Instruction-fetch (M1) hook: called with PC before each instruction, for hardware
+        # that watches the *address bus* rather than any port. The Beta 128 disk interface
+        # is the case that needs it -- it pages TR-DOS in and out purely by noticing which
+        # address the CPU is fetching from (see storage/disk/beta.py), which no port write
+        # and no single-address trap can express.
+        #
+        # None while nothing is watching, which is every machine except the Pentagon; the
+        # cost is then one `is not None` per instruction, the same order as the trap
+        # compare above it.
+        self.m1_hook = None
 
     def reset(self) -> None:
         self.regs = Registers()
@@ -128,6 +138,10 @@ class Z80:
 
     def step(self) -> int:
         """Execute one instruction, returning the T-states it consumed."""
+        if self.m1_hook is not None:
+            # Runs *before* the trap check and before the fetch, because the hook can
+            # change what is paged in at PC -- which is the whole point of it.
+            self.m1_hook(self.regs.pc)
         if self.regs.pc == self._trap_pc:
             billed = self._trap_handler()
             if billed is not None:  # None = the handler declined; fall through to real execution

@@ -27,7 +27,7 @@ from pathlib import Path
 from zxemu_core.assets.manifest import AssetEntry, AssetKind, FrameSequence
 from zxemu_core.assets.registry import convert_asset
 from zxemu_core.assets.tilemap_convert import parse_tilemap_json
-from zxemu_core.memlayout import FreeSpaceIndex, bank_ids_for_model
+from zxemu_core.memlayout import PAGED_MODELS, FreeSpaceIndex, bank_ids_for_model
 from zxemu_core.memory import BANK_SIZE
 from zxemu_ui.workspace import sld
 
@@ -54,6 +54,7 @@ _SLOT_BASE = (0x0000, 0x4000, 0x8000, 0xC000)
 _SAFE_SLOT_BANKS = {
     "48k": dict(enumerate(bank_ids_for_model("48k"))),
     "128k": {1: "ram5", 2: "ram2"},
+    "pentagon": {1: "ram5", 2: "ram2"},  # same address space as a 128K -- see memlayout.PAGED_MODELS
 }
 
 # When two traced instruction-start addresses are close together, treat everything
@@ -235,7 +236,7 @@ def _slot_for_bank(bank_id: str) -> int:
 
 
 def _address_lines(model: str, bank: str, offset: int) -> list[str]:
-    if model != "128k":
+    if model not in PAGED_MODELS:
         slot = bank_ids_for_model("48k").index(bank)
         return [f"    org ${_SLOT_BASE[slot] + offset:04x}"]
     bank_number = int(bank[3:])  # "ram3" -> 3, "rom1" -> 1 -- both prefixes are 3 characters

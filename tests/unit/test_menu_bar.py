@@ -79,11 +79,16 @@ def test_the_load_menu_offers_one_item_per_format(window):
     from zxemu_ui import media
 
     labels = _labels(_menu(window, "&Load"))
-    assert labels[:4] == ["Load TAP…", "Load TZX…", "Load SNA…", "Load Z80…"]
-    assert labels == [f.menu_label for f in media.FORMATS] + ["Load &Recent", "&Tape Deck"]
-    # Tapes and snapshots are different things, so they are separated -- as is the deck,
-    # which operates the tape you already inserted rather than choosing a new one.
-    assert sum(1 for a in _menu(window, "&Load").actions() if a.isSeparator()) == 3
+    assert labels[:6] == [
+        "Load TAP…", "Load TZX…", "Load TRD…", "Load SCL…", "Load SNA…", "Load Z80…",
+    ]
+    assert labels == [f.menu_label for f in media.FORMATS] + [
+        "Load &Recent", "&Tape Deck", "&Disk Drive",
+    ]
+    # Tapes, disks and snapshots are different things, so they are separated -- as are the
+    # deck and the drive, which operate the medium you already mounted rather than
+    # choosing a new one.
+    assert sum(1 for a in _menu(window, "&Load").actions() if a.isSeparator()) == 4
 
 
 def test_the_tape_deck_menu_exposes_both_loaders_and_the_transport(window):
@@ -118,11 +123,23 @@ def test_each_load_item_opens_a_dialog_filtered_to_its_own_format(window, monkey
 
     titles = [args[1] for args in seen]
     filters = [args[3] for args in seen]
-    assert titles == ["Load TAP", "Load TZX", "Load SNA", "Load Z80"]
+    assert titles == [
+        "Load TAP", "Load TZX", "Load TRD", "Load SCL", "Load SNA", "Load Z80",
+    ]
     assert filters == [
         "TAP tape image (*.tap)", "TZX tape image (*.tzx)",
+        "TR-DOS disk image (*.trd)", "SCL disk image (*.scl)",
         "SNA snapshot (*.sna)", "Z80 snapshot (*.z80)",
     ]
+
+
+def test_the_disk_drive_menu_exposes_the_transport(window):
+    drive = _submenu(_menu(window, "&Load"), "&Disk Drive")
+    assert _labels(drive) == [
+        "Mount in Drive &B…", "&Write Protect", "&Save Disk As…", "E&ject Disk",
+    ]
+    protect = next(a for a in drive.actions() if a.text() == "&Write Protect")
+    assert protect.isCheckable() and not protect.isChecked()
 
 
 def test_separators_survive_the_move_to_data(window):
@@ -139,7 +156,7 @@ def test_checkable_items_are_checkable_and_the_rest_are_not(window):
 
 def test_the_model_menu_ticks_the_live_machine(window):
     labels = _labels(_menu(window, "&Model"))
-    assert labels == ["ZX Spectrum 48K", "ZX Spectrum 128K"]
+    assert labels == ["ZX Spectrum 48K", "ZX Spectrum 128K", "Pentagon 128 (TR-DOS)"]
     checked = [a.text() for a in _menu(window, "&Model").actions() if a.isChecked()]
     assert checked == ["ZX Spectrum 48K"]  # the machine this window was built with
 

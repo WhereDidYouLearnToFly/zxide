@@ -11,6 +11,13 @@ Files, in a sensible reading order:
     z80.py         The fetch-decode-execute loop itself, plus interrupt
                    handling and HALT. Read this first -- it ties it all
                    together and is the shortest way to see how a CPU "ticks".
+                   It also carries the two hooks by which *hardware* gets a word
+                   in: ``set_trap`` (run something else instead of the
+                   instruction at one address -- how tape fast-loading
+                   intercepts the ROM) and ``m1_hook`` (watch every instruction
+                   fetch -- how the Beta 128 disk interface pages its ROM in
+                   and out). Both are machine-agnostic here: the CPU offers the
+                   seam, the machine supplies the meaning.
     registers.py   The Z80's registers (A, F, BC, DE, HL, IX, IY, SP, PC, the
                    shadow set) and the individual flag bits (S Z H P/V N C).
     flags.py       The arithmetic/flag math -- how ADD, SUB, INC, rotates, DAA

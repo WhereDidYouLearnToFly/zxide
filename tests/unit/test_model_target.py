@@ -65,6 +65,27 @@ def test_switching_with_no_project_open_just_switches(qapp, tmp_path):
     assert machine_model(window.machine) == "48k"
 
 
+def test_switching_the_model_boots_the_new_machine(qapp, tmp_path):
+    """A freshly built machine has never executed an instruction. If the emulator was
+    paused -- at a breakpoint, or by the Pause button -- switching model without booting
+    hands you a black screen and a dead keyboard, which reads as "the new model is
+    broken" rather than "you are still paused". Swapping the machine is a power-cycle by
+    any reasonable reading, so it behaves like one.
+    """
+    window, _project = _window_on_128k_project(qapp, tmp_path)
+    window.controller.set_running(False)
+
+    window._switch_model("pentagon")
+
+    assert window.controller.running
+    assert machine_model(window.machine) == "pentagon"
+    # ...and it has actually got somewhere, rather than sitting at PC=0 having never run.
+    for _ in range(200):
+        window.machine.run_frame()
+    screen = window.machine.display_memory()[:6144]
+    assert sum(1 for byte in screen if byte) > 100
+
+
 def test_re_selecting_the_current_model_does_not_reset_the_machine(qapp, tmp_path):
     window, _project = _window_on_128k_project(qapp, tmp_path)
     machine = window.machine
