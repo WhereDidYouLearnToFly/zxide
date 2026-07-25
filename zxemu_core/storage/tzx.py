@@ -1,24 +1,33 @@
-"""Read ``.tzx`` tape images down to the blocks the fast loader can serve.
+"""Read ``.tzx`` tape images into the ordered signal a Spectrum would hear.
 
 Where a ``.tap`` is nothing but data blocks back to back, a ``.tzx`` is a *container*:
 each block is tagged with an ID byte, and only some of those blocks carry tape data at
 all. The rest describe timings, structure (groups, loops, jumps, menus) or plain
 metadata -- the game's title, the author, which hardware it wants.
 
-What this module extracts is the subset the block-based fast loader can act on:
+What this module extracts is everything that makes a *sound*, in order:
 
     0x10  standard speed data   -- exactly a .tap block
-    0x11  turbo speed data      -- same bytes, custom pulse timings
-    0x14  pure data             -- data with no pilot tone
+    0x11  turbo speed data      -- same bytes, its own pulse timings
+    0x14  pure data             -- data with no pilot tone in front of it
+    0x12  pure tone             -- a leader stored on its own
+    0x13  pulse sequence        -- a hand-written list of pulse lengths
+    0x20  pause / stop the tape
 
-The timings are deliberately discarded. Fast loading never generates pulses in the
-first place (see ``tape.py``): it hands the ROM's loader a finished block, so how the
-bits *would* have been timed on the wire makes no difference. That is why a turbo block
-loads here at all -- but it is also the limit of the trick. A game whose loader does its
-own bit-banging never calls the ROM routine, so no trap can help it, and it needs
-authentic edge replay regardless of which container the tape came in.
+**The timings are the point of the format, and they are kept.** An earlier version of
+this module threw them away, which was defensible while the only loader was the fast
+one: it hands the ROM a finished block, so how the bits *would* have been timed makes
+no difference to it. But that also fixed the ceiling. A turbo loader bit-bangs its own
+sampling loop and never calls the ROM routine, so no trap can serve it -- it needs the
+real pulse train, at the real speed, which means the numbers in these headers.
 
-Every other block is walked (a container has to be walked in order -- block lengths are
+The non-data entries matter for the same reason. A tape that stores a pilot as a 0x12
+tone and its payload as a 0x14 "pure data" block is *one load split across two entries*:
+drop the tone and the loader has nothing to lock onto. So the parser keeps the running
+order of everything audible and lets :class:`~zxemu_core.storage.tape.TapeDeck` sort out
+which entries a fast load can shortcut.
+
+Everything else is walked (a container has to be walked in order -- block lengths are
 the only way to find the next one) and reported as a note rather than silently dropped,
 because "your tape had 3 blocks" is confusing when the file plainly holds a dozen. An
 unknown ID stops parsing: without knowing its length there is no way to find where the
@@ -27,7 +36,8 @@ next block begins, and guessing would turn junk into fake blocks.
 
 from __future__ import annotations
 
-from .tape import TapeBlock
+from .pulse import ROM_TIMING, BlockTiming, PulseSequence, PureTone, Silence
+from .tape import TapeBlock, data_blocks
 
 TZX_SIGNATURE = b"ZXTape!\x1a"
 HEADER_SIZE = 10  # signature + major/minor version bytes
@@ -89,18 +99,59 @@ def _int(data: bytes, offset: int, width: int) -> int:
     return int.from_bytes(data[offset:offset + width], "little")
 
 
-def parse_tzx(data: bytes) -> tuple[list[TapeBlock], list[str]]:
-    """Split a ``.tzx`` into (loadable blocks, human-readable notes about the rest).
+def _timing_for(block_id: int, data: bytes, body: int) -> BlockTiming:
+    """Read a data block's pulse timings out of its own header.
+
+    Each of the three data IDs lays its parameters out differently, and the layout is
+    the only documentation the file carries -- an off-by-two here produces a tape that
+    parses perfectly and then loads nothing, because every pulse is the wrong length.
+
+    A standard (0x10) block states only its trailing pause; the rest of its shape is
+    the ROM's, by definition of "standard speed".
+    """
+    if block_id == 0x10:
+        return BlockTiming(pause_ms=_int(data, body, 2))
+    if block_id == 0x11:
+        return BlockTiming(
+            pilot_pulse=_int(data, body, 2),
+            sync_first=_int(data, body + 2, 2),
+            sync_second=_int(data, body + 4, 2),
+            zero_pulse=_int(data, body + 6, 2),
+            one_pulse=_int(data, body + 8, 2),
+            # Turbo blocks state the pilot length outright rather than inferring it
+            # from the flag byte, since a custom loader need not use flag bytes at all.
+            pilot_count=_int(data, body + 10, 2),
+            used_bits_last_byte=data[body + 12],
+            pause_ms=_int(data, body + 13, 2),
+        )
+    # 0x14 pure data: the payload with no leader and no sync at all -- the loader is
+    # expected to be in sync already, usually from a 0x12 tone just before it.
+    return BlockTiming(
+        has_pilot=False,
+        zero_pulse=_int(data, body, 2),
+        one_pulse=_int(data, body + 2, 2),
+        used_bits_last_byte=data[body + 4],
+        pause_ms=_int(data, body + 5, 2),
+    )
+
+
+def parse_tzx(data: bytes) -> tuple[list, list[str]]:
+    """Split a ``.tzx`` into (the audible items in order, notes about the rest).
+
+    The items are tape blocks, tones, pulse sequences and silences -- everything that
+    would make a sound, in the order it makes it. Use
+    :func:`~zxemu_core.storage.tape.data_blocks` to narrow that to the entries a fast
+    load can serve.
 
     Raises ValueError if the file isn't a TZX at all. A file that runs out mid-block --
-    truncated, or holding a block type we can't measure -- yields the blocks found so
+    truncated, or holding a block type we can't measure -- yields the items found so
     far plus a note saying where it stopped, matching ``parse_tap``'s "a damaged tape
     still gives you what it does contain" behaviour.
     """
     if not data.startswith(TZX_SIGNATURE):
         raise ValueError("not a .tzx file (missing the ZXTape! signature)")
     notes = [f"TZX version {data[8]}.{data[9]}"]
-    blocks: list[TapeBlock] = []
+    items: list = []
     seen: dict[int, int] = {}
 
     offset = HEADER_SIZE
@@ -119,11 +170,13 @@ def parse_tzx(data: bytes) -> tuple[list[TapeBlock], list[str]]:
             if start + length > len(data):
                 notes.append(f"stopped: ${block_id:02X} block claims {length} bytes, file ends first")
                 break
-            blocks.append(TapeBlock(data[start:start + length]))
+            timing = _timing_for(block_id, data, body)
+            items.append(TapeBlock(data[start:start + length], timing))
             if block_id == 0x11:
-                notes.append(f"Turbo block ({length} bytes) -- loaded as data, custom timings ignored")
+                notes.append(f"Turbo block ({length} bytes) -- {timing.zero_pulse}/"
+                             f"{timing.one_pulse}T bits, replayed at its own speed")
             elif block_id == 0x14:
-                notes.append(f"Pure data block ({length} bytes) -- no pilot tone on the original tape")
+                notes.append(f"Pure data block ({length} bytes) -- no pilot tone of its own")
             offset = start + length
             continue
 
@@ -132,7 +185,11 @@ def parse_tzx(data: bytes) -> tuple[list[TapeBlock], list[str]]:
             notes.append(f"stopped at an unknown block ID ${block_id:02X} -- "
                          "its length is unknown, so the rest of the file can't be walked")
             break
-        if block_id in (0x30, 0x32):
+        item = _pulse_item(data, block_id, body)
+        if item is not None:
+            items.append(item)
+            notes.append(item.describe())
+        elif block_id in (0x30, 0x32):
             notes.append(_describe_text(data, block_id, body))
         elif block_id == 0x15:
             notes.append("Direct recording block skipped -- it is sampled audio, not data blocks")
@@ -140,7 +197,7 @@ def parse_tzx(data: bytes) -> tuple[list[TapeBlock], list[str]]:
             notes.append(f"Skipped ${block_id:02X} ({_BLOCK_NAMES.get(block_id, 'unknown')})")
         offset = body + size
 
-    if not blocks:
+    if not data_blocks(items):
         # Say what the file *did* contain. Tapes stored entirely as generalized (0x19)
         # or direct-recording (0x15) blocks are pulse-level recordings with no ROM-format
         # blocks to hand over -- as are ZX81 tapes, which use 0x19 throughout -- and
@@ -150,7 +207,24 @@ def parse_tzx(data: bytes) -> tuple[list[TapeBlock], list[str]]:
             for block_id, count in sorted(seen.items())
         )
         raise ValueError(f"no loadable data blocks in this .tzx -- it holds only: {contents}")
-    return blocks, notes
+    return items, notes
+
+
+def _pulse_item(data: bytes, block_id: int, body: int):
+    """The audible-but-dataless entries, or None if this ID isn't one of them.
+
+    These three carry no bytes to load, only signal, so the fast loader has nothing to
+    do with them -- but a loader listening to the wire hears them, and some tapes rely
+    on that. The commonest case is a 0x12 tone acting as the pilot for a 0x14 block.
+    """
+    if block_id == 0x12:
+        return PureTone(_int(data, body, 2), _int(data, body + 2, 2))
+    if block_id == 0x13:
+        count = data[body]
+        return PulseSequence(_int(data, body + 1 + i * 2, 2) for i in range(count))
+    if block_id == 0x20:
+        return Silence(_int(data, body, 2))
+    return None
 
 
 def _body_size(data: bytes, block_id: int, body: int) -> int | None:

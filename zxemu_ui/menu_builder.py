@@ -33,6 +33,8 @@ class Item:
     shortcut: str = ""
     tip: str = ""
     checkable: bool = False
+    checked: bool = False  # only meaningful with checkable; set before the handler is
+                           # connected, so declaring a default can't fire it on startup
     # An action that already exists -- a dock's own toggleViewAction, say -- to be added
     # as-is rather than built here. ``label`` then renames it for the menu.
     action: QAction | None = None
@@ -66,6 +68,8 @@ def add_items(window, menu: QMenu, items) -> None:
                 action.setText(item.label)
         else:
             action = QAction(item.label, window, checkable=item.checkable)
+            if item.checkable and item.checked:
+                action.setChecked(True)  # before connecting: a default is not a user action
             if item.shortcut:
                 action.setShortcut(item.shortcut)
             if item.handler is not None:
@@ -143,6 +147,25 @@ def build(window, *, model_choices, scale_choices) -> Menus:
     load_menu.addSeparator()
     load_recent = load_menu.addMenu("Load &Recent")
     load_recent.aboutToShow.connect(window._populate_load_recent)
+
+    # The deck itself, under the menu that puts tapes into it. These are only useful
+    # once a tape is inserted, and they matter most when Fast Load is off: without the
+    # trap the machine loads by listening to real pulses, which is slow, audible, and
+    # the only thing a game's own turbo loader will accept.
+    load_menu.addSeparator()
+    add_items(window, load_menu.addMenu("&Tape Deck"), [
+        Item("&Fast Load", window._set_fast_load, checkable=True, checked=True,
+             tip="Intercept the ROM loader and deliver each block instantly. "
+                 "Turn off to load at real tape speed, with stripes and sound"),
+        Item("Tape &Sound", window._set_tape_audible, checkable=True, checked=True,
+             tip="Let the tape signal reach the speaker, as it does on real hardware"),
+        SEPARATOR,
+        Item("&Play", window._tape_play, tip="Start the motor now, without waiting to be read"),
+        Item("S&top", window._tape_stop),
+        Item("&Rewind", window._tape_rewind, tip="Back to the first block"),
+        SEPARATOR,
+        Item("&Eject", window._eject_tape),
+    ])
 
     model_actions = _build_model_menu(window, model_choices)
 

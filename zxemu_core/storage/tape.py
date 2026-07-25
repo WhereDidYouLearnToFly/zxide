@@ -45,15 +45,18 @@ The cost of trapping there is that the *expected flag byte and the LOAD/VERIFY c
 live in the shadow ``AF'``*, not the main one -- that is what ``ex af,af'`` above did,
 and what a direct caller must therefore arrange too.
 
-Only fast loading is implemented. Authentic edge-level replay -- turning each block
-back into the pilot/sync/data pulse train the ULA samples on port 0xFE bit 6, so you
-see the loading stripes and hear the tape -- is a possible later addition; the block
-model here is deliberately the shared foundation both loaders would sit on.
+Fast loading is one of *two* loaders sharing this block model. The other is authentic
+edge-level replay (``pulse.py``): the same blocks turned back into the pilot/sync/data
+pulse train a real ULA samples on port 0xFE bit 6. Both drive the same
+:class:`TapeDeck`, so they agree on where the play head is, and either can be the one
+that moves it -- which matters, because a game's own turbo loader never calls
+``LD-BYTES`` at all and can only ever be served by edges.
 """
 
 from __future__ import annotations
 
 from ..cpu.registers import FLAG_C
+from .pulse import ROM_TIMING, BlockTiming, data_pulses
 
 # The ROM's LD-BYTES routine starts here...
 LD_BYTES_ENTRY = 0x0556
@@ -69,10 +72,26 @@ _HEADER_TYPES = {0: "Program", 1: "Number array", 2: "Character array", 3: "Code
 
 
 class TapeBlock:
-    """One tape block: its raw bytes (flag, payload, checksum) plus friendly decoding."""
+    """One tape block: its raw bytes (flag, payload, checksum) plus friendly decoding.
 
-    def __init__(self, data: bytes):
+    ``timing`` says how those bytes are spelled out as pulses when the block is played
+    for real. Every ``.tap`` block uses the ROM's own numbers; a ``.tzx`` turbo block
+    brings its own, which is the entire difference between a turbo tape and a normal
+    one. The fast loader ignores the field completely -- it never generates a pulse.
+    """
+
+    def __init__(self, data: bytes, timing: BlockTiming = ROM_TIMING):
         self.data = bytes(data)
+        self.timing = timing
+
+    @property
+    def pause_ms(self) -> int:
+        """The silence that follows this block on tape (part of its timing)."""
+        return self.timing.pause_ms
+
+    def pulses(self):
+        """The pulse lengths that spell this block out on the wire (see ``pulse.py``)."""
+        return data_pulses(self.data, self.timing)
 
     @property
     def flag(self) -> int | None:
@@ -121,23 +140,56 @@ def parse_tap(data: bytes) -> list[TapeBlock]:
     return blocks
 
 
-class TapeDeck:
-    """A loaded tape plus a play head: which block the next ``LD-BYTES`` will read."""
+def data_blocks(items) -> list[TapeBlock]:
+    """Just the items carrying block data -- the ones a fast load can serve.
 
-    def __init__(self, blocks: list[TapeBlock]):
-        self.blocks = list(blocks)
-        self.index = 0  # the next block to load
+    A ``.tzx`` also holds bare tones, pulse lists and silences (see ``pulse.py``).
+    They are essential when the tape is *played*, and meaningless when it is
+    shortcut, so anything counting or listing "the blocks on this tape" filters here.
+    """
+    return [item for item in items if item.data is not None]
+
+
+class TapeDeck:
+    """A loaded tape plus a play head: where both loaders are up to on it.
+
+    The head is a single index into :attr:`items`, shared deliberately. Fast loading
+    moves it a whole block at a time; edge replay moves it as it finishes playing one.
+    A game that starts under the ROM loader and switches to its own turbo loader
+    halfway -- which is most commercial multi-part tapes -- therefore hands over
+    without either loader losing its place.
+    """
+
+    def __init__(self, items: list):
+        self.items = list(items)
+        self.index = 0  # the next item to play or load
+
+    @property
+    def blocks(self) -> list[TapeBlock]:
+        """The loadable blocks, ignoring tones and silences (see :func:`data_blocks`)."""
+        return data_blocks(self.items)
 
     @property
     def at_end(self) -> bool:
-        return self.index >= len(self.blocks)
+        return self.index >= len(self.items)
+
+    def current_item(self) -> object | None:
+        """Whatever is under the head -- block, tone or silence -- or None at the end."""
+        return None if self.at_end else self.items[self.index]
 
     def current(self) -> TapeBlock | None:
-        """The block under the play head, or None once the tape has run out."""
-        return None if self.at_end else self.blocks[self.index]
+        """The next *loadable block*, winding past anything that isn't one.
+
+        Fast loading can only serve real block data, so a pilot tone stored as its own
+        container entry has to be wound over rather than stared at. Skipping is what a
+        cassette does anyway: unusable signal goes past the head, it doesn't stop it.
+        """
+        while not self.at_end and self.items[self.index].data is None:
+            self.index += 1
+        return None if self.at_end else self.items[self.index]
 
     def advance(self) -> None:
-        """Move the play head to the next block."""
+        """Move the play head to the next item."""
         self.index += 1
 
     def rewind(self) -> None:

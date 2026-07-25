@@ -127,6 +127,10 @@ class MainWindow(QMainWindow):
         self._tape_idle_frames = 0
         self._tape_watch_index = 0
         self._tape_stall_reported = True  # nothing inserted yet, so nothing to report
+        # Deck preferences live on the window, not the machine, because switching model
+        # builds a *new* machine: kept here, your choice survives the swap (see set_machine).
+        self._fast_load = True
+        self._tape_audible = True
         # Model-menu radio items, keyed by model string. Populated by _build_menu and
         # kept in sync by set_machine, so the tick always follows the *live* machine --
         # whether it changed from the menu or from opening a project.
@@ -331,6 +335,10 @@ class MainWindow(QMainWindow):
         self.registers.machine = machine
         self.memory_map.machine = machine
         self.debug.machine = machine  # conditions are validated against the live machine
+        # A fresh machine comes with the defaults, not with your deck settings; re-apply
+        # them, or turning Fast Load off and then switching model silently turns it back on.
+        machine.fast_load_enabled = self._fast_load
+        machine.tape_audible = self._tape_audible
         self.controller.set_machine(machine)
         # Keep the Model menu's tick on the machine that's actually running, however the
         # switch was triggered (menu, or opening a project that targets the other model).
@@ -716,15 +724,84 @@ class MainWindow(QMainWindow):
         self._tape_stall_reported = False
         return True
 
+    # --- the tape deck ----------------------------------------------------------
+
+    def _set_fast_load(self, enabled: bool) -> None:
+        """Choose between the two loaders (see zxemu_core/storage/tape.py and pulse.py).
+
+        On, the ROM's loader is intercepted and each block appears instantly. Off, the
+        machine loads the way it did in 1985: by listening to pulses on port 0xFE, in
+        real time, with the loading stripes and the noise. Either way a game's *own*
+        turbo loader is served by the pulses, because it never calls the ROM at all.
+        """
+        self._fast_load = enabled
+        self.machine.fast_load_enabled = enabled
+        self._log("Fast tape load on — blocks load instantly." if enabled else
+                  "Fast tape load off — tapes now load at real speed, from real pulses.")
+
+    def _set_tape_audible(self, enabled: bool) -> None:
+        self._tape_audible = enabled
+        self.machine.tape_audible = enabled
+
+    def _tape_player(self):
+        """The edge player for the inserted tape, or None (with a note) if there isn't one."""
+        player = self.machine.tape_player
+        if player is None:
+            self._log("No tape in the deck.")
+        return player
+
+    def _tape_play(self) -> None:
+        """Start the motor now, rather than waiting to be read.
+
+        Normally the player works its own motor: it starts when it can see the machine
+        sampling the tape and stops at the pause after each block. Play just brings that
+        forward, and re-arms the automatic behaviour if Stop had disarmed it.
+        """
+        player = self._tape_player()
+        if player is not None:
+            player.auto = True
+            player.start()
+            self._log("Tape playing.")
+
+    def _tape_stop(self) -> None:
+        """Stop the motor and leave it stopped.
+
+        This also turns the automatic motor off, which it has to: the machine may still
+        be polling port 0xFE, and the player would read that as "they're listening" and
+        start the tape again within the frame. Play arms it again.
+        """
+        player = self._tape_player()
+        if player is not None:
+            player.auto = False
+            player.stop()
+            self._log("Tape stopped.")
+
+    def _tape_rewind(self) -> None:
+        player = self._tape_player()
+        if player is not None:
+            player.rewind()
+            player.auto = True
+            self._tape_watch_index = 0
+            self._tape_idle_frames = 0
+            self._log("Tape rewound to the first block.")
+
+    def _eject_tape(self) -> None:
+        if self.machine.tape is None:
+            self._log("No tape in the deck.")
+            return
+        self.machine.eject_tape()
+        self._tape_stall_reported = True  # nothing inserted: nothing to report on
+        self._log("Tape ejected.")
+
     def _check_tape_progress(self, _frames: int) -> None:
         """Say something when an inserted tape stops being read.
 
         A stalled tape looks identical whichever way it happened -- the border sits there,
-        often flashing red, and nothing loads -- but the two causes need opposite actions
-        from you, so guessing is worse than asking. Either the machine is waiting for you
-        to start the load, or the game's own loader is bit-banging its own bits and fast
-        loading cannot feed it at all (see zxemu_core/storage/tape.py). Reported once per
-        tape, not per frame.
+        often flashing red, and nothing loads -- but the causes need opposite actions from
+        you, so guessing is worse than asking. Either the machine is waiting for you to
+        start the load, or the game has its own turbo loader, which no ROM trap can feed
+        and which therefore wants Fast Load turned *off* so it gets real pulses instead
+        (see zxemu_core/storage/pulse.py). Reported once per tape, not per frame.
         """
         deck = self.machine.tape
         if deck is None or deck.at_end or self._tape_stall_reported:
@@ -743,10 +820,15 @@ class MainWindow(QMainWindow):
         if blocks_read == 0:
             self._log('  The machine is waiting for you to start it — type LOAD "" ⏎ '
                       "(or pick Tape Loader from the 128K menu).")
-        else:
+        elif self.machine.fast_load_enabled:
             self._log("  If the loading screen is showing and the border is flashing, this "
                       "game has its own turbo loader: it reads the tape without the ROM, so "
-                      "fast load can't feed it. Edge-level replay isn't implemented yet.")
+                      "fast load can't feed it. Turn off Load ▸ Tape Deck ▸ Fast Load and "
+                      "reload the tape — it will then load from real pulses, at real speed.")
+        else:
+            self._log("  Loading from real pulses can take a minute or two per block — if "
+                      "the border is striped, it is working. If it is not, the tape may "
+                      "need rewinding (Load ▸ Tape Deck ▸ Rewind).")
 
     # --- recent projects / files -----------------------------------------------
 

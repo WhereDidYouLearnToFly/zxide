@@ -38,6 +38,10 @@ def _labels(menu):
     return [a.text() for a in menu.actions() if not a.isSeparator()]
 
 
+def _submenu(menu, title):
+    return next(a.menu() for a in menu.actions() if a.text() == title)
+
+
 def _shortcuts(window):
     found = {}
     for top in window.menuBar().actions():
@@ -76,9 +80,21 @@ def test_the_load_menu_offers_one_item_per_format(window):
 
     labels = _labels(_menu(window, "&Load"))
     assert labels[:4] == ["Load TAP…", "Load TZX…", "Load SNA…", "Load Z80…"]
-    assert labels == [f.menu_label for f in media.FORMATS] + ["Load &Recent"]
-    # Tapes and snapshots are different things, so they are separated.
-    assert sum(1 for a in _menu(window, "&Load").actions() if a.isSeparator()) == 2
+    assert labels == [f.menu_label for f in media.FORMATS] + ["Load &Recent", "&Tape Deck"]
+    # Tapes and snapshots are different things, so they are separated -- as is the deck,
+    # which operates the tape you already inserted rather than choosing a new one.
+    assert sum(1 for a in _menu(window, "&Load").actions() if a.isSeparator()) == 3
+
+
+def test_the_tape_deck_menu_exposes_both_loaders_and_the_transport(window):
+    """Fast Load is the switch between the ROM trap and real pulse replay, so it has to be
+    reachable and has to start on -- an IDE that loads tapes in real time by default would
+    look broken."""
+    deck = _submenu(_menu(window, "&Load"), "&Tape Deck")
+    labels = _labels(deck)
+    assert labels == ["&Fast Load", "Tape &Sound", "&Play", "S&top", "&Rewind", "&Eject"]
+    checked = {a.text(): a.isChecked() for a in deck.actions() if a.isCheckable()}
+    assert checked == {"&Fast Load": True, "Tape &Sound": True}
 
 
 def test_each_load_item_opens_a_dialog_filtered_to_its_own_format(window, monkeypatch):

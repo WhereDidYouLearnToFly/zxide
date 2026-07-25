@@ -7,10 +7,11 @@ sessions. `dev-support/STATUS.md` is the companion: session-by-session narrative
 handoff notes.
 
 **Where things stand:** Milestones 1–4 are done (emulator core → IDE shell + debugger →
-hardware & audio → asset workflow). The milestone sections below are kept as written, with
-✅ marks and follow-up notes added as work landed, because *why* something was sequenced
-the way it was outlives the sequencing. **Next up** is in "Recommended sequence" and the
-Milestone 5 section: optional TAP edge replay, the memory-dumper, then Visual Logic.
+hardware & audio → asset workflow), and Milestone 3's last deferred piece — **tape edge
+replay** — has now landed too, so M3 is complete. The milestone sections below are kept as
+written, with ✅ marks and follow-up notes added as work landed, because *why* something
+was sequenced the way it was outlives the sequencing. **Next up** is in "Recommended
+sequence" and the Milestone 5 section: the memory-dumper, then Visual Logic.
 
 The raw original vision notes are preserved verbatim at the end ("Appendix: original vision").
 
@@ -183,7 +184,7 @@ audio** (128K, AY, beeper, TAP) — see below.
 
 ---
 
-## Milestone 3 roadmap: hardware & audio ✅ *(edge replay excepted)*
+## Milestone 3 roadmap: hardware & audio ✅ *(complete)*
 
 The next push makes the emulated machine *complete* — sound, the 128K model, and tape
 loading — before returning to the Phase-E visual tooling. All of this is **core** work
@@ -211,7 +212,7 @@ loading — before returning to the Phase-E visual tooling. All of this is **cor
   sjasmplus template (`device zxspectrum128`, demonstrates paging + AY) was added. All
   behaviours cross-checked against fuse (E:/github/fuse) as a **reference only** (GPLv2,
   independent reimplementation — no code copied), the same policy used for the CPU.
-- **3. TAP support** ✅ *fast load done; edge replay deferred* — `.tap` images load instantly
+- **3. TAP support** ✅ *fast load done* — `.tap` images load instantly
   by intercepting the ROM loader (`zxemu_core/storage/tape.py` + `Machine._tape_trap`).
   The trap sits on **`0x0562`, not `LD-BYTES`'s entry at `0x0556`** — that is the routine's
   first tape *sample*, past the preamble, and it is where multi-part game loaders `CALL` in
@@ -220,13 +221,48 @@ loading — before returning to the Phase-E visual tooling. All of this is **cor
   for pulses that fast loading never generates (Aliens: Neoplasma II was the case that
   exposed this). The price of the later address is that the wanted flag byte and the
   LOAD/VERIFY carry are in the **shadow `AF'`** (moved there by the preamble's `ex af,af'`),
-  which is what `fast_load` reads. Real edge-level replay through port `0xFE` bit 6 is still
-  deferred — see the backlog — and remains the only way to run genuinely turbo loaders.
+  which is what `fast_load` reads.
+- **4. Edge-level replay** ✅ *done — this completes Milestone 3* (`zxemu_core/storage/pulse.py`).
+  The tape is turned back into the pulse train a real ULA samples on port `0xFE` bit 6:
+  pilot, sync pair, two pulses per bit, pause. Three things follow from it, and only the
+  first was the stated goal:
+  * **turbo loaders load.** Speedlock and its imitators never call the ROM routine, so no
+    trap can ever serve them; they bit-bang their own sampling loop and want real pulses at
+    the real speed. That is why the TZX parser now *keeps* the per-block timings it used to
+    discard, and keeps the dataless entries (pure tone `0x12`, pulse sequence `0x13`, pause
+    `0x20`) in running order — a `0x12` tone in front of a `0x14` "pure data" block is one
+    load split across two container entries, and dropping the tone loses the load.
+  * **the loading stripes come back for free.** Nobody draws them: the loader is OUT-ing to
+    the border between samples, and once it is genuinely running you see what it does.
+  * **the tape is audible**, because the EAR input is summed into the speaker on real
+    hardware (`Machine._refresh_speaker` ORs the two 1-bit sources).
+
+  Two design decisions worth keeping:
+  * **One play head, two loaders.** `TapeDeck.index` is shared between fast loading and edge
+    replay, because a commercial multi-part tape typically starts under the ROM loader and
+    hands over to its own turbo loader partway through. Separate heads would disagree.
+  * **The motor is not free-running.** A real cassette spools whether or not the Spectrum is
+    listening, and reproducing that would be actively wrong here: you spend seconds typing
+    `LOAD ""`, and a multi-load game spends *minutes* playing part one before asking for part
+    two — both would eat the rest of the tape. So the motor starts when the machine is
+    plainly sampling (≥200 reads of port `0xFE` in one frame, against a few dozen for a
+    keyboard poll) and stops at the pause ending each block, which is both where a person
+    would have hit stop and what the TZX spec means by "pause". Play/Stop/Rewind override it.
+    It stops only at a pause with a *duration* — never merely at an item boundary, because a
+    bare `0x12` tone runs straight into the block it introduces and a gap there lands in the
+    window the loader is hunting for sync in.
+
+  UI: **Load ▸ Tape Deck** — Fast Load (on by default), Tape Sound, Play/Stop/Rewind/Eject.
+  Fast Load now has a real "off" position, which is why it was deliberately absent before.
+  Verified end to end by `tests/integration/test_edge_replay.py`: the real 48K ROM decodes a
+  block with the trap disabled, taking ~105 frames — i.e. at genuine tape speed. Against real
+  tapes, **1942 loads completely** from a cold boot and `LOAD ""`; **Speedlock 4 (Renegade)
+  plays its whole tape but does not yet come up**, which is the next thing to chase.
 
 *Deferred to Milestone 4:* Phase E visual memory management (drag-drop asset placement +
 auto-locate + asset import), disassembly/watchpoint debugger polish, .szx/.pt3 playback.
 
-Rough order: **beeper → 128K+AY → TAP**, then back to Phase E.
+Rough order: **beeper → 128K+AY → TAP → edge replay**, with Phase E taken in between.
 
 ---
 
@@ -341,19 +377,26 @@ Note the symmetry with Phase E: that places assets *into* memory, this pulls the
 
 ### 2. Tape & snapshot formats
 - **TAP loading** -- ROM-trap fast load ✅ (covers BASIC `LOAD ""` *and* loaders that call the
-  sampling entry `0x0562` directly). **Edge replay** still open: it is what turbo/custom-timed
-  loaders need, plus the loading stripes and tape sound. Closes Milestone 3.
-- **TZX** ✅ *loading* (`zxemu_core/storage/tzx.py`) -- the container is walked in full and its
-  data-bearing blocks (`0x10` standard, `0x11` turbo, `0x14` pure data) feed the same deck a
-  `.tap` does; timings are discarded because fast loading never generates pulses. Everything
-  else (groups, loops, jumps, menus, credits) is reported in the Output rather than silently
-  dropped, and an unknown block ID stops the walk instead of inventing blocks. **The limit is
-  the loader, not the container:** a Speedlock-style game that bit-bangs its own bits still
-  needs edge replay, whether it arrives as .tzx or .tap.
+  sampling entry `0x0562` directly). **Edge replay** ✅ (`zxemu_core/storage/pulse.py`) --
+  turbo/custom-timed loaders, plus the loading stripes and tape sound. Closed Milestone 3.
+- **TZX** ✅ *loading* (`zxemu_core/storage/tzx.py`) -- the container is walked in full and
+  everything audible is kept **in running order**: data blocks (`0x10` standard, `0x11` turbo,
+  `0x14` pure data) *with their own pulse timings*, plus the dataless `0x12` tone, `0x13` pulse
+  sequence and `0x20` pause. The timings used to be discarded, which was safe only while fast
+  loading was the sole loader; they are exactly what a turbo loader times against, and the
+  dataless entries matter because a `0x12` tone in front of a `0x14` block is one load split
+  across two entries. Everything else (groups, loops, jumps, menus, credits) is reported in the
+  Output rather than silently dropped, and an unknown block ID stops the walk instead of
+  inventing blocks. Re-validated across the local library: 20/20 `.tzx` and 8/8 `.tap` parse;
+  4 of the 20 use genuinely non-ROM bit timings (one is a Speedlock 4 release), and 35 blocks
+  across the set are `0x14` pure data with no pilot of their own — those depend entirely on
+  the preceding `0x12` tone, which is precisely what used to be thrown away.
 - **More snapshots** -- `.z80` ✅ *loading* (`zxemu_core/storage/z80.py`: v1/v2/v3, 48K and
   128K, RLE-compressed pages, border/AY/paging restored). Still open: `.szx`, and **saving**
   in any format -- nothing in zxide writes machine state yet.
-- **Tape-deck UI** -- play / stop / rewind, block list, "insert tape."
+- **Tape-deck UI** ✅ *partly* -- Load ▸ Tape Deck has Fast Load, Tape Sound,
+  Play / Stop / Rewind / Eject. A visible **block list** with the play head marked is
+  still open, and would be the natural home for per-block timing detail.
 
 ### 3. Visual memory management (Phase E -- the "Unity" centerpiece)
 Superseded by the detailed **Milestone 4: Asset workflow (Phase E)** section below --

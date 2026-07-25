@@ -87,12 +87,13 @@ def load_snapshot(machine, path: str | Path) -> None:
 
 
 def read_tape(path: str | Path) -> tuple[list, list[str]]:
-    """Parse a tape into ``(blocks, notes)``; notes are the .tzx parser's remarks.
+    """Parse a tape into ``(items, notes)``; notes are the .tzx parser's remarks.
 
-    A ``.tap`` is only blocks, so its notes are always empty. A ``.tzx`` is a container
-    whose other blocks (timings, groups, menus, credits) can't be loaded but shouldn't
-    vanish silently either -- "3 blocks" is a confusing answer for a file that plainly
-    holds a dozen.
+    The items are everything on the tape that makes a sound, in order -- blocks, and
+    for a ``.tzx`` also the bare tones and silences between them. A ``.tap`` is only
+    blocks, so its notes are always empty. A ``.tzx`` is a container whose remaining
+    entries (groups, menus, credits) carry no signal but shouldn't vanish silently
+    either -- "3 blocks" is a confusing answer for a file that plainly holds a dozen.
     """
     path = Path(path)
     data = path.read_bytes()
@@ -101,16 +102,20 @@ def read_tape(path: str | Path) -> tuple[list, list[str]]:
     return tape.parse_tap(data), []
 
 
-def make_deck(blocks) -> tape.TapeDeck:
-    return tape.TapeDeck(blocks)
+def make_deck(items) -> tape.TapeDeck:
+    return tape.TapeDeck(items)
 
 
-def tape_summary(name: str, blocks, notes: list[str], model: str) -> list[str]:
+def tape_summary(name: str, items, notes: list[str], model: str) -> list[str]:
     """The log lines describing a freshly inserted tape, including how to start it.
+
+    Counts and lists only the *loadable* items: a pilot tone is part of the signal, not
+    something you would ever call a block on the tape.
 
     The instruction differs by model because the 128K boots to its own menu: there is no
     ``LOAD ""`` prompt until you have chosen a BASIC from it.
     """
+    blocks = tape.data_blocks(items)
     lines = [f"Inserted {name} — {len(blocks)} loadable block(s):"]
     lines += [f"    {block.describe()}" for block in blocks]
     lines += [f"    · {note}" for note in notes]

@@ -81,6 +81,30 @@ def test_ula_read_port_combines_keyboard_row_bits():
     assert ula.read_port(0xFE) == 0xFE  # 0xE0 | 0b11110
 
 
+def test_ula_read_port_reports_the_tape_input_on_bit_6():
+    """The one bit a tape loader looks at. It idles high, so a machine with an empty
+    deck reads exactly what it read before tape input existed."""
+    ula = Ula()
+    assert ula.read_port(0xFE) & 0x40 == 0x40  # idle: nothing on the wire
+
+    ula.ear_level = 0
+    assert ula.read_port(0xFE) == 0xBF         # bit 6 low, keyboard bits still released
+    ula.ear_level = 1
+    assert ula.read_port(0xFE) == 0xFF
+
+
+def test_the_tape_bit_does_not_disturb_the_keyboard_bits():
+    class FakeKeyboard:
+        def read(self, port: int) -> int:
+            return 0b11110  # bit 0 "pressed" (low)
+
+    ula = Ula(keyboard=FakeKeyboard())
+    ula.ear_level = 0
+    # The ROM's loader reads the SPACE half-row *and* the tape from the same IN, so the
+    # two must not overwrite each other -- it uses bit 0 to spot BREAK mid-load.
+    assert ula.read_port(0xFE) == 0xBE
+
+
 def test_ula_read_port_odd_port_is_floating_bus_stub():
     ula = Ula()
     assert ula.read_port(0xFF) == 0xFF

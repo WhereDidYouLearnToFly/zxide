@@ -1,6 +1,104 @@
 # zxide — project status & handoff
 
-_Last updated: 2026-07-24._ A snapshot to make it easy to pick the project back up.
+_Last updated: 2026-07-25._ A snapshot to make it easy to pick the project back up.
+
+## Latest session (2026-07-25) — tape edge replay, and Milestone 3 finally closes
+
+**716 tests pass** (`pytest tests/unit tests/integration`), up from 682.
+
+The last deferred item in Milestone 3 is done: tapes can now be replayed **as pulses**
+rather than shortcut through the ROM. New module `zxemu_core/storage/pulse.py`.
+
+**Why it was worth doing.** Fast loading works by trapping the ROM's `LD-BYTES`. A
+commercial game's own turbo loader never calls that routine — it bit-bangs its own
+sampling loop — so *no trap can ever serve it*. Measured across the 20 `.tzx` files in
+the library on this machine: **4 use genuinely non-ROM bit timings** (Renegade is a
+Speedlock 4 release, plus Barbarian II, Ms. Pacman, The Untouchables), and separately
+**35 blocks are `0x14` "pure data" with no pilot of their own** — those depend entirely
+on the preceding `0x12` tone that the parser used to discard. That was the ceiling, and
+it is now gone.
+
+*(Careful with the numbers: 15 more tapes differ from `ROM_TIMING` only in `pause_ms`,
+which is not turbo. An early draft of this note counted those as turbo and claimed 19/20;
+what makes a tape turbo is the pilot/sync/bit lengths, not the gap after a block.)*
+
+Two things came free with it: the **loading stripes** (nobody draws them — the loader is
+OUT-ing to the border between samples, so once it's genuinely running you see what it
+really does) and the **tape sound** (EAR is summed into the speaker on real hardware; we
+model it as an OR of the two 1-bit sources in `Machine._refresh_speaker`).
+
+**What changed, and why each file had to move:**
+
+1. **`pulse.py`** (new) — `BlockTiming`, `data_pulses()` (pilot → sync pair → two pulses
+   per bit), the dataless items (`PureTone`/`PulseSequence`/`Silence`), and `TapePlayer`.
+   Pulses are generated *lazily*: a 48K game is on the order of a million of them, which
+   as a list is tens of megabytes for something played once, in order.
+2. **`tape.py`** — this is not a TZX-only feature, which is the thing worth remembering.
+   A `.tap` needs replay too (it just uses the ROM's timings), so `TapeBlock` gained
+   `timing`/`pulses()`. More importantly `TapeDeck` now holds **mixed items** and both
+   loaders share **one play head**: a commercial multi-part tape starts under the ROM
+   loader and hands over to its own turbo loader partway through, and separate heads
+   would disagree about where the tape is.
+3. **`tzx.py`** — now *keeps* the per-block timings it used to throw away, and keeps the
+   dataless entries in running order. A `0x12` tone in front of a `0x14` "pure data"
+   block is **one load split across two container entries**; dropping the tone loses the
+   load. `parse_tzx` therefore returns all audible items, and `tape.data_blocks()`
+   narrows to the ones a fast load can serve.
+4. **`ula.py` / `machine.py`** — bit 6 of port 0xFE is the whole of tape input. It idles
+   high, so a machine with an empty deck reads exactly what it always did. The machine
+   owns the clock (`tape_tstate`, which unlike `frame_t_state` never restarts — a pause
+   runs for fifty frames), feeds the player from `_io_read`, and `Machine128._io_read`
+   now delegates to `super()` instead of answering the ULA directly, which would have
+   silently left the 128K with no tape input at all.
+5. **UI** — **Load ▸ Tape Deck**: Fast Load (on), Tape Sound, Play/Stop/Rewind/Eject.
+   Fast Load has a real "off" position now, which is exactly why it was deliberately
+   absent before (with no replay, "off" would just hang the ROM). Deck preferences live
+   on the window, not the machine, so switching model doesn't silently re-enable them.
+
+**The one genuinely opinionated decision: the motor does not free-run.** A real cassette
+spools whether or not the Spectrum is listening, and copying that would be actively
+wrong here — you spend seconds typing `LOAD ""`, and a multi-load game spends *minutes*
+playing part one before asking for part two; both would eat the rest of the tape. So the
+motor **starts when the machine is plainly sampling** (≥200 reads of port 0xFE in one
+frame, against a few dozen for a keyboard poll — the two regimes are orders of magnitude
+apart, so the threshold barely matters) and **stops at the pause ending each block**,
+which is both where a person would have hit stop and what the TZX spec means by "pause".
+Play/Stop/Rewind override it.
+
+**A subtlety that bit once and would bite again:** the motor stops only at a *real* pause
+(`pause_ms > 0`), never merely at an item boundary. A bare `0x12` pilot tone exists solely
+to introduce the block after it and is stored with no pause between the two; stopping
+there dropped up to a frame of silence into exactly the gap where the loader was hunting
+for its sync pulses. `test_an_item_with_no_pause_runs_straight_into_the_next_one` pins it.
+
+**Where it stands against real tapes** (cold boot, `LOAD ""` typed in, fast load off):
+* **1942 (Elite)** — loads **completely**, all 7 blocks, ~287s emulated, screen drawn and
+  game code running. This is the headline result: a commercial tape loading from nothing
+  but pulses.
+* **Renegade (Speedlock 4)** — plays through all 392 items and does **not** come up, but it
+  gets meaningfully further than it did: before the zero-pause fix above it drew *nothing*
+  (0 of 6144 screen bytes); after it, 794. The loader is clearly running rather than the
+  tape spooling past it — items are consumed at their real durations — so this is a
+  timing/protection detail, not a structural failure. **Next suspects**, in order: the
+  `0x2A` "stop the tape in 48K mode" and `0x2B` "set signal level" blocks, which are
+  currently only logged and not acted on (`0x2B` in particular sets the *starting polarity*,
+  and Speedlock is exactly the kind of loader that would care); then the one-item-per-frame
+  jump visible in the trace around block 389, which suggests an item occasionally being
+  stepped over inside a single frame.
+
+So: **turbo tapes are now reachable, and one class of them demonstrably works end to end.**
+Speedlock specifically is not claimed.
+
+**Testing note worth keeping.** `tests/integration/test_edge_replay.py` hands the
+judgement to the ROM itself: fast load off, `LD-BYTES` called the way BASIC calls it, and
+150 bytes of Sinclair's Z80 left to decode the signal. Nothing else can tell you the
+timings are right. It takes ~105 frames — that isn't overhead, that's the feature; 16
+bytes took two seconds on real hardware too.
+
+*(A debugging detour worth recording: the first scratch harness ran 600 frames past the
+loader's return, so the CPU executed whatever address 0xFFFF held and overwrote the very
+buffer being checked — it reported a total failure while the load had been working all
+along. `_run_until_the_loader_returns` stops at the return for exactly that reason.)*
 
 ## Latest session (2026-07-24) — build target, tape trap, new formats, editor navigation
 
@@ -138,6 +236,8 @@ zxemu_core/        emulator core, no Qt dependency
                    software stand-in). Sources share a 3-member contract.
                    + beeper_preview.py (audition an effect with no live machine)
   storage/         tape.py (.tap + the ROM-trap fast loader), tzx.py,
+                   pulse.py (edge-level replay: blocks -> the pulse train on port 0xFE
+                   bit 6, and the motor policy that decides when the tape rolls),
                    snapshot.py (.sna), z80.py (.z80 v1/v2/v3)
   assets/          manifest.py + one converter per kind (bmp/tilemap/binary/pt3/
                    beeper_sfx/native_sprite), registry.py to pick one by suffix,
@@ -200,10 +300,12 @@ is one dockable panel among many, as this section originally predicted.
   this is theoretical for now rather than an observed problem.
 - **Timing** is functional, not cycle-accurate: contention is modelled/tested
   but not applied to every memory access; no per-scanline border effects.
-- **Turbo tape loaders don't load.** Fast loading intercepts the ROM's routine, so a
-  loader that times its own bits and never calls it gets no help — it needs edge-level
-  replay (deferred). Affects many commercial `.tzx` releases (Speedlock and friends);
-  they stop after a block or two. Not a bug in the trap.
+- ~~**Turbo tape loaders don't load.**~~ **Fixed** by edge replay (see the 2026-07-25
+  session). Fast loading still can't serve them — a loader that times its own bits never
+  calls the ROM routine — but turning **Load ▸ Tape Deck ▸ Fast Load** off gives them the
+  real pulse train instead. The cost is real tape speed: minutes for a full game, exactly
+  as on hardware. Fast load stays the default because most of the time you want the bytes,
+  not the ceremony.
 
 ## Performance notes
 

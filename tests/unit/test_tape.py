@@ -89,6 +89,39 @@ def test_deck_advances_and_ends():
     assert deck.index == 0 and not deck.at_end
 
 
+def test_the_head_winds_past_items_a_fast_load_cannot_serve():
+    """A .tzx can put a bare pilot tone between blocks. Fast loading has nothing to do
+    with one, and stopping on it would park the head for ever -- a real cassette runs
+    unusable signal past the head rather than stopping at it."""
+    from zxemu_core.storage.pulse import PureTone
+
+    blocks = tape.parse_tap(_tap(_block(0xFF, b"\x01")))
+    deck = tape.TapeDeck([PureTone(2168, 100), PureTone(2168, 100), blocks[0]])
+
+    assert deck.current() is blocks[0]
+    assert deck.index == 2          # the head moved over both tones to get there
+
+
+def test_data_blocks_counts_only_what_can_be_loaded():
+    from zxemu_core.storage.pulse import PureTone, Silence
+
+    blocks = tape.parse_tap(_tap(_block(0xFF, b"\x01"), _block(0x00, b"\x02")))
+    items = [PureTone(2168, 10), blocks[0], Silence(500), blocks[1]]
+
+    assert tape.data_blocks(items) == blocks
+
+
+def test_a_tap_block_is_played_with_the_roms_own_timings():
+    """Nothing in a .tap says how fast it was recorded, because there is only one answer:
+    the speed the ROM's own SAVE routine writes at."""
+    from zxemu_core.storage.pulse import PILOT_PULSE, ROM_TIMING
+
+    block = tape.parse_tap(_tap(_block(0xFF, b"\x01")))[0]
+
+    assert block.timing == ROM_TIMING
+    assert next(iter(block.pulses())) == PILOT_PULSE
+
+
 # --- fast_load ----------------------------------------------------------------
 
 def _prime_load(machine, *, flag: int, length: int, address: int, verify: bool = False):
@@ -183,6 +216,89 @@ def test_fast_load_verify_matches_memory():
     tape.fast_load(machine, deck)
 
     assert machine.cpu.regs.f & FLAG_C  # verify passed
+
+
+# --- edge replay, as the machine wires it up ----------------------------------
+
+def test_inserting_a_tape_creates_a_player_and_ejecting_clears_the_wire():
+    machine = Machine(_rom())
+    machine.insert_tape(tape.TapeDeck(tape.parse_tap(_tap(_block(0xFF, b"\x01")))))
+    assert machine.tape_player is not None
+
+    machine.eject_tape()
+
+    assert machine.tape_player is None
+    assert machine.ula.ear_level == 1  # back to the idle read, not stuck wherever it was
+
+
+def test_reading_port_0xfe_puts_the_tape_signal_on_bit_6():
+    machine = Machine(_rom())
+    machine.insert_tape(tape.TapeDeck(tape.parse_tap(_tap(_block(0xFF, b"\x01")))))
+    machine.tape_player.start()
+
+    first = machine._io_read(0x7FFE)
+    # Half a pilot pulse later the level has not flipped yet; a whole one later it has.
+    machine.frame_t_state = 1000
+    assert (machine._io_read(0x7FFE) & 0x40) == (first & 0x40)
+    machine.frame_t_state = 2200
+    assert (machine._io_read(0x7FFE) & 0x40) != (first & 0x40)
+
+
+def test_a_tape_with_no_player_leaves_port_reads_exactly_as_they_were():
+    """The common case is no tape at all, and it must cost nothing and change nothing."""
+    machine = Machine(_rom())
+    assert machine._io_read(0x7FFE) == 0xFF
+
+
+def test_the_tape_clock_keeps_running_across_frame_boundaries():
+    """A pilot pulse is a fortieth of a frame but a pause is fifty of them, so the
+    player cannot be measured against a clock that restarts every 20ms."""
+    machine = Machine(_rom())
+    machine.run_frame()
+    after_one = machine.tape_tstate
+    machine.run_frame()
+
+    assert after_one >= machine.frame_tstates
+    assert machine.tape_tstate - after_one == pytest.approx(machine.frame_tstates, abs=64)
+
+
+def test_the_tape_signal_reaches_the_speaker_so_loading_is_audible():
+    """On real hardware EAR is summed into the same amplifier as the beeper -- that is
+    the loading screech. Silence during a load would be the wrong kind of authentic."""
+    machine = Machine(_rom())
+    machine.beeper.enabled = True
+    machine.insert_tape(tape.TapeDeck(tape.parse_tap(_tap(_block(0xFF, b"\x01")))))
+    machine.tape_player.start()
+
+    for t in range(0, 20000, 500):     # sample across a few pilot pulses
+        machine.frame_t_state = t
+        machine._io_read(0x7FFE)
+
+    assert machine.beeper._edges, "the tape produced no speaker activity"
+
+    # Muting the tape settles the speaker once and then stays quiet, rather than
+    # continuing to follow the signal at zero volume.
+    machine.tape_audible = False
+    machine._io_read(0x7FFE)
+    machine.beeper._edges.clear()
+    for t in range(20000, 40000, 500):
+        machine.frame_t_state = t
+        machine._io_read(0x7FFE)
+    assert not machine.beeper._edges
+
+
+def test_the_128k_reads_the_tape_too():
+    """Its IO decode is overridden for the AY and paging, and it would be easy to answer
+    the ULA directly there and silently leave the 128 with no tape input."""
+    machine = Machine128(*_roms_128())
+    machine.insert_tape(tape.TapeDeck(tape.parse_tap(_tap(_block(0xFF, b"\x01")))))
+    machine.tape_player.start()
+
+    machine._io_read(0x7FFE)
+    machine.frame_t_state = 2200
+    machine._io_read(0x7FFE)
+
+    assert machine.tape_player.motor  # it rolled, rather than being ignored
 
 
 # --- the CPU trap -------------------------------------------------------------

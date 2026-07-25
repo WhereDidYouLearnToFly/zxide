@@ -10,8 +10,10 @@ single chip owns them:
 
   * **audio timestamps** -- the ULA records the speaker bit, but only the machine
     knows the frame clock, so it is the machine that timestamps each flip,
-  * **the tape trap** -- fast tape loading means intercepting the ROM at a specific
-    address, which needs the CPU and the memory map together (see ``_tape_trap``).
+  * **the tape**, in both of its forms -- fast loading means intercepting the ROM at a
+    specific address, which needs the CPU and the memory map together
+    (``_tape_trap``); edge replay means answering "what is on the wire *now*", which
+    needs a clock that doesn't restart every frame (``tape_tstate``).
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from .memory import Memory, create_48k_memory, create_128k_memory
 from .sound.ay import AY8912
 from .sound.beeper import Beeper
 from .sound.mixer import SoundMixer
-from .storage import tape
+from .storage import pulse, tape
 from .ula import FRAME_TSTATES, FRAME_TSTATES_128K, Ula
 
 # The trap replaces the whole (real-time) LD-BYTES routine, so its exact T-state cost is
@@ -58,11 +60,19 @@ class Machine:
         self._speaker_level = 0  # last speaker bit we handed to the beeper
         self.frame_tstates = FRAME_TSTATES  # per-model frame length (128K overrides)
         self.frame_t_state = 0
-        # Tape: a TapeDeck when a .tap is inserted, else None. Fast loading is on by
-        # default; the trap below only acts when a tape is present, so it's inert until
-        # then. Both models get this identically (the 48K and 128K share LD-BYTES).
+        # T-states elapsed in whole frames so far. frame_t_state restarts every frame,
+        # but a tape doesn't: a pulse can straddle a frame boundary, and a pause runs
+        # for a whole second. Adding the two gives a clock that only ever goes up.
+        self._frame_base = 0
+        # Tape: a TapeDeck when a tape is inserted, else None, plus the edge player that
+        # plays it as real pulses. The two loaders are independent -- fast loading serves
+        # anything that calls the ROM, the player serves everything else, including the
+        # turbo loaders that no trap can reach -- and they share the deck's play head.
+        # Both models get this identically (the 48K and 128K share LD-BYTES).
         self.tape: tape.TapeDeck | None = None
+        self.tape_player: pulse.TapePlayer | None = None
         self.fast_load_enabled = True
+        self.tape_audible = True  # let the tape signal reach the speaker, as it does in hardware
         self.cpu.set_trap(tape.LD_BYTES_TRAP, self._tape_trap)
         self.set_port_watchpoints()  # none: installs the plain, uninstrumented io hooks
         self.reset()
@@ -93,14 +103,29 @@ class Machine:
 
     # --- tape -----------------------------------------------------------------
 
+    @property
+    def tape_tstate(self) -> int:
+        """A T-state clock that never restarts -- what the edge player measures against.
+
+        Everything else here works in frame-relative time because everything else is
+        finished inside a frame. A tape is the exception: it is a continuous signal
+        that knows nothing about the 50Hz interrupt it happens to be playing under.
+        """
+        return self._frame_base + self.frame_t_state
+
     def insert_tape(self, deck: tape.TapeDeck | None) -> None:
         """Put a tape in the deck (or None to eject); rewound to its first block."""
         self.tape = deck
-        if deck is not None:
+        if deck is None:
+            self.tape_player = None
+        else:
             deck.rewind()
+            self.tape_player = pulse.TapePlayer(deck, start_clock=self.tape_tstate)
 
     def eject_tape(self) -> None:
         self.tape = None
+        self.tape_player = None
+        self.ula.ear_level = 1  # nothing on the wire: back to the idle read
 
     def _tape_trap(self):
         """CPU trap inside LD-BYTES: fast-load the next block, or decline (return None).
@@ -161,17 +186,41 @@ class Machine:
     # --- IO + frame loop ------------------------------------------------------
 
     def _io_read(self, port: int) -> int:
+        # Tape input. Only the machine knows the continuous clock the player measures
+        # against, exactly as it is the machine that timestamps the speaker on the way
+        # out. The check costs one attribute compare per IN when no tape is inserted.
+        if self.tape_player is not None and port & 0x01 == 0:
+            self.ula.ear_level = self.tape_player.ear_level(self.tape_tstate)
+            if self.beeper.enabled:
+                self._refresh_speaker()
         return self.ula.read_port(port)
 
     def _io_write(self, port: int, value: int) -> None:
         self.ula.write_port(port, value)
-        # Timestamp speaker flips for the beeper. frame_t_state is the clock at the
-        # start of the current instruction (its T-states are added after step()
-        # returns), so the flip is placed a few T-states early -- inaudible for the
-        # beeper, and it keeps the audio timing entirely inside the Machine.
-        if self.beeper.enabled and self.ula.speaker != self._speaker_level:
-            self._speaker_level = self.ula.speaker
-            self.beeper.set_level(self.frame_t_state, self._speaker_level)
+        if self.beeper.enabled:
+            self._refresh_speaker()
+
+    def _refresh_speaker(self) -> None:
+        """Timestamp a change in what the speaker is doing, from either of its sources.
+
+        Two things drive that one cone. The CPU's ``OUT`` to bit 4 is the obvious one.
+        The other is the tape: on real hardware the EAR input is summed into the same
+        amplifier, which is *why* you hear a tape screeching while it loads rather than
+        loading in silence. Modelling that as an OR of two 1-bit sources is crude next
+        to the analogue mix, but it puts the loading sound where it belongs -- and it
+        costs nothing, since both are already 1-bit here (see ``sound/beeper.py`` on
+        the related two-bit simplification).
+
+        frame_t_state is the clock at the *start* of the current instruction (its
+        T-states are added after step() returns), so a flip is placed a few T-states
+        early -- inaudible, and it keeps the audio timing entirely inside the Machine.
+        """
+        level = self.ula.speaker
+        if self.tape_audible and self.tape_player is not None and self.tape_player.motor:
+            level |= self.ula.ear_level
+        if level != self._speaker_level:
+            self._speaker_level = level
+            self.beeper.set_level(self.frame_t_state, level)
 
     def run_frame(self) -> None:
         """Execute one 50Hz frame's worth of T-states, firing one interrupt at the start.
@@ -197,6 +246,11 @@ class Machine:
         # never overshoots by more than a few T-states -- the remainder stays small and
         # audio timestamps stay in-frame.
         self.frame_t_state -= self.frame_tstates
+        self._frame_base += self.frame_tstates  # keep tape_tstate continuous across the seam
+        if self.tape_player is not None:
+            # The player decides once per frame whether the machine is actually
+            # listening to the tape, and runs the motor if so -- see pulse.py.
+            self.tape_player.end_frame()
         # Close out the frame's audio: resample the sound sources' activity gathered
         # above into PCM the UI can play. A no-op while audio is disabled.
         self.audio.end_frame(self.frame_tstates)
@@ -278,7 +332,10 @@ class Machine128(Machine):
     def _io_read(self, port: int) -> int:
         if port & 0xC002 == 0xC000:          # 0xFFFD: read the selected AY register
             return self.ay.read_selected()
-        return self.ula.read_port(port)
+        # Everything else is the base machine's read, *including* its tape handling --
+        # a 128K loads tapes exactly as a 48K does, so answering the ULA directly here
+        # would quietly leave the 128 with no tape input at all.
+        return super()._io_read(port)
 
     def display_memory(self):
         # Shadow-screen (bit 3) shows RAM7 even when it isn't mapped into any slot.

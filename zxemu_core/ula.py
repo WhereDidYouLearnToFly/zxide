@@ -41,19 +41,22 @@ def contention_delay(t_state: int) -> int:
 
 class Ula:
     """Port 0xFE: OUT sets border color (bits 0-2) and the speaker bit (bit 4);
-    IN reads keyboard row bits.
+    IN reads keyboard row bits (0-4) and the tape input (bit 6).
 
-    We record the speaker level but do no timing here -- turning the stream of
-    speaker flips into sound needs to know *when* each flip happened, and only the
-    Machine holds the frame T-state clock, so it timestamps the changes (see
-    ``Machine._io_write``). Tape (EAR) input on bit 6 isn't modeled yet; unused
-    read bits return 1, matching the floating-bus convention.
+    We record the levels but do no timing here. Both directions of the audio path
+    need to know *when* something happened, and only the Machine holds the T-state
+    clock, so it does the timestamping: it stamps outgoing speaker flips for the
+    beeper (``Machine._io_write``) and sets :attr:`ear_level` from the tape player
+    before each read (``Machine._io_read``). Unused read bits return 1, matching the
+    floating-bus convention -- and with no tape playing, bit 6 stays 1 too, so a
+    machine with an empty deck reads exactly what it always did.
     """
 
     def __init__(self, keyboard=None):
         self.keyboard = keyboard
         self.border_color = 0
-        self.speaker = 0  # port 0xFE bit 4: the 1-bit beeper output
+        self.speaker = 0    # port 0xFE bit 4: the 1-bit beeper output
+        self.ear_level = 1  # port 0xFE bit 6: what the tape input is doing right now
 
     def write_port(self, port: int, value: int) -> None:
         if port & 0x01 == 0:
@@ -63,5 +66,7 @@ class Ula:
     def read_port(self, port: int) -> int:
         if port & 0x01 == 0:
             row_bits = self.keyboard.read(port) if self.keyboard is not None else 0x1F
-            return 0xE0 | (row_bits & 0x1F)
+            # Bit 6 is the whole of tape loading: a loader reads this one bit in a tight
+            # loop and works out the data from how long it stays put between flips.
+            return 0xA0 | (self.ear_level << 6) | (row_bits & 0x1F)
         return 0xFF

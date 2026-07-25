@@ -7,10 +7,10 @@ PyQt5 UI.
 
 **Milestones 1–4 complete, plus a full debugger.** A from-scratch pure-Python Z80
 CPU with 48K and 128K machine models (memory paging, ULA, keyboard, beeper,
-AY-3-8912), tape and snapshot loading (`.tap`/`.tzx` fast loading, `.sna`/`.z80`
-snapshots), wrapped in a dockable IDE with an assembler build pipeline, a
+AY-3-8912), tape and snapshot loading (`.tap`/`.tzx`, both instant and at
+authentic pulse-level tape speed; `.sna`/`.z80` snapshots), wrapped in a dockable IDE with an assembler build pipeline, a
 source-level debugger, and an asset workflow that imports art and audio, places it in
-memory and generates the assembly to include it. 682 tests pass; the CPU is
+memory and generates the assembly to include it. 716 tests pass; the CPU is
 cross-checked against the FUSE reference emulator. See `dev-support/STATUS.md` for
 the full state and `DEV_PLAN.md` for what's next.
 
@@ -26,6 +26,7 @@ the full state and `DEV_PLAN.md` for what's next.
   - `sound/` — `beeper.py`, `ay.py`, the `mixer.py` that sums them, and
     `beeper_preview.py` for auditioning an effect without a running machine.
   - `storage/` — `tape.py` (.tap + the ROM-trap fast loader), `tzx.py`,
+    `pulse.py` (edge-level replay: blocks back into the pulses a ULA hears),
     `snapshot.py` (.sna), `z80.py` (.z80).
   - `assets/` — converters (`bmp_convert.py`, `tilemap_convert.py`,
     `binary_convert.py`, `pt3_convert.py`, `beeper_sfx.py`, `native_sprite.py`),
@@ -63,7 +64,7 @@ Menus are grouped by what you're doing rather than by which code implements them
 | **File** | projects and source files |
 | **Edit** | finding your way around your own text: find in project, go to line |
 | **Build** | turning *your* project into a running program |
-| **Load** | running *someone else's* — one item per format: `.tap`, `.tzx`, `.sna`, `.z80` |
+| **Load** | running *someone else's* — one item per format (`.tap`, `.tzx`, `.sna`, `.z80`), plus the tape deck |
 | **Model** | which machine is emulated (48K / 128K), switchable any time; retargets the open project too |
 | **Disassembly** | the disassembly panel and where it points |
 | **Breaks** | breakpoint conditions, run-to-cursor |
@@ -135,14 +136,28 @@ code. Build twice, or place it by hand.
 
 ### Tapes and snapshots
 
-Tapes load instantly, by intercepting the ROM's loading routine rather than replaying
-the pulses a real cassette produced. That covers BASIC's `LOAD ""` and the many game
-loaders that call into the ROM — including the multi-part 128K ones that page banks
-between blocks. It cannot help a **turbo loader** that times its own bits and never
-touches the ROM: those need edge-level replay, which isn't implemented yet, and will
-typically stop after their first block or two. `.tzx` files are read for their
-data-carrying blocks; anything else in the container (timings, groups, menus, credits)
-is reported in the Output rather than silently dropped.
+There are two loaders, and **Load ▸ Tape Deck ▸ Fast Load** picks between them.
+
+**On (the default), tapes load instantly**, by intercepting the ROM's loading routine
+instead of replaying the pulses a real cassette produced. That covers BASIC's `LOAD ""`
+and the many game loaders that call into the ROM — including the multi-part 128K ones
+that page banks between blocks.
+
+**Off, the machine loads the way it did in 1985**: the tape is turned back into the
+pilot/sync/data pulse train and fed to port `0xFE` bit 6, and the loader works the bytes
+out by timing the gaps. This is slower — a full game takes minutes, exactly as it did on
+hardware — and it is the only thing that will satisfy a **turbo loader**, which times its
+own bits and never touches the ROM. Two things come with it for nothing: the **loading
+stripes**, because the loader itself is painting the border between samples, and the
+**tape sound**, because on real hardware the tape signal reaches the speaker.
+
+Real commercial tapes load this way (1942 is the worked example), but the heavily
+protected loaders are not all there yet — Speedlock plays its whole tape without coming
+up. If a tape stalls, the Output says which of the two loaders to reach for.
+
+`.tzx` files are read for everything audible, in order — data blocks with their own pulse
+timings, plus bare tones, pulse sequences and pauses. Anything else in the container
+(groups, menus, credits) is reported in the Output rather than silently dropped.
 
 ## Development
 

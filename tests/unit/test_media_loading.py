@@ -131,7 +131,8 @@ def test_an_untouched_tape_says_you_have_to_start_it(window, tmp_path):
 
 def test_a_tape_that_stops_part_way_blames_the_loader_instead(window, tmp_path):
     """Blocks were read and then it stalled: the ROM loader started it, so what stopped
-    it is the game's own turbo loader -- the opposite advice."""
+    it is the game's own turbo loader -- the opposite advice, and now an actionable one,
+    because turning Fast Load off is exactly what such a loader needs."""
     window._load_media(str(_tap(tmp_path, (0xFF, b"\x01"), (0xFF, b"\x02"))))
     window.machine.tape.advance()  # as a first successful block read would
     window.output_console.clear_output()
@@ -140,7 +141,22 @@ def test_a_tape_that_stops_part_way_blames_the_loader_instead(window, tmp_path):
 
     text = window.output_console.toPlainText()
     assert "1 of 2 loaded" in text
-    assert "turbo loader" in text and "Edge-level replay" in text
+    assert "turbo loader" in text and "Fast Load" in text
+
+
+def test_a_stall_with_fast_load_already_off_does_not_repeat_the_same_advice(window, tmp_path):
+    """Telling someone to turn off a setting they already turned off is the fastest way
+    to make them stop reading the Output."""
+    window._load_media(str(_tap(tmp_path, (0xFF, b"\x01"), (0xFF, b"\x02"))))
+    window.machine.tape.advance()
+    window._set_fast_load(False)
+    window.output_console.clear_output()
+
+    _stall(window)
+
+    text = window.output_console.toPlainText()
+    assert "Turn off" not in text
+    assert "Rewind" in text
 
 
 def test_the_notice_is_reported_once_not_every_frame(window, tmp_path):
