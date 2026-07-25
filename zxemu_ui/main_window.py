@@ -19,7 +19,7 @@ The menu bar is split by *what you are doing*, not by which code implements it:
   * **File** -- projects and source files (new/open/save, recent projects),
   * **Build** -- turning *your* project into a running program (sjasmplus, then
     load the snapshot it produced), with or without breakpoints,
-  * **Load** -- running *somebody else's* program: a .sna snapshot or a .tap tape,
+  * **Load** -- running *somebody else's* program: a .sna/.z80 snapshot or a .tap/.tzx tape,
   * **Disassembly** -- the disassembly panel and where it points,
   * **Breaks** -- conditions on breakpoints, and run-to-cursor/address,
   * **Reversing** -- understanding someone else's program: search, cross-references,
@@ -41,7 +41,6 @@ from pathlib import Path
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QAction,
-    QActionGroup,
     QApplication,
     QDockWidget,
     QFileDialog,
@@ -49,23 +48,22 @@ from PyQt5.QtWidgets import (
     QInputDialog,
     QMainWindow,
     QMenu,
-    QPlainTextEdit,
     QTreeView,
     QWidget,
 )
 
-from zxemu_core.storage import snapshot, tape
 from zxemu_core.machine import Machine
 from zxemu_core.debug import debug_expr
 from zxemu_core.assets.manifest import AssetKind
 from zxemu_core.assets.native_sprite import NATIVE_SUFFIX, blank_sprite_data
 from zxemu_core.assets.beeper_sfx import SUFFIX as BEEPER_SFX_SUFFIX
-from zxemu_ui.workspace import builder, sld
+from zxemu_ui.workspace import builder
 from zxemu_ui.controller import EmulatorController
 from zxemu_ui.editor import EditorArea
 from zxemu_ui.panels.emulator_panel import EmulatorPanel
 from zxemu_ui.panels.emulator_view import EmulatorView
-from zxemu_ui import layout_store
+from zxemu_ui import layout_store, media, menu_builder
+from zxemu_ui.debug_session import DebugSession
 from zxemu_ui.panels.inspector_view import InspectorView
 from zxemu_ui.panels.sprite_editor_view import SpriteEditorView
 from zxemu_ui.panels.beeper_sfx_editor_view import BeeperSfxEditorView
@@ -75,11 +73,14 @@ from zxemu_ui.panels.call_stack_view import CallStackView
 from zxemu_ui.panels.disassembly_view import DisassemblyView
 from zxemu_ui.panels.memory_cells_view import MemoryCellsView
 from zxemu_ui.panels.memory_map_view import MemoryMapView
-from zxemu_ui.workspace.project import Project, is_text_file
+from zxemu_ui.panels.output_console import OutputConsole
+from zxemu_ui.workspace.project import SOURCE_SUFFIXES, Project, is_text_file
 from zxemu_ui.panels.registers_view import RegistersView
+from zxemu_ui.workspace.search import search_project
 from zxemu_ui.workspace.settings import Settings
 from zxemu_ui.workspace.settings_dialog import SettingsDialog
-from zxemu_ui.theme import apply_ui_scale, monospace_font
+from zxemu_ui.system_open import FILE_MANAGER_NAME, reveal
+from zxemu_ui.theme import apply_ui_scale
 
 # Interface-scale choices offered in the View menu, as multiples of the base font size.
 INTERFACE_SCALE_CHOICES = (
@@ -112,19 +113,14 @@ class MainWindow(QMainWindow):
         # currently open project (None until one is opened/created).
         self.settings = Settings(Path(__file__).resolve().parent.parent / "settings.json")
         self.project: Project | None = None
-        self._source_map = None  # line<->address map from the last build (for breakpoints)
-        self._debugging = False  # True after Build & Debug (breakpoints active)
+        # Everything about why execution would pause and where we are when it does --
+        # source map, breakpoints, conditions, watchpoints -- lives in one object.
+        self.debug = DebugSession(controller, machine)
+        self._last_search = ""   # pre-filled into Find in Project, so Ctrl+F repeats cheaply
         # Model-menu radio items, keyed by model string. Populated by _build_menu and
         # kept in sync by set_machine, so the tick always follows the *live* machine --
         # whether it changed from the menu or from opening a project.
         self._model_actions: dict[str, QAction] = {}
-        # Watchpoints the user has added, kept here because the menu adds one at a time
-        # while the controller takes the whole set.
-        self._watched_reads: set[int] = set()
-        self._watched_writes: set[int] = set()
-        self._watched_ports_read: set[int] = set()
-        self._watched_ports_write: set[int] = set()
-        self._breakpoint_conditions: dict[int, str] = {}  # address -> expression
 
         # Give the left/right dock areas the corners, so the side columns (Project +
         # Inspector, and the emulator/registers/memory-map stack) run the full height
@@ -151,7 +147,8 @@ class MainWindow(QMainWindow):
         self.inspector = InspectorView()
         self.sprite_editor = SpriteEditorView()
         self.beeper_sfx_editor = BeeperSfxEditorView()
-        self.output_console = self._make_console()
+        self.output_console = OutputConsole()
+        self.output_console.link_activated.connect(self._open_search_hit)
 
         self._build_docks()
 
@@ -211,6 +208,33 @@ class MainWindow(QMainWindow):
         else:
             self._apply_default_sizes()
 
+    # --- small shared gestures -------------------------------------------------
+
+    def _refresh_all_panels(self) -> None:
+        """Repaint every live view from the machine's current state.
+
+        For the moments when everything changed at once and no signal covers it: a
+        snapshot was loaded, the machine was swapped, a watchpoint fired. ``force=True``
+        on the heavier panels bypasses their "has anything moved?" caching, which is what
+        makes them cheap during normal running but stale after a wholesale state change.
+        """
+        self.view.refresh()
+        self.registers.refresh()
+        self.memory_cells.refresh(force=True)
+        self.disassembly.refresh(force=True)
+        self.call_stack.refresh(force=True)
+        self.memory_map.refresh()
+
+    @staticmethod
+    def _reveal_dock(dock) -> None:
+        """Bring a dock to the front: show it, and raise it above whatever it's tabbed with.
+
+        ``show()`` alone is not enough for a tabbed dock -- it would stay behind its
+        sibling, so the panel you just asked for appears to do nothing.
+        """
+        dock.show()
+        dock.raise_()
+
     def _apply_default_sizes(self) -> None:
         h = self.height()
         # Right column: give the emulator the lion's share; keep registers compact,
@@ -228,13 +252,6 @@ class MainWindow(QMainWindow):
         )
 
     # --- construction helpers -------------------------------------------------
-
-    def _make_console(self) -> QPlainTextEdit:
-        console = QPlainTextEdit()
-        console.setReadOnly(True)
-        console.setPlaceholderText("Build output will appear here.")
-        console.setFont(monospace_font())  # column-aligned, like a code editor
-        return console
 
     def _make_project_tree(self) -> QTreeView:
         """A live view of the open project's folder on disk (empty until one opens)."""
@@ -261,11 +278,7 @@ class MainWindow(QMainWindow):
         path = self._fs_model.filePath(current)
         if not path:
             return
-        try:
-            source = str(Path(path).relative_to(self.project.folder))
-        except ValueError:
-            source = path
-        self.inspector.show_path(self.project, source)
+        self.inspector.show_path(self.project, self.project.relative(path) or path)
 
     def _on_asset_selected(self, asset_id: str) -> None:
         """A placed asset was clicked in the Design-mode memory map."""
@@ -306,18 +319,14 @@ class MainWindow(QMainWindow):
         self.analysis.machine = machine
         self.registers.machine = machine
         self.memory_map.machine = machine
+        self.debug.machine = machine  # conditions are validated against the live machine
         self.controller.set_machine(machine)
         # Keep the Model menu's tick on the machine that's actually running, however the
         # switch was triggered (menu, or opening a project that targets the other model).
         action = self._model_actions.get(machine_model(machine))
         if action is not None:
             action.setChecked(True)
-        self.view.refresh()
-        self.registers.refresh()
-        self.memory_cells.refresh(force=True)
-        self.disassembly.refresh(force=True)
-        self.call_stack.refresh(force=True)
-        self.memory_map.refresh()
+        self._refresh_all_panels()
 
     def _new_project(self) -> None:
         # Model first: it decides which starter template is scaffolded into the folder,
@@ -363,32 +372,24 @@ class MainWindow(QMainWindow):
         """Show ``path`` in the Sprite Editor if it's a registered asset. False if not (caller falls back)."""
         if self.project is None:
             return False
-        try:
-            source = str(Path(path).relative_to(self.project.folder))
-        except ValueError:
-            return False
+        source = self.project.relative(path)
         entry = next((e for e in self.project.assets() if e.source == source), None)
         if entry is None:
             return False
         self.sprite_editor.show_asset(self.project, entry)
-        self._sprite_editor_dock.show()
-        self._sprite_editor_dock.raise_()
+        self._reveal_dock(self._sprite_editor_dock)
         return True
 
     def _open_beeper_sfx_editor_for_path(self, path: str) -> bool:
         """Show ``path`` in the Beeper SFX Editor if it's a registered asset. False if not (caller falls back)."""
         if self.project is None:
             return False
-        try:
-            source = str(Path(path).relative_to(self.project.folder))
-        except ValueError:
-            return False
+        source = self.project.relative(path)
         entry = next((e for e in self.project.assets() if e.source == source), None)
         if entry is None:
             return False
         self.beeper_sfx_editor.show_asset(self.project, entry)
-        self._beeper_sfx_editor_dock.show()
-        self._beeper_sfx_editor_dock.raise_()
+        self._reveal_dock(self._beeper_sfx_editor_dock)
         return True
 
     def _show_tree_menu(self, pos) -> None:
@@ -401,6 +402,8 @@ class MainWindow(QMainWindow):
         menu.addAction("New Beeper SFX Asset…", self._new_beeper_sfx_asset)
         menu.addSeparator()
         menu.addAction("Import Animation Sequence…", self._import_animation_sequence)
+        menu.addSeparator()
+        menu.addAction(f"Show in {FILE_MANAGER_NAME}", self._reveal_in_file_manager)
         menu.exec_(self.project_tree.viewport().mapToGlobal(pos))
 
     def _new_sprite_asset(self) -> None:
@@ -431,11 +434,10 @@ class MainWindow(QMainWindow):
         symbol = name.strip()
         path = self._target_dir() / f"{symbol}{NATIVE_SUFFIX}"
         path.write_text(json.dumps(blank_sprite_data(width, height, frame_count), indent=2), encoding="utf-8")
-        entry = self.project.add_asset(str(path.relative_to(self.project.folder)), AssetKind.SPRITE_SHEET, symbol=symbol)
+        entry = self.project.add_asset(self.project.relative(path), AssetKind.SPRITE_SHEET, symbol=symbol)
 
         self.sprite_editor.show_asset(self.project, entry)
-        self._sprite_editor_dock.show()
-        self._sprite_editor_dock.raise_()
+        self._reveal_dock(self._sprite_editor_dock)
         self.memory_map.refresh()
 
     def _new_beeper_sfx_asset(self) -> None:
@@ -449,11 +451,10 @@ class MainWindow(QMainWindow):
         symbol = name.strip()
         path = self._target_dir() / f"{symbol}{BEEPER_SFX_SUFFIX}"
         path.write_text("", encoding="utf-8")  # empty -- add tones/rests in the editor
-        entry = self.project.add_asset(str(path.relative_to(self.project.folder)), AssetKind.BEEPER_SFX, symbol=symbol)
+        entry = self.project.add_asset(self.project.relative(path), AssetKind.BEEPER_SFX, symbol=symbol)
 
         self.beeper_sfx_editor.show_asset(self.project, entry)
-        self._beeper_sfx_editor_dock.show()
-        self._beeper_sfx_editor_dock.raise_()
+        self._reveal_dock(self._beeper_sfx_editor_dock)
         self.memory_map.refresh()
 
     def _import_animation_sequence(self) -> None:
@@ -470,12 +471,7 @@ class MainWindow(QMainWindow):
         symbol, ok = QInputDialog.getText(self, "Import Animation Sequence", "Symbol name:")
         if not ok or not symbol.strip():
             return
-        sources = []
-        for path in paths:
-            try:
-                sources.append(str(Path(path).relative_to(self.project.folder)))
-            except ValueError:
-                sources.append(path)
+        sources = [self.project.relative(path) or path for path in paths]
         self.project.add_asset(sources, AssetKind.SPRITE_SEQUENCE, symbol=symbol.strip())
         self.memory_map.refresh()
 
@@ -521,7 +517,11 @@ class MainWindow(QMainWindow):
             self._log("No project open — use File ▸ New Project or Open Folder first.")
             return
         self._log(f"── {'Build & Debug' if debug else 'Build & Run'} ──")
-        result = builder.build(self.project, self.settings)
+        self.editor.save_all()  # you can't assemble a tab, only a file on disk
+        main = self._compile_target()
+        if main is not None:
+            self._log(f"Assembling {main}")
+        result = builder.build(self.project, self.settings, main)
         self._log("$ " + " ".join(result.command))
         if result.output.strip():
             self._log(result.output.rstrip())
@@ -531,32 +531,47 @@ class MainWindow(QMainWindow):
         if result.snapshot is None:
             self._log("Build succeeded, but no snapshot was produced.")
             return
-        self._debugging = debug
+        self.debug.debugging = debug
         self._load_source_map(result.sld)  # source lines <-> addresses
         self._sync_breakpoints()            # applied only when debugging
         if self._load_snapshot(result.snapshot):
             self.controller.set_running(True)
 
+    def _compile_target(self) -> str | None:
+        """Which source F5 assembles: the one you have open, as a project-relative path.
+
+        The build entry point follows the editor rather than a manifest field, because
+        the manifest can only ever guess -- a folder zxide didn't scaffold calls its
+        entry point whatever it calls it (``fallout.asm``), and a project can hold
+        several buildable sources with no single "main" among them.
+
+        Returns None -- letting the builder fall back to the manifest -- when the focused
+        tab is not something assembleable: the welcome tab, a non-source text file like
+        ``zxide.json``, an ``.inc`` meant to be included by something else, or a file
+        outside the project folder.
+        """
+        path = self.editor.current_path()
+        if path is None:
+            return None
+        path = Path(path)
+        if path.suffix.lower() not in SOURCE_SUFFIXES:
+            return None
+        try:
+            return self.project.relative(path)
+        except ValueError:
+            return None
+
     def _load_source_map(self, sld_path) -> None:
-        """Parse the build's SLD file into a line<->address map."""
-        self._source_map = None
-        if sld_path is not None and self.project is not None:
-            try:
-                self._source_map = sld.parse(
-                    Path(sld_path).read_text(encoding="utf-8"), base_dir=self.project.folder
-                )
-                # Hand the labels to the disassembly panel so your code shows your names.
-                self.disassembly.source_map = self._source_map
-            except OSError:
-                pass
+        """Hand the build's SLD to the debug session, and its labels to the disassembly."""
+        if self.project is None:
+            return
+        self.debug.load_source_map(sld_path, self.project.folder)
+        # The panel shows your own label names for addresses, so it needs the map too.
+        self.disassembly.source_map = self.debug.source_map
 
     def _sync_breakpoints(self) -> None:
-        """Translate editor breakpoint lines into PC addresses -- only when debugging."""
-        addresses = set()
-        if self._debugging and self._source_map is not None:
-            for path, lines in self.editor.all_breakpoints().items():
-                addresses |= self._source_map.breakpoint_addresses(path, lines)
-        self.controller.set_breakpoints(addresses)
+        """Push the editor's gutter breakpoints through to the running machine."""
+        self.debug.sync_breakpoints(self.editor.all_breakpoints())
 
     def _on_breakpoint_hit(self, address: int) -> None:
         """Execution paused on a breakpoint: log it and refresh the debug panels.
@@ -574,12 +589,7 @@ class MainWindow(QMainWindow):
         Open the disassembly to see the instruction just above it.
         """
         self._log(f"Watchpoint: {description}")
-        self.view.refresh()
-        self.registers.refresh()
-        self.memory_cells.refresh(force=True)
-        self.disassembly.refresh(force=True)
-        self.call_stack.refresh(force=True)
-        self.memory_map.refresh()
+        self._refresh_all_panels()
 
     def _on_running_marker(self, running: bool) -> None:
         if running:
@@ -593,9 +603,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_execution_marker(self) -> None:
         """Point the editor's execution highlight at the current PC's source line."""
-        if self._source_map is None:
-            return
-        location = self._source_map.line_for(self.machine.cpu.regs.pc)
+        location = self.debug.location_of(self.machine.cpu.regs.pc)
         if location is not None:
             self.editor.set_execution_line(*location)
         else:
@@ -603,13 +611,15 @@ class MainWindow(QMainWindow):
 
     def _load_snapshot_dialog(self) -> None:
         start_dir = str(self.project.folder) if self.project else ""
-        path, _ = QFileDialog.getOpenFileName(self, "Load Snapshot", start_dir, "Snapshots (*.sna)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Snapshot", start_dir, "Snapshots (*.sna *.z80)"
+        )
         if path:
             self._load_media(path)
 
     def _load_tape_dialog(self) -> None:
         start_dir = str(self.project.folder) if self.project else ""
-        path, _ = QFileDialog.getOpenFileName(self, "Load Tape", start_dir, "Tapes (*.tap)")
+        path, _ = QFileDialog.getOpenFileName(self, "Load Tape", start_dir, "Tapes (*.tap *.tzx)")
         if path:
             self._load_media(path)
 
@@ -625,10 +635,10 @@ class MainWindow(QMainWindow):
             self._log(f"File no longer exists: {path}")
             self.settings.remove_recent("recent_files", str(path))
             return False
-        suffix = path.suffix.lower()
-        if suffix == ".sna":
+        kind = media.kind_of(path)
+        if kind == media.SNAPSHOT:
             ok = self._load_snapshot(path)
-        elif suffix == ".tap":
+        elif kind == media.TAPE:
             ok = self._load_tape(path)
         else:
             self._log(f"Don't know how to load {path.name}.")
@@ -638,26 +648,21 @@ class MainWindow(QMainWindow):
         return ok
 
     def _load_snapshot(self, path) -> bool:
-        """Load a .sna into the machine and refresh the views. Returns success."""
+        """Load a .sna or .z80 into the machine and refresh the views. Returns success."""
         path = Path(path)
         try:
-            snapshot.load_sna(self.machine, path.read_bytes())
+            media.load_snapshot(self.machine, path)
         except (ValueError, NotImplementedError, OSError) as error:
             self._log(f"Could not load {path.name}: {error}")
             return False
         # Repaint the screen and the live debug panels from the new state.
-        self.view.refresh()
-        self.registers.refresh()
-        self.memory_cells.refresh(force=True)
-        self.disassembly.refresh(force=True)
-        self.call_stack.refresh(force=True)
-        self.memory_map.refresh()
+        self._refresh_all_panels()
         self.view.setFocus()  # you just loaded something to run -- send the keyboard here
         self._log(f"Loaded {path.name} — running.")
         return True
 
     def _load_tape(self, path) -> bool:
-        """Insert a .tap into the deck and reset, ready for the ROM to LOAD it.
+        """Insert a .tap or .tzx into the deck and reset, ready for the ROM to LOAD it.
 
         Unlike a snapshot (which *is* a running state), a tape has to be loaded by the
         machine itself. We reset to a clean ROM prompt, insert the tape, and -- with
@@ -666,25 +671,18 @@ class MainWindow(QMainWindow):
         """
         path = Path(path)
         try:
-            deck = tape.TapeDeck(tape.parse_tap(path.read_bytes()))
+            blocks, notes = media.read_tape(path)
         except (ValueError, OSError) as error:
             self._log(f"Could not load {path.name}: {error}")
             return False
 
         self.controller.reset()             # clean power-on state before inserting
-        self.machine.insert_tape(deck)
+        self.machine.insert_tape(media.make_deck(blocks))
         self.controller.set_running(True)
         self.view.refresh()
         self.view.setFocus()
-
-        blocks = deck.blocks
-        self._log(f"Inserted {path.name} — {len(blocks)} block(s):")
-        for block in blocks:
-            self._log(f"    {block.describe()}")
-        if machine_model(self.machine) == "128k":
-            self._log('Choose "128 BASIC" (or "48 BASIC"), then type LOAD "" ⏎ to load.')
-        else:
-            self._log('Type LOAD "" ⏎ (the J key gives LOAD) to load.')
+        for line in media.tape_summary(path.name, blocks, notes, machine_model(self.machine)):
+            self._log(line)
         return True
 
     # --- recent projects / files -----------------------------------------------
@@ -823,210 +821,15 @@ class MainWindow(QMainWindow):
     # --- menu -----------------------------------------------------------------
 
     def _build_menu(self) -> None:
-        file_menu = self.menuBar().addMenu("&File")
-        new_project = QAction("New Project…", self)
-        new_project.triggered.connect(self._new_project)
-        file_menu.addAction(new_project)
-        open_folder = QAction("Open Folder…", self)
-        open_folder.triggered.connect(self._open_folder)
-        file_menu.addAction(open_folder)
-        # Open Recent: recently opened project folders, rebuilt each time it's shown.
-        self._open_recent_menu = file_menu.addMenu("Open &Recent")
-        self._open_recent_menu.aboutToShow.connect(self._populate_open_recent)
+        """Build the menu bar (see ``menu_builder``) and keep the few parts we reuse."""
+        menus = menu_builder.build(
+            self, model_choices=MACHINE_MODEL_CHOICES, scale_choices=INTERFACE_SCALE_CHOICES
+        )
+        self._open_recent_menu = menus.open_recent
+        self._load_recent_menu = menus.load_recent
+        self._model_actions = menus.model_actions
         self._populate_open_recent()
-        file_menu.addSeparator()
-        save = QAction("&Save", self)
-        save.setShortcut("Ctrl+S")
-        save.triggered.connect(self.editor.save_current)
-        file_menu.addAction(save)
-        save_all = QAction("Save A&ll", self)
-        save_all.setShortcut("Ctrl+Shift+S")
-        save_all.triggered.connect(self.editor.save_all)
-        file_menu.addAction(save_all)
-        file_menu.addSeparator()
-        quit_action = QAction("E&xit", self)
-        quit_action.triggered.connect(self.close)
-        file_menu.addAction(quit_action)
-
-        build_menu = self.menuBar().addMenu("&Build")
-        debug_action = QAction("Build && Debug", self)
-        debug_action.setShortcut("F5")
-        debug_action.setToolTip("Build and run with breakpoints active")
-        debug_action.triggered.connect(self._build_and_debug)
-        build_menu.addAction(debug_action)
-        run_action = QAction("Build && Run", self)
-        run_action.setShortcut("Ctrl+F5")
-        run_action.setToolTip("Build and run without debugging (ignore breakpoints)")
-        run_action.triggered.connect(self._build_and_run)
-        build_menu.addAction(run_action)
-
-        # Loading someone else's snapshot/tape has nothing to do with building your own
-        # project, so it gets its own menu rather than sharing Build's.
-        load_menu = self.menuBar().addMenu("&Load")
-        load_snapshot = QAction("Load Snapshot…", self)
-        load_snapshot.triggered.connect(self._load_snapshot_dialog)
-        load_menu.addAction(load_snapshot)
-        load_tape = QAction("Load Tape…", self)
-        load_tape.setToolTip('Insert a .tap tape, then LOAD "" from BASIC')
-        load_tape.triggered.connect(self._load_tape_dialog)
-        load_menu.addAction(load_tape)
-        # Load Recent: recently loaded snapshots/tapes, rebuilt each time it's shown.
-        self._load_recent_menu = load_menu.addMenu("Load &Recent")
-        self._load_recent_menu.aboutToShow.connect(self._populate_load_recent)
         self._populate_load_recent()
-
-        self._build_model_menu()
-
-        # Disassembly: the panel and where it points. Its own menu rather than a line in
-        # View, because "show the panel" and "navigate it" belong together.
-        disasm_menu = self.menuBar().addMenu("D&isassembly")
-        show_disasm = self._disasm_dock.toggleViewAction()
-        show_disasm.setText("Show Disassembly")
-        disasm_menu.addAction(show_disasm)
-        disasm_menu.addSeparator()
-        goto_pc = QAction("Go to PC", self)
-        goto_pc.setToolTip("Re-centre on the program counter and keep following it")
-        goto_pc.triggered.connect(self._disasm_goto_pc)
-        disasm_menu.addAction(goto_pc)
-        goto_addr = QAction("Go to Address…", self)
-        goto_addr.triggered.connect(self._disasm_goto_address)
-        disasm_menu.addAction(goto_addr)
-        goto_label = QAction("Go to Label…", self)
-        goto_label.setToolTip("Jump to one of your own labels from the last build")
-        goto_label.triggered.connect(self._disasm_goto_label)
-        disasm_menu.addAction(goto_label)
-        disasm_menu.addSeparator()
-        show_stack = self._callstack_dock.toggleViewAction()
-        show_stack.setText("Show Call Stack")
-        disasm_menu.addAction(show_stack)
-
-        # Breaks: conditions attached to the gutter breakpoints, so a routine called
-        # ten thousand times a frame can stop on the one call that misbehaves.
-        breaks_menu = self.menuBar().addMenu("&Breaks")
-        set_condition = QAction("Set Breakpoint Condition…", self)
-        set_condition.setToolTip("Stop at an address only when an expression is true")
-        set_condition.triggered.connect(self._set_breakpoint_condition)
-        breaks_menu.addAction(set_condition)
-        run_to_cursor = QAction("Run to Cursor", self)
-        run_to_cursor.setToolTip("Resume, stopping at the line the caret is on (Ctrl+F10)")
-        run_to_cursor.setShortcut("Ctrl+F10")
-        run_to_cursor.triggered.connect(self._run_to_cursor)
-        breaks_menu.addAction(run_to_cursor)
-        run_to_address = QAction("Run to Address…", self)
-        run_to_address.triggered.connect(self._run_to_address)
-        breaks_menu.addAction(run_to_address)
-        list_conditions = QAction("List Conditions", self)
-        list_conditions.triggered.connect(self._list_breakpoint_conditions)
-        breaks_menu.addAction(list_conditions)
-        breaks_menu.addSeparator()
-        clear_conditions = QAction("Clear All Conditions", self)
-        clear_conditions.triggered.connect(self._clear_breakpoint_conditions)
-        breaks_menu.addAction(clear_conditions)
-
-        # Watch: pause when a value or a port is touched, as opposed to a breakpoint,
-        # which pauses when execution *reaches* somewhere.
-        watch_menu = self.menuBar().addMenu("&Watch")
-        watch_write = QAction("Watch Memory Write…", self)
-        watch_write.setToolTip("Pause when the program writes to an address")
-        watch_write.triggered.connect(lambda: self._watch_memory(write=True))
-        watch_menu.addAction(watch_write)
-        watch_read = QAction("Watch Memory Read…", self)
-        watch_read.setToolTip("Pause when the program reads an address")
-        watch_read.triggered.connect(lambda: self._watch_memory(write=False))
-        watch_menu.addAction(watch_read)
-        watch_out = QAction("Watch Port (OUT)…", self)
-        watch_out.setToolTip("Pause when the program writes to a port")
-        watch_out.triggered.connect(lambda: self._watch_port(write=True))
-        watch_menu.addAction(watch_out)
-        watch_in = QAction("Watch Port (IN)…", self)
-        watch_in.setToolTip("Pause when the program reads a port")
-        watch_in.triggered.connect(lambda: self._watch_port(write=False))
-        watch_menu.addAction(watch_in)
-        watch_menu.addSeparator()
-        clear_watch = QAction("Clear All Watchpoints", self)
-        clear_watch.triggered.connect(self._clear_watchpoints)
-        watch_menu.addAction(clear_watch)
-
-        # Reversing: understanding somebody else's program -- questions about the whole
-        # of it rather than its current state. The planned memory->sources dumper lands
-        # here too, since it consumes exactly these results (see DEV_PLAN 1b).
-        analyse_menu = self.menuBar().addMenu("&Reversing")
-        find_bytes = QAction("Find Bytes…", self)
-        find_bytes.setToolTip("Search memory for a hex byte sequence")
-        find_bytes.triggered.connect(lambda: self._find_in_memory(as_text=False))
-        analyse_menu.addAction(find_bytes)
-        find_text = QAction("Find Text…", self)
-        find_text.triggered.connect(lambda: self._find_in_memory(as_text=True))
-        analyse_menu.addAction(find_text)
-        xrefs = QAction("Cross-references…", self)
-        xrefs.setToolTip("What calls, jumps to, reads or writes an address?")
-        xrefs.triggered.connect(self._cross_references)
-        analyse_menu.addAction(xrefs)
-        analyse_menu.addSeparator()
-        self._coverage_action = QAction("Record Coverage", self, checkable=True)
-        self._coverage_action.setToolTip("Record which addresses actually execute")
-        self._coverage_action.toggled.connect(self._set_coverage)
-        analyse_menu.addAction(self._coverage_action)
-        show_coverage = QAction("Show Coverage", self)
-        show_coverage.triggered.connect(self._show_coverage)
-        analyse_menu.addAction(show_coverage)
-        analyse_menu.addSeparator()
-        self._trace_action = QAction("Record Trace", self, checkable=True)
-        self._trace_action.setToolTip("Keep a rolling log of the last few thousand instructions")
-        self._trace_action.toggled.connect(self._set_trace)
-        analyse_menu.addAction(self._trace_action)
-        show_trace = QAction("Show Trace", self)
-        show_trace.triggered.connect(self._show_trace)
-        analyse_menu.addAction(show_trace)
-
-        # Compression: optional addons a project can opt into. Nothing is added to a
-        # project until you ask, so a project that compresses nothing carries nothing.
-        compression_menu = self.menuBar().addMenu("&Compression")
-        add_zx0 = QAction("Add ZX0", self)
-        add_zx0.setToolTip("Copy the ZX0 decompressor into the open project")
-        add_zx0.triggered.connect(lambda: self._add_addon("zx0", "ZX0"))
-        compression_menu.addAction(add_zx0)
-
-        view_menu = self.menuBar().addMenu("&View")
-        self._build_interface_scale_menu(view_menu)
-        special_chars = QAction("Show special characters", self, checkable=True)
-        special_chars.setChecked(bool(self.settings.get("show_special", False)))
-        self.editor.set_show_special(special_chars.isChecked())  # apply the saved preference
-        special_chars.toggled.connect(self._set_show_special)
-        view_menu.addAction(special_chars)
-        view_menu.addSeparator()
-        for dock in self._all_docks:
-            view_menu.addAction(dock.toggleViewAction())  # show/hide each panel
-        view_menu.addSeparator()
-        save_action = QAction("Save layout", self)
-        save_action.triggered.connect(self._save_layout)
-        view_menu.addAction(save_action)
-        reset_action = QAction("Reset layout", self)
-        reset_action.triggered.connect(self._reset_layout)
-        view_menu.addAction(reset_action)
-
-        # Top-level "Settings" in the menu bar, alongside File and View (opens directly).
-        settings_action = self.menuBar().addAction("Settings")
-        settings_action.triggered.connect(self._open_settings)
-
-    def _build_model_menu(self) -> None:
-        """Top-level Model menu: switch the emulated machine at any time.
-
-        A project still declares its target model (and opening one switches to it), but
-        the machine is not *owned* by the project -- you often want to try a tape or a
-        snapshot on the other model without creating a project at all. These are radio
-        items reflecting the live machine; see ``_switch_model``.
-        """
-        model_menu = self.menuBar().addMenu("&Model")
-        group = QActionGroup(self)
-        group.setExclusive(True)
-        for label, model in MACHINE_MODEL_CHOICES:
-            action = QAction(label, self, checkable=True)
-            action.setChecked(model == machine_model(self.machine))
-            action.triggered.connect(lambda _checked, m=model: self._switch_model(m))
-            group.addAction(action)
-            model_menu.addAction(action)
-            self._model_actions[model] = action
 
     def _switch_model(self, model: str) -> None:
         """Boot the other machine model, and remember it in the open project (if any)."""
@@ -1043,8 +846,7 @@ class MainWindow(QMainWindow):
     # --- analysis (thin: the work is in analysis_view / zxemu_core.debug.analysis) --------
 
     def _show_analysis(self) -> None:
-        self._analysis_dock.show()
-        self._analysis_dock.raise_()
+        self._reveal_dock(self._analysis_dock)
 
     def _find_in_memory(self, as_text: bool) -> None:
         title = "Find Text" if as_text else "Find Bytes"
@@ -1096,36 +898,32 @@ class MainWindow(QMainWindow):
             self,
             "Breakpoint Condition",
             f"Stop at ${address & 0xFFFF:04X} only when:",
-            text=self._breakpoint_conditions.get(address & 0xFFFF, "A == $FF"),
+            text=self.debug.condition_for(address) or "A == $FF",
         )
         if not ok:
             return
         expression = expression.strip()
         if not expression:  # cleared
-            self._breakpoint_conditions.pop(address & 0xFFFF, None)
+            self.debug.remove_condition(address)
             self._log(f"Condition on ${address & 0xFFFF:04X} removed.")
-        else:
-            # Check it now, against live state: a typo should be reported while you are
-            # still looking at the dialog, not by silently never matching later.
-            try:
-                debug_expr.validate(expression, self.machine)
-            except debug_expr.ExpressionError as error:
-                self._log(f"Bad condition: {error}")
-                return
-            self._breakpoint_conditions[address & 0xFFFF] = expression
-            self._log(f"Breakpoint ${address & 0xFFFF:04X} stops only when: {expression}")
-        self.controller.set_breakpoint_conditions(self._breakpoint_conditions)
+            return
+        try:
+            self.debug.set_condition(address, expression)
+        except debug_expr.ExpressionError as error:
+            self._log(f"Bad condition: {error}")
+            return
+        self._log(f"Breakpoint ${address & 0xFFFF:04X} stops only when: {expression}")
 
     def _run_to_cursor(self) -> None:
         """Run until execution reaches the line the caret is on."""
-        if self._source_map is None:
+        if self.debug.source_map is None:
             self._log("Run to Cursor needs a build first (no source map yet).")
             return
         path, line = self.editor.current_location()
         if path is None:
             self._log("Run to Cursor: no file open.")
             return
-        address = self._source_map.address_for(path, line)
+        address = self.debug.address_for(path, line)
         if address is None:
             self._log(f"Line {line} produced no code — nothing to run to.")
             return
@@ -1140,15 +938,14 @@ class MainWindow(QMainWindow):
         self.controller.run_to(address)
 
     def _list_breakpoint_conditions(self) -> None:
-        if not self._breakpoint_conditions:
+        if not self.debug.conditions:
             self._log("No breakpoint conditions set.")
             return
-        for address, expression in sorted(self._breakpoint_conditions.items()):
+        for address, expression in sorted(self.debug.conditions.items()):
             self._log(f"  ${address:04X}  when  {expression}")
 
     def _clear_breakpoint_conditions(self) -> None:
-        self._breakpoint_conditions.clear()
-        self.controller.set_breakpoint_conditions({})
+        self.debug.clear_conditions()
         self._log("Cleared all breakpoint conditions.")
 
     # --- watchpoints ------------------------------------------------------------
@@ -1169,9 +966,7 @@ class MainWindow(QMainWindow):
         address = self._ask_hex(f"Watch Memory {label}", "Address (hex):")
         if address is None:
             return
-        target = self._watched_writes if write else self._watched_reads
-        target.add(address & 0xFFFF)
-        self.controller.set_memory_watchpoints(self._watched_writes, self._watched_reads)
+        self.debug.watch_memory(address, write=write)
         self._log(f"Watching ${address & 0xFFFF:04X} for {label.lower()}s")
 
     def _watch_port(self, write: bool) -> None:
@@ -1179,24 +974,16 @@ class MainWindow(QMainWindow):
         port = self._ask_hex(f"Watch Port ({label})", "Port (hex, e.g. FE or 7FFD):")
         if port is None:
             return
-        target = self._watched_ports_write if write else self._watched_ports_read
-        target.add(port & 0xFFFF)
-        self.controller.set_port_watchpoints(self._watched_ports_read, self._watched_ports_write)
+        self.debug.watch_port(port, write=write)
         self._log(f"Watching {label} on port ${port:04X}")
 
     def _clear_watchpoints(self) -> None:
-        self._watched_reads.clear()
-        self._watched_writes.clear()
-        self._watched_ports_read.clear()
-        self._watched_ports_write.clear()
-        self.controller.set_memory_watchpoints((), ())
-        self.controller.set_port_watchpoints((), ())
+        self.debug.clear_watchpoints()
         self._log("Cleared all watchpoints.")
 
     def _show_disassembly(self) -> None:
         """Reveal the disassembly dock -- navigating to it should also open it."""
-        self._disasm_dock.show()
-        self._disasm_dock.raise_()
+        self._reveal_dock(self._disasm_dock)
 
     def _disasm_goto_pc(self) -> None:
         self._show_disassembly()
@@ -1208,13 +995,13 @@ class MainWindow(QMainWindow):
         self.disassembly.goto(address)
 
     def _disasm_goto_label(self) -> None:
-        if self._source_map is None or not self._source_map.labels:
+        if not self.debug.has_labels:
             self._log("No labels yet — build the project first (labels come from its SLD).")
             return
         name, ok = QInputDialog.getText(self, "Go to Label", "Label name:")
         if not ok or not name.strip():
             return
-        address = self._source_map.address_for_label(name)
+        address = self.debug.address_for_label(name)
         if address is None:
             self._log(f"No unique label matching {name.strip()!r}.")
             return
@@ -1251,18 +1038,6 @@ class MainWindow(QMainWindow):
         if not added and not skipped:
             self._log(f"{label} addon is empty — nothing to add.")
 
-    def _build_interface_scale_menu(self, view_menu) -> None:
-        """A checkable group scaling all UI text, for readability on large displays."""
-        scale_menu = view_menu.addMenu("Interface scale")
-        group = QActionGroup(self)
-        group.setExclusive(True)
-        for label, scale in INTERFACE_SCALE_CHOICES:
-            action = QAction(label, self, checkable=True)
-            action.setChecked(scale == 1.0)
-            action.triggered.connect(lambda _checked, s=scale: self._set_interface_scale(s))
-            group.addAction(action)
-            scale_menu.addAction(action)
-
     def _set_show_special(self, on: bool) -> None:
         """Toggle whitespace markers and remember the choice (auto-saved)."""
         self.editor.set_show_special(on)
@@ -1282,7 +1057,7 @@ class MainWindow(QMainWindow):
         self.call_stack.set_mono_scale(scale)
         self.analysis.set_mono_scale(scale)
         self.registers.set_mono_scale(scale)
-        self.output_console.setFont(monospace_font(scale))
+        self.output_console.set_mono_scale(scale)
 
     def _save_layout(self) -> None:
         """Write each dock's location/size/visibility to the JSON file, and log it."""
@@ -1303,7 +1078,76 @@ class MainWindow(QMainWindow):
 
     def _log(self, message: str) -> None:
         """Append a line to the Output console."""
-        self.output_console.appendPlainText(message)
+        self.output_console.append_line(message)
+
+    # --- find / go to line -----------------------------------------------------
+
+    def _find_in_project(self) -> None:
+        """Ctrl+F: search every text file in the project, results into Output.
+
+        Project-wide rather than within-file on purpose: a Z80 project is a dozen small
+        included files, so "where is this label used" is nearly always a question about
+        the project, and the answer is only useful if it takes you to the line -- hence
+        clickable results rather than a printed list.
+        """
+        if self.project is None:
+            self._log("No project open — Find in Project needs a project folder.")
+            return
+        query, ok = QInputDialog.getText(self, "Find in Project", "Find:", text=self._last_search)
+        if not ok or not query:
+            return
+        self._last_search = query
+
+        hits, truncated = search_project(self.project.folder, query)
+        self._reveal_dock(self._output_dock)
+        self._log(f'── Find "{query}" ──')
+        if not hits:
+            self._log("No matches.")
+            return
+        for hit in hits:
+            self.output_console.append_link(
+                f"{hit.relative}:{hit.line}: {hit.text}", hit.path, hit.line
+            )
+        files = len({hit.relative for hit in hits})
+        summary = f'{len(hits)} match(es) in {files} file(s) — click a line to open it'
+        if truncated:
+            summary += f" (stopped at {len(hits)}; narrow the search to see the rest)"
+        self._log(summary)
+
+    def _open_search_hit(self, path: str, line: int) -> None:
+        """A clicked search result: open the file and put the caret on the line."""
+        if not Path(path).exists():
+            self._log(f"{path} no longer exists.")
+            return
+        self.editor.goto_line(path, line)
+        self.editor.setFocus()
+
+    def _goto_line_dialog(self) -> None:
+        """Ctrl+G: jump to a line in the file you're editing."""
+        path, current = self.editor.current_location()
+        if path is None:
+            self._log("Go to Line needs an open file.")
+            return
+        maximum = max(1, self.editor.line_count())
+        line, ok = QInputDialog.getInt(
+            self, "Go to Line", f"Line (1–{maximum}):", current or 1, 1, maximum, 1
+        )
+        if ok:
+            self.editor.goto_line(path, line)
+            self.editor.setFocus()
+
+    def _reveal_in_file_manager(self) -> None:
+        """Show the selected file (or the project folder) in the system file manager."""
+        index = self.project_tree.currentIndex()
+        target = Path(self._fs_model.filePath(index)) if index.isValid() else None
+        if target is None or not str(target):
+            target = self.project.folder if self.project is not None else None
+        if target is None:
+            self._log("Nothing to show — open a project or select a file first.")
+            return
+        error = reveal(target)
+        if error:
+            self._log(f"Could not show {target}: {error}")
 
     def _save_screenshot(self) -> None:
         """Save the current screen as both a real .scr and a viewable .bmp.

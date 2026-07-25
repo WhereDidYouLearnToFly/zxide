@@ -16,9 +16,34 @@ This module does two things:
   * :func:`parse_tap` / :class:`TapeBlock` / :class:`TapeDeck` -- read a tape into
     blocks and keep a play position (which block loads next).
   * :func:`fast_load` -- the *fast* (instant) loader. It emulates the ROM's
-    ``LD-BYTES`` routine (at :data:`LD_BYTES_ENTRY`) by copying a whole block into
-    memory in one go and setting the success flag the ROM would, so a tape loads with
-    no waiting. The machine installs this behind a CPU trap; see ``Machine._tape_trap``.
+    ``LD-BYTES`` routine by copying a whole block into memory in one go and setting the
+    success flag the ROM would, so a tape loads with no waiting. The machine installs
+    this behind a CPU trap; see ``Machine._tape_trap``.
+
+**Where the trap sits, and why it matters.** ``LD-BYTES`` starts at
+:data:`LD_BYTES_ENTRY` (0x0556), but the trap is on :data:`LD_BYTES_TRAP` (0x0562) --
+the point *after* its preamble, where it starts sampling the tape::
+
+    0556 LD-BYTES  inc d          ; \\
+    0557            ex af,af'      ;  | preamble: stash the wanted flag byte and the
+    0558            dec d          ;  | LOAD/VERIFY carry in AF', silence interrupts,
+    0559            di             ;  | set the border, and push SA/LD-RET as the
+    055A            ld a,$0F       ;  | routine's own return address
+    055C            out ($FE),a    ;  |
+    055E            ld hl,$053F    ;  |
+    0561            push hl        ; /
+    0562            in a,($FE)     ; <- the trap: first sample of the tape input
+
+Trapping the later address catches *two* kinds of caller for the price of one. Loading
+from BASIC enters at 0x0556 and falls through. But many game loaders -- especially the
+multi-part 128K ones that page banks between blocks -- ``CALL 0x0562`` directly, having
+done the preamble's work themselves; a trap on 0x0556 never sees those, so the game
+spins forever in the ROM's edge-sampling loop waiting for pulses that fast loading
+never produces. (Aliens: Neoplasma II is one such loader.)
+
+The cost of trapping there is that the *expected flag byte and the LOAD/VERIFY carry
+live in the shadow ``AF'``*, not the main one -- that is what ``ex af,af'`` above did,
+and what a direct caller must therefore arrange too.
 
 Only fast loading is implemented. Authentic edge-level replay -- turning each block
 back into the pilot/sync/data pulse train the ULA samples on port 0xFE bit 6, so you
@@ -30,10 +55,11 @@ from __future__ import annotations
 
 from ..cpu.registers import FLAG_C
 
-# The ROM's LD-BYTES routine lives here. The fast-load trap fires when the CPU
-# reaches this address *and* the bytes there are LD-BYTES (see the signature check in
-# Machine._tape_trap) -- which is true for the 48K ROM and the 128K's 48-BASIC ROM.
+# The ROM's LD-BYTES routine starts here...
 LD_BYTES_ENTRY = 0x0556
+# ...and this is where it first samples the tape -- where the trap sits, so that game
+# loaders calling in past the preamble are intercepted too (see the module docstring).
+LD_BYTES_TRAP = 0x0562
 
 FLAG_HEADER = 0x00
 FLAG_DATA = 0xFF
@@ -122,11 +148,15 @@ class TapeDeck:
 def fast_load(machine, deck: TapeDeck) -> bool:
     """Instantly satisfy one ROM ``LD-BYTES`` call from the deck's current block.
 
-    Called when the CPU reaches :data:`LD_BYTES_ENTRY` with a tape inserted. At that
-    point the ROM has set up, exactly as for a real tape read:
+    Called when the CPU reaches :data:`LD_BYTES_TRAP` with a tape inserted. At that
+    point the caller has set up, exactly as for a real tape read:
 
         IX = destination address        DE = number of data bytes wanted
-        A  = expected flag byte          F carry = 1 to LOAD, 0 to VERIFY
+        A' = expected flag byte         F' carry = 1 to LOAD, 0 to VERIFY
+
+    The *shadow* AF holds the flag and carry because the routine's preamble put them
+    there (``ex af,af'``) before the trap address is reached -- see the module
+    docstring; a loader entering at 0x0562 itself has done the same.
 
     We read the whole block at once, copy (or verify) it, reproduce the parity/flag
     check the ROM would do, and finish the routine with a ``RET`` -- leaving the carry
@@ -138,13 +168,18 @@ def fast_load(machine, deck: TapeDeck) -> bool:
         return False  # no tape under the head -- let the ROM wait/time out itself
 
     regs = machine.cpu.regs
-    expected_flag = regs.a
-    loading = bool(regs.f & FLAG_C)  # carry set at entry = LOAD, reset = VERIFY
+    expected_flag = regs.a2
+    loading = bool(regs.f2 & FLAG_C)  # shadow carry set at entry = LOAD, reset = VERIFY
 
     # The ROM reads the flag byte first and checks it against the one requested. A
-    # mismatch (e.g. it wanted a header but the head sits on a data block) is a failed
-    # read: report it and leave the head where it is so the caller can decide.
+    # mismatch (it wanted a header, say, but this is a data block) is a failed read --
+    # and the head still moves on, because on a real cassette the tape keeps rolling
+    # whether or not the block was the one being looked for. That is exactly how
+    # `LOAD ""` finds a program that isn't first on the tape: it reads, rejects, and
+    # tries again on whatever comes next. Leaving the head parked instead would make the
+    # ROM re-read the same rejected block forever.
     if block.data[0] != expected_flag:
+        deck.advance()
         _finish_ld_bytes(machine, success=False)
         return True
 
@@ -182,11 +217,17 @@ def fast_load(machine, deck: TapeDeck) -> bool:
 
 
 def _finish_ld_bytes(machine, success: bool) -> None:
-    """Reproduce ``LD-BYTES``'s exit: set the success carry, re-enable interrupts, RET.
+    """Reproduce ``LD-BYTES``'s exit: set the success carry in the main F, then RET.
 
-    The routine returns with carry **set** on a good load and **reset** on error, and
-    it re-enables interrupts (it ran with them disabled) before returning. We then pop
-    the caller's return address off the stack -- the ``RET`` that ends the routine.
+    The routine returns with carry **set** on a good load and **reset** on error, in the
+    *main* AF (the shadow set carried the request in). We pop the return address off the
+    stack -- the ``RET`` that ends the routine.
+
+    Interrupts are deliberately left as they are. Entering from BASIC, the address we
+    return to is ``SA/LD-RET`` (0x053F), pushed by the preamble, which restores the
+    border, checks BREAK and does the ``EI`` itself; a loader that called 0x0562 directly
+    disabled interrupts for its own reasons and will re-enable them when it's ready.
+    Forcing ``EI`` here would override both.
     """
     cpu = machine.cpu
     regs = cpu.regs
@@ -194,6 +235,5 @@ def _finish_ld_bytes(machine, success: bool) -> None:
         regs.f |= FLAG_C
     else:
         regs.f &= ~FLAG_C & 0xFF
-    regs.iff1 = regs.iff2 = True
     regs.pc = cpu.memory.read_word(regs.sp)
     regs.sp = (regs.sp + 2) & 0xFFFF

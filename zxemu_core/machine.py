@@ -63,7 +63,7 @@ class Machine:
         # then. Both models get this identically (the 48K and 128K share LD-BYTES).
         self.tape: tape.TapeDeck | None = None
         self.fast_load_enabled = True
-        self.cpu.set_trap(tape.LD_BYTES_ENTRY, self._tape_trap)
+        self.cpu.set_trap(tape.LD_BYTES_TRAP, self._tape_trap)
         self.set_port_watchpoints()  # none: installs the plain, uninstrumented io hooks
         self.reset()
 
@@ -103,17 +103,20 @@ class Machine:
         self.tape = None
 
     def _tape_trap(self):
-        """CPU trap at LD-BYTES: fast-load the next block, or decline (return None).
+        """CPU trap inside LD-BYTES: fast-load the next block, or decline (return None).
 
         Declines -- letting the ROM run the routine for real -- when there's no tape or
-        fast loading is off. It also verifies the bytes at the trap address really are
-        LD-BYTES (``INC D`` / ``EX AF,AF'``): on the 128K that is only true while the
-        48-BASIC ROM is paged, so the trap never misfires inside the 128 menu ROM, and
-        on the 48K it is a cheap sanity guard. Returns the billed T-states when it acts.
+        fast loading is off. It also verifies the routine really is LD-BYTES, by its
+        preamble (``INC D`` / ``EX AF,AF'`` at 0x0556) *and* the ``IN A,($FE)`` at the
+        trap address itself: on the 128K that is only true while the 48-BASIC ROM is
+        paged, so the trap never misfires inside the 128 menu ROM, and on the 48K it is a
+        cheap sanity guard. Returns the billed T-states when it acts.
         """
         if self.tape is None or not self.fast_load_enabled:
             return None
-        if self.memory.read_byte(0x0556) != 0x14 or self.memory.read_byte(0x0557) != 0x08:
+        if (self.memory.read_byte(0x0556) != 0x14
+                or self.memory.read_byte(0x0557) != 0x08
+                or self.memory.read_byte(tape.LD_BYTES_TRAP) != 0xDB):
             return None  # not the real LD-BYTES (wrong ROM paged) -- don't intercept
         return TAPE_TRAP_TSTATES if tape.fast_load(self, self.tape) else None
 

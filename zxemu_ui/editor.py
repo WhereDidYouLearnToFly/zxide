@@ -260,6 +260,14 @@ class EditorArea(QTabWidget):
             return None, 0
         return path, widget.textCursor().blockNumber() + 1
 
+    def line_count(self) -> int:
+        """How many lines the focused file has (0 if the tab isn't a text buffer).
+
+        Lets "Go to Line" bound its input to the file rather than to an arbitrary number.
+        """
+        edit = self.currentWidget()
+        return edit.document().blockCount() if isinstance(edit, QPlainTextEdit) else 0
+
     def goto_line(self, path: str, line: int) -> None:
         """Open (or focus) a file and move the cursor to a 1-based line."""
         self.open_file(path)
@@ -304,6 +312,16 @@ class EditorArea(QTabWidget):
         edit.document().modificationChanged.connect(lambda _m, e=edit: self._update_title(e))
         index = self.addTab(edit, Path(path).name)
         self.setCurrentIndex(index)
+
+    def current_path(self) -> str | None:
+        """The file in the focused tab, or None if the tab is not backed by a file.
+
+        (The welcome tab isn't -- it has no ``file_path`` property.)
+        """
+        edit = self.currentWidget()
+        if not isinstance(edit, QPlainTextEdit):
+            return None
+        return edit.property("file_path") or None
 
     def save_current(self) -> None:
         self._save(self.currentWidget())

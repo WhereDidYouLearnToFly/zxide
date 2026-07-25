@@ -34,6 +34,11 @@ MANIFEST_NAME = "zxide.json"
 # Text files we open in the editor; anything else (bmp/bin/pt3...) is an asset.
 TEXT_SUFFIXES = {".asm", ".s", ".z80", ".z80asm", ".inc", ".i", ".txt", ".md", ".json", ".cfg", ".def"}
 
+# Of those, the ones that can be handed to the assembler as a *build entry point*.
+# `.inc`/`.i` are deliberately absent: they are meant to be `include`d by something
+# else, so assembling one directly would be a mistake, not a shortcut.
+SOURCE_SUFFIXES = {".asm", ".s", ".z80asm"}
+
 # The starter templates scaffolded into a new project, one per machine model (each a
 # buildable visible demo). The model is chosen at New-Project time and recorded in the
 # manifest, so opening a project later knows which machine to boot.
@@ -68,6 +73,27 @@ def default_manifest(name: str, model: str = DEFAULT_MODEL) -> dict:
         },
         "assets": [],  # imported AssetEntry records -- see zxemu_core.assets.manifest
     }
+
+
+# sjasmplus has no --sna flag: the source itself decides where the snapshot goes, via
+# `savesna "name.sna", entry`. So when the build entry point changes, the output name
+# follows from the source, not from the manifest.
+_SAVESNA_RE = re.compile(r'^\s*savesna\s+"([^"]+)"', re.IGNORECASE | re.MULTILINE)
+
+
+def snapshot_from_source(path: str | Path) -> str | None:
+    """The snapshot path a source's ``savesna`` directive writes, or None if it has none.
+
+    Without this, a build of anything but the scaffolded ``main.asm`` "succeeds" while
+    zxide looks for a snapshot that was never written under that name -- indistinguishable
+    from a failure, and far more confusing.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = _SAVESNA_RE.search(text)
+    return match.group(1) if match else None
 
 
 def _sanitize_symbol(name: str) -> str:
@@ -107,6 +133,20 @@ class Project:
         manifest = self.load_manifest()
         manifest["model"] = model
         self.save_manifest(manifest)
+
+    def relative(self, path: str | Path) -> str | None:
+        """``path`` as a project-relative string, or None if it isn't inside the project.
+
+        The manifest stores asset sources project-relative so a project folder can be
+        moved or shared without rewriting it, which means every path arriving from the
+        file tree, a drop, or the editor has to go through this. Returning None rather
+        than raising lets each caller pick its own answer for "outside the project":
+        the Inspector falls back to the absolute path, the build target declines.
+        """
+        try:
+            return str(Path(path).relative_to(self.folder))
+        except ValueError:
+            return None
 
     def assets(self) -> list[AssetEntry]:
         """Every imported asset recorded in the manifest, as :class:`AssetEntry` objects."""

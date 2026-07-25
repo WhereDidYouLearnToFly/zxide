@@ -12,19 +12,41 @@ That contract is the whole reason ``MainWindow`` can treat them uniformly -- con
 one signal to all of them, rebind them all when the machine is swapped -- without
 knowing what any of them draws.
 
+Watching the machine:
+
     emulator_view.py    The screen itself: bitmap + attributes + border + FLASH, and
                         PC keys mapped onto the Spectrum's 8x5 matrix.
-    emulator_panel.py   The screen plus its control strip (run / pause / step / reset).
+    emulator_panel.py   The screen plus its control strip (run / pause / step / reset /
+                        screenshot).
     registers_view.py   Registers and flags, a T-state read-out, and click-to-edit.
     memory_cells_view.py  Hex dump, with a Poke field to write bytes back.
-    memory_map_view.py  Bank-oriented overview with PC/SP markers and 128K paging.
+    memory_map_view.py  Bank-oriented overview with PC/SP markers and 128K paging --
+                        and, in Design mode, drag-and-drop asset placement.
     disassembly_view.py Code around PC, decoded, with ROM and project labels.
     call_stack_view.py  The inferred chain of callers.
     analysis_view.py    Results of whole-program queries (search, xrefs, coverage).
-    inspector_view.py   Details of a selected asset (a stub for now).
+
+Working on your own material:
+
+    inspector_view.py   What a selected asset is and what it will look like: rendered
+                        previews per kind, plus playback for beeper SFX.
+    sprite_editor_view.py  Draw a sprite in the IDE, in real ZX colours, where every
+                        paint action reclaims its 8x8 cell's attribute -- so the
+                        two-colours-per-cell hardware limit is a consequence of the
+                        tool rather than a rule you could break.
+    beeper_sfx_editor_view.py  Build a beeper effect as rows of Hz + frames, with a
+                        Play button, because a raw T-state period is not a format
+                        anyone can hand-author.
+    output_console.py   The Output panel: build log and search results, where result
+                        lines are clickable links to a file and line.
 
 The debug panels look at the same memory through different lenses on purpose: the
 hex dump says what the bytes *are*, the disassembly says what they *mean*, the map
 says where they *live*, and the call stack says how you *got* there. Which one
 answers your question depends entirely on the question.
+
+The editors break the ``machine`` / ``refresh`` contract above, and should: they are
+about files on disk, not about the running machine, so they take a project and an
+asset instead. They also all **autosave straight through** on every edit -- the
+convention the whole asset system follows.
 """

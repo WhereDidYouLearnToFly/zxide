@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from zxemu_ui.workspace.asset_build import AssetBuildError, regenerate_assets_asm
-from zxemu_ui.workspace.project import DEFAULT_BUILD_ARGS
+from zxemu_ui.workspace.project import DEFAULT_BUILD_ARGS, snapshot_from_source
 
 
 @dataclass
@@ -33,8 +33,13 @@ class BuildResult:
         return self.returncode == 0 and self.snapshot is not None
 
 
-def build(project, settings) -> BuildResult:
-    """Assemble ``project``'s main source.
+def build(project, settings, main: str | None = None) -> BuildResult:
+    """Assemble ``main`` (a project-relative source path), or the manifest's main source.
+
+    The caller normally passes the file you have open in the editor: on a folder zxide
+    did not scaffold, the entry point is whatever that codebase calls it, and no manifest
+    default can know that. The manifest's ``main`` stays as the fallback for when nothing
+    source-like is focused.
 
     Build config (arguments, output) comes from the project's manifest so each
     project can differ; only the assembler *location* comes from the global
@@ -46,9 +51,22 @@ def build(project, settings) -> BuildResult:
         return BuildResult([], 1, f"Asset build failed: {exc}\n", None, None)
 
     manifest = project.load_manifest()
-    main = manifest.get("main", "main.asm")
+    main = main or manifest.get("main", "main.asm")
+    main_path = project.folder / main
+    if not main_path.is_file():
+        return BuildResult(
+            [], 1,
+            f"No source to build: {main} does not exist in {project.folder}.\n"
+            "Open the file you want to assemble in the editor, or set \"main\" in zxide.json.\n",
+            None, None,
+        )
+
     build_config = manifest.get("build", {})
-    output = project.folder / build_config.get("output", "main.sna")
+    # The source's own savesna wins over the manifest: assembling fallout.asm writes
+    # fallout.sna whatever zxide.json says, so believing the manifest here would mean
+    # hunting for a file the assembler never wrote.
+    output_name = snapshot_from_source(main_path) or build_config.get("output", "main.sna")
+    output = project.folder / output_name
     sld_path = output.with_suffix(".sld")  # Source Level Debug map, for breakpoints
     arg_templates = build_config.get("args") or DEFAULT_BUILD_ARGS
     assembler = settings.get("assembler_path") or "sjasmplus"
@@ -66,6 +84,12 @@ def build(project, settings) -> BuildResult:
 
     combined = (proc.stdout or "") + (proc.stderr or "")
     ok = proc.returncode == 0
+    if ok and not output.exists():
+        combined += (
+            f"\nAssembled cleanly, but no snapshot at {output_name}. "
+            f"Add a `savesna \"{output_name}\", entry` directive to {main} "
+            "(or point the manifest's build.output at the one it writes).\n"
+        )
     snapshot = output if ok and output.exists() else None
     sld = sld_path if ok and sld_path.exists() else None
     return BuildResult(command, proc.returncode, combined, snapshot, sld)

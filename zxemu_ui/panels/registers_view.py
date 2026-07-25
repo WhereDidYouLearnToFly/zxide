@@ -15,6 +15,15 @@ is the number you hand-time loops against.
 
 Skips its own work when hidden, so a docked-away or tabbed-behind panel costs
 nothing.
+
+**Width discipline.** This panel shares a narrow right-hand column with the emulator, and
+every pixel it insists on is taken from the picture. A QLabel can never be narrower than
+its own text, so one long line silently sets the whole dock's minimum width -- which is
+exactly what the old single-line T-state read-out did (about 60 monospace characters, wider
+than the emulator itself). Hence: values are laid out over two short lines, cells are
+padded to a common width so the columns line up, and the whole panel uses a slightly
+smaller monospace size than body text (see :data:`FONT_SCALE`) -- dense tabular figures
+read fine a little smaller.
 """
 
 from __future__ import annotations
@@ -34,6 +43,11 @@ from zxemu_core.cpu.registers import (
 )
 from zxemu_ui.theme import monospace_font
 
+# How much smaller than body text the read-out is drawn. Registers are dense tabular
+# figures, not prose, so they stay legible below body size -- and the narrower this panel
+# is, the more room the emulator beside it keeps.
+FONT_SCALE = 0.85
+
 # Register cells laid out in a grid: (label, attribute-name, hex-width-in-nibbles).
 _REG_ROWS = [
     [("AF", "af", 4), ("BC", "bc", 4), ("DE", "de", 4), ("HL", "hl", 4)],
@@ -41,6 +55,20 @@ _REG_ROWS = [
     [("IX", "ix", 4), ("IY", "iy", 4), ("SP", "sp", 4), ("PC", "pc", 4)],
     [("I", "i", 2), ("R", "r", 2), ("IM", "im", 1)],
 ]
+
+# Every cell is "NAME VALUE" in these two fields, so a 2-digit I and a 4-digit HL still
+# line up down the column -- without it, the last row's short values ragged the grid.
+_NAME_WIDTH = 3   # fits AF' and IM
+_VALUE_WIDTH = 4  # fits a 16-bit pair
+
+
+def _cell_text(label: str, value: str) -> str:
+    return f"{label:>{_NAME_WIDTH}} {value:>{_VALUE_WIDTH}}"
+
+
+def _mono(scale: float = 1.0):
+    """This panel's font: the shared monospace, one step down."""
+    return monospace_font(scale * FONT_SCALE)
 
 # Flag bits shown left-to-right in the conventional SZ5H3PNC order, each with what it
 # actually means. The flags are the part of the Z80 a learner meets first and
@@ -79,17 +107,17 @@ class RegistersView(QWidget):
         self._flag_labels: dict[str, QLabel] = {}
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 8, 10, 8)
-        root.setSpacing(8)
+        root.setContentsMargins(8, 6, 8, 6)
+        root.setSpacing(6)
 
         grid = QGridLayout()
-        grid.setHorizontalSpacing(18)
-        grid.setVerticalSpacing(4)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(3)
         for r, row in enumerate(_REG_ROWS):
             for c, (label, attr, width) in enumerate(row):
                 cell = _ClickableLabel()
-                cell.setFont(monospace_font())
-                cell.setText(f"{label:>3} ----")
+                cell.setFont(_mono())
+                cell.setText(_cell_text(label, "-" * width))
                 cell.setToolTip(f"Click to set {label}")
                 cell.clicked.connect(
                     lambda name=label, a=attr, w=width: self._edit_register(name, a, w)
@@ -99,15 +127,17 @@ class RegistersView(QWidget):
         root.addLayout(grid)
 
         flags_row = QGridLayout()
-        flags_row.setHorizontalSpacing(6)
+        flags_row.setHorizontalSpacing(3)
         caption = QLabel("flags")
+        caption.setFont(_mono())
         caption.setStyleSheet("color: palette(mid);")
+        self._flags_caption = caption
         flags_row.addWidget(caption, 0, 0)
         for i, (name, _mask, description) in enumerate(_FLAGS, start=1):
             f = QLabel(name)
             f.setAlignment(Qt.AlignCenter)
             f.setToolTip(description)
-            f.setFont(monospace_font())
+            f.setFont(_mono())
             f.setStyleSheet("border: 1px solid palette(mid); border-radius: 3px; padding: 1px 4px;")
             self._flag_labels[name] = f
             flags_row.addWidget(f, 0, i)
@@ -119,10 +149,14 @@ class RegistersView(QWidget):
         # the beam has drawn your line yet. "step" is the cost of whatever ran since the
         # last refresh -- while single-stepping that is precisely the instruction's cost,
         # which is the number you need when hand-timing a loop.
-        self._tstates_label = QLabel()
-        self._tstates_label.setFont(monospace_font())
-        self._tstates_label.setStyleSheet("color: palette(mid);")
-        root.addWidget(self._tstates_label)
+        # Two lines, not one: as one line this was the widest thing in the panel and so
+        # set the dock's minimum width all by itself.
+        self._tstates_frame_label = QLabel()
+        self._tstates_step_label = QLabel()
+        for label in (self._tstates_frame_label, self._tstates_step_label):
+            label.setFont(_mono())
+            label.setStyleSheet("color: palette(mid);")
+            root.addWidget(label)
         root.addStretch(1)
 
         self._previous_total = machine.cpu.t_states
@@ -135,7 +169,9 @@ class RegistersView(QWidget):
         regs = self.machine.cpu.regs
         for row in _REG_ROWS:
             for label, attr, width in row:
-                self._value_labels[attr].setText(f"{label:>3} {getattr(regs, attr):0{width}X}")
+                self._value_labels[attr].setText(
+                    _cell_text(label, f"{getattr(regs, attr):0{width}X}")
+                )
         for name, mask, _description in _FLAGS:
             on = bool(regs.f & mask)
             self._flag_labels[name].setStyleSheet(
@@ -178,12 +214,20 @@ class RegistersView(QWidget):
         within = machine.frame_t_state
         frame = machine.frame_tstates
         percent = 100.0 * within / frame if frame else 0.0
-        self._tstates_label.setText(
-            f"T  frame {within:5d}/{frame} ({percent:4.1f}%)   step +{step:<6d} total {total}"
+        # Field widths chosen so the two lines' numbers sit in the same columns.
+        self._tstates_frame_label.setText(f"frame {within:5d}/{frame} {percent:4.1f}%")
+        self._tstates_step_label.setText(f"step  +{step:<7d} T {total}")
+        self._tstates_frame_label.setToolTip(
+            f"T-states into the current frame (of {frame}), and how far through it that is"
+        )
+        self._tstates_step_label.setToolTip(
+            "T-states since the last refresh — while single-stepping, the instruction's own "
+            "cost — and the machine's total since reset"
         )
 
     def set_mono_scale(self, scale: float) -> None:
-        font = monospace_font(scale)
+        font = _mono(scale)
         for label in (*self._value_labels.values(), *self._flag_labels.values(),
-                      self._tstates_label):
+                      self._flags_caption, self._tstates_frame_label,
+                      self._tstates_step_label):
             label.setFont(font)

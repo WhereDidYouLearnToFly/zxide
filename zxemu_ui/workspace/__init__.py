@@ -12,9 +12,17 @@ tools that build it, and the settings that say where those tools live.
                         auto-detected on PATH. Also holds the recent-file lists.
     settings_dialog.py  The dialog for overriding all of that.
     builder.py          Shells out to sjasmplus and reports what happened: exit code,
-                        combined output, the snapshot produced, the SLD emitted.
+                        combined output, the snapshot produced, the SLD emitted. The
+                        entry point it assembles is passed in -- normally the file open
+                        in the editor, since only a project zxide scaffolded is likely
+                        to call its main source ``main.asm``.
+    asset_build.py      Runs every imported asset through its converter, places the
+                        results, and writes ``assets_generated.asm`` for the build to
+                        include -- the bridge between the asset workflow and sjasmplus.
     sld.py              Parses that SLD (Source Level Debug) file into the map the
                         debugger needs -- source line <-> address, and your labels.
+    search.py           Find-in-project: every editable text file searched for a
+                        string, skipping assets, build output and generated files.
 
 The split that matters here is between *machine-wide* settings (where sjasmplus
 lives -- ``settings.py``) and *per-project* settings (which machine to target, what

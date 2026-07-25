@@ -5,10 +5,12 @@ PyQt5 UI.
 
 ## Status
 
-**Milestones 1–3 complete, plus a full debugger.** A from-scratch pure-Python Z80
+**Milestones 1–4 complete, plus a full debugger.** A from-scratch pure-Python Z80
 CPU with 48K and 128K machine models (memory paging, ULA, keyboard, beeper,
-AY-3-8912, `.tap` fast loading, `.sna` snapshots), wrapped in a dockable IDE with an
-assembler build pipeline and a source-level debugger. 342 tests pass; the CPU is
+AY-3-8912), tape and snapshot loading (`.tap`/`.tzx` fast loading, `.sna`/`.z80`
+snapshots), wrapped in a dockable IDE with an assembler build pipeline, a
+source-level debugger, and an asset workflow that imports art and audio, places it in
+memory and generates the assembly to include it. 653 tests pass; the CPU is
 cross-checked against the FUSE reference emulator. See `dev-support/STATUS.md` for
 the full state and `DEV_PLAN.md` for what's next.
 
@@ -17,18 +19,25 @@ the full state and `DEV_PLAN.md` for what's next.
 - `main.py` — application entry point (composition root).
 - `zxemu_core/` — the emulator, with no Qt dependency and independently testable.
   The machine itself is at the top level (`machine.py`, `memory.py`, `ula.py`,
-  `keyboard.py`); everything else is grouped by subsystem:
+  `keyboard.py`, plus `memlayout.py` for where things fit in the address space);
+  everything else is grouped by subsystem:
   - `cpu/` — the Z80: `z80.py` (fetch/decode/execute), `registers.py`, `flags.py`,
     and `instructions/` (one explicit handler per opcode, grouped by family).
-  - `sound/` — `beeper.py`, `ay.py`, and the `mixer.py` that sums them.
-  - `storage/` — `tape.py`, `snapshot.py`.
+  - `sound/` — `beeper.py`, `ay.py`, the `mixer.py` that sums them, and
+    `beeper_preview.py` for auditioning an effect without a running machine.
+  - `storage/` — `tape.py` (.tap + the ROM-trap fast loader), `tzx.py`,
+    `snapshot.py` (.sna), `z80.py` (.z80).
+  - `assets/` — converters (`bmp_convert.py`, `tilemap_convert.py`,
+    `binary_convert.py`, `pt3_convert.py`, `beeper_sfx.py`, `native_sprite.py`),
+    the `manifest.py` that records them, and `preview.py` that draws them.
   - `debug/` — `disassembler.py`, `rom_symbols.py`, `debug_expr.py`, `analysis.py`.
 - `zxemu_ui/` — the PyQt5 layer. Shell at the top level (`main_window.py`,
-  `controller.py`, `editor.py`, …), plus:
-  - `panels/` — the dockable views: screen, registers, memory, disassembly,
-    call stack, analysis.
+  `controller.py`, `editor.py`, `theme.py`, `system_open.py`, …), plus:
+  - `panels/` — the dockable views: screen, registers, memory, memory map,
+    disassembly, call stack, analysis, Output, Inspector, and the sprite and
+    beeper-SFX editors.
   - `workspace/` — your project rather than the machine: manifest, settings,
-    sjasmplus build, and the SLD source map.
+    sjasmplus build, asset codegen, project-wide search, and the SLD source map.
 - `tests/` — unit, integration (ROM boot), and the zexdoc/zexall harness.
 - `dev-support/` — status/handoff notes, screenshots, the ZEXALL binaries.
 
@@ -52,8 +61,9 @@ Menus are grouped by what you're doing rather than by which code implements them
 | menu | for |
 |---|---|
 | **File** | projects and source files |
+| **Edit** | finding your way around your own text: find in project, go to line |
 | **Build** | turning *your* project into a running program |
-| **Load** | running *someone else's* — a `.sna` snapshot or `.tap` tape |
+| **Load** | running *someone else's* — a `.sna`/`.z80` snapshot or `.tap`/`.tzx` tape |
 | **Model** | which machine is emulated (48K / 128K), switchable any time |
 | **Disassembly** | the disassembly panel and where it points |
 | **Breaks** | breakpoint conditions, run-to-cursor |
@@ -72,7 +82,14 @@ Menus are grouped by what you're doing rather than by which code implements them
 | `F10` | Step Over — run calls and block ops to completion |
 | `Shift+F11` | Step Out — run until the current subroutine returns |
 | `Ctrl+F10` | Run to Cursor |
+| `Ctrl+F` | Find in Project — results in Output, click one to jump to it |
+| `Ctrl+G` | Go to Line |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / Save All |
+
+**F5 assembles the file you have open**, falling back to the manifest's `main` when the
+focused tab isn't a source file. A folder zxide didn't scaffold calls its entry point
+whatever it calls it, and a project can hold several buildable sources with no single
+"main" among them.
 
 ### Debugging
 
@@ -90,6 +107,38 @@ Some of these answer with certainty and some with inference, and the panels say
 which — a call stack is reconstructed rather than recorded, cross-references are a
 static scan that cannot follow computed jumps, and an address absent from coverage
 means "not executed *yet*", never "unreachable".
+
+### Assets
+
+Drop a `.bmp`, `.bin`, `.pt3` or beeper-SFX file into the project and it becomes an
+**asset**: recorded in `zxide.json`, converted to Spectrum bytes at build time, and
+placed at an address you choose — drag it around the memory map in Design mode, or
+press **auto-locate** and let the free-space search decide. The build writes
+`assets_generated.asm` with the data and an `equ` constant per asset, so your code
+refers to `sprite_hero` rather than to a hard-coded address that moves the moment
+anything before it grows.
+
+Bitmaps become bitmaps, sprite sheets, sprite sequences or fonts, with optional masks
+and attribute planes. The **Inspector** previews whatever is selected. Two things can be
+authored in the IDE rather than imported: sprites (in real ZX colours, with the
+two-colours-per-cell limit enforced by the tool) and beeper effects (rows of Hz +
+frames, with a Play button). Both autosave on every edit.
+
+The one honest limit: auto-locate knows where *assets* and the screen live, and reads the
+previous build's SLD to avoid where your code landed last time — so on a project's very
+first build, before any SLD exists, it can still place an asset on top of hand-written
+code. Build twice, or place it by hand.
+
+### Tapes and snapshots
+
+Tapes load instantly, by intercepting the ROM's loading routine rather than replaying
+the pulses a real cassette produced. That covers BASIC's `LOAD ""` and the many game
+loaders that call into the ROM — including the multi-part 128K ones that page banks
+between blocks. It cannot help a **turbo loader** that times its own bits and never
+touches the ROM: those need edge-level replay, which isn't implemented yet, and will
+typically stop after their first block or two. `.tzx` files are read for their
+data-carrying blocks; anything else in the container (timings, groups, menus, credits)
+is reported in the Output rather than silently dropped.
 
 ## Development
 

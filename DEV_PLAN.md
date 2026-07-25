@@ -1,10 +1,16 @@
-# zxide — Development Plan (Milestone 2: the IDE shell)
+# zxide — Development Plan
 
-zxide is becoming a **"Unity for ZX Spectrum"**: an IDE built around the Milestone-1
-emulator core. Milestone 1 (a working pure-Python Z80 core + live PyQt5 view) is done — see
-`dev-support/STATUS.md`. This document plans Milestone 2, where the single emulator window
-grows into a full IDE shell, and records the architecture decisions behind it so intent
-survives between work sessions.
+zxide is becoming a **"Unity for ZX Spectrum"**: an IDE built around a from-scratch
+pure-Python Z80 core. This document is the plan for all of it — what each milestone was,
+what shipped, and the architecture decisions behind them, so intent survives between work
+sessions. `dev-support/STATUS.md` is the companion: session-by-session narrative and
+handoff notes.
+
+**Where things stand:** Milestones 1–4 are done (emulator core → IDE shell + debugger →
+hardware & audio → asset workflow). The milestone sections below are kept as written, with
+✅ marks and follow-up notes added as work landed, because *why* something was sequenced
+the way it was outlives the sequencing. **Next up** is in "Recommended sequence" and the
+Milestone 5 section: optional TAP edge replay, the memory-dumper, then Visual Logic.
 
 The raw original vision notes are preserved verbatim at the end ("Appendix: original vision").
 
@@ -177,7 +183,7 @@ audio** (128K, AY, beeper, TAP) — see below.
 
 ---
 
-## Milestone 3 roadmap: hardware & audio *(current)*
+## Milestone 3 roadmap: hardware & audio ✅ *(edge replay excepted)*
 
 The next push makes the emulated machine *complete* — sound, the 128K model, and tape
 loading — before returning to the Phase-E visual tooling. All of this is **core** work
@@ -205,9 +211,17 @@ loading — before returning to the Phase-E visual tooling. All of this is **cor
   sjasmplus template (`device zxspectrum128`, demonstrates paging + AY) was added. All
   behaviours cross-checked against fuse (E:/github/fuse) as a **reference only** (GPLv2,
   independent reimplementation — no code copied), the same policy used for the CPU.
-- **3. TAP support** *(next)* — load `.tap` tape images: either the fast **ROM-trap** LOAD
-  (intercept the ROM loader for instant loads) or real edge-level replay through port `0xFE`
-  bit 6. Complements the existing .sna path; also a candidate build output.
+- **3. TAP support** ✅ *fast load done; edge replay deferred* — `.tap` images load instantly
+  by intercepting the ROM loader (`zxemu_core/storage/tape.py` + `Machine._tape_trap`).
+  The trap sits on **`0x0562`, not `LD-BYTES`'s entry at `0x0556`** — that is the routine's
+  first tape *sample*, past the preamble, and it is where multi-part game loaders `CALL` in
+  after doing the preamble's work themselves. A trap on `0x0556` catches only BASIC's
+  `LOAD ""` and leaves such loaders spinning in the ROM's edge-sampling loop forever, waiting
+  for pulses that fast loading never generates (Aliens: Neoplasma II was the case that
+  exposed this). The price of the later address is that the wanted flag byte and the
+  LOAD/VERIFY carry are in the **shadow `AF'`** (moved there by the preamble's `ex af,af'`),
+  which is what `fast_load` reads. Real edge-level replay through port `0xFE` bit 6 is still
+  deferred — see the backlog — and remains the only way to run genuinely turbo loaders.
 
 *Deferred to Milestone 4:* Phase E visual memory management (drag-drop asset placement +
 auto-locate + asset import), disassembly/watchpoint debugger polish, .szx/.pt3 playback.
@@ -326,9 +340,19 @@ Note the symmetry with Phase E: that places assets *into* memory, this pulls the
 *out*. Both need the same "what lives where" model, so they should share it.
 
 ### 2. Tape & snapshot formats
-- **TAP loading** (ROM-trap fast load + edge replay) -- closes Milestone 3.
-- **TZX** -- the richer tape format (turbo loaders, custom timing).
-- **More snapshots** -- `.z80`, `.szx` (load *and* save, so machine state can be saved).
+- **TAP loading** -- ROM-trap fast load ✅ (covers BASIC `LOAD ""` *and* loaders that call the
+  sampling entry `0x0562` directly). **Edge replay** still open: it is what turbo/custom-timed
+  loaders need, plus the loading stripes and tape sound. Closes Milestone 3.
+- **TZX** ✅ *loading* (`zxemu_core/storage/tzx.py`) -- the container is walked in full and its
+  data-bearing blocks (`0x10` standard, `0x11` turbo, `0x14` pure data) feed the same deck a
+  `.tap` does; timings are discarded because fast loading never generates pulses. Everything
+  else (groups, loops, jumps, menus, credits) is reported in the Output rather than silently
+  dropped, and an unknown block ID stops the walk instead of inventing blocks. **The limit is
+  the loader, not the container:** a Speedlock-style game that bit-bangs its own bits still
+  needs edge replay, whether it arrives as .tzx or .tap.
+- **More snapshots** -- `.z80` ✅ *loading* (`zxemu_core/storage/z80.py`: v1/v2/v3, 48K and
+  128K, RLE-compressed pages, border/AY/paging restored). Still open: `.szx`, and **saving**
+  in any format -- nothing in zxide writes machine state yet.
 - **Tape-deck UI** -- play / stop / rewind, block list, "insert tape."
 
 ### 3. Visual memory management (Phase E -- the "Unity" centerpiece)
@@ -342,7 +366,20 @@ this backlog line is kept only as an index pointer.
 - *(Skipping +2/+3 machine variants -- little used today.)*
 
 ### 5. Editor & project
-- **Build-error jump** -- click an sjasmplus error -> jump to the source line.
+- **Find in Project (Ctrl+F)** ✅ -- `zxemu_ui/workspace/search.py` (Qt-free) searches every
+  editable text file, skipping assets, build output and generated files; results land in the
+  Output panel as **clickable lines** that open the file at the line. Project-wide rather than
+  within-file because a Z80 project is a dozen small includes, so "where is this label used"
+  is nearly always a question about the project.
+- **Go to Line (Ctrl+G)** ✅ -- bounded by the open file's own length.
+- **Show in Explorer** ✅ -- project-tree context menu; `zxemu_ui/system_open.py` builds the
+  argv per platform (Windows selects the file, macOS reveals it, Linux opens its folder).
+- **Output panel Clear** ✅ -- on the console's **right-click menu**, beside Copy/Select All,
+  not a button: a rare action shouldn't cost a permanent row of height in the one panel whose
+  job is showing as many lines as possible. Empties the text *and* the link map together.
+- **Build-error jump** -- click an sjasmplus error -> jump to the source line. *Now a small
+  job:* the clickable-line plumbing (`OutputConsole.append_link`) already exists, so this is
+  parsing `--fullpath` error output into (path, line) pairs and logging them as links.
 - **Symbol navigation** in the editor (go-to-definition for labels).
 - **★ Lua syntax support** -- sjasmplus embeds a Lua interpreter (`LUA ... ENDLUA` blocks,
   the `sj.` emit/label API) for compile-time metaprogramming (lookup tables, codegen).
@@ -627,13 +664,30 @@ by arrow keys via `key_down`, colliding with a second object to change the borde
 - **Editor:** in-app, central, multi-view/split — supersedes "external editor only".
 - **Interface:** dark theme, High-DPI, Segoe UI + monospace console, adjustable UI scale.
 
-## Open questions (to settle as we go)
+## Open questions
 
-1. Confirm **`(bank, offset)`** as the universal addressing convention everywhere.
-2. Debugger v1 scope: ship "inspect + step" first and add breakpoints/disassembly later, or
-   build the full debugger as one milestone?
-3. How exactly the debug workflow is *used* day-to-day (still being explored).
-4. Default proportions & which panels start visible vs. hidden in the Design/Debug presets.
+Settled since:
+
+1. ~~Confirm **`(bank, offset)`** as the universal addressing convention.~~ **Yes** — it is
+   what the manifest stores for asset placement (`{"bank": "ram2", "offset": 100}`), what
+   `memlayout` searches in, and what the memory map drags around. Addresses are derived from
+   it, never the other way round, which is what makes a 128K bank that isn't currently paged
+   in still describable.
+2. ~~Debugger v1 scope: "inspect + step" first, or the whole thing as one milestone?~~ **The
+   whole thing** — and it was the right call: breakpoints, stepping, watchpoints and the
+   disassembly panel share so much state that splitting them would have meant building the
+   seams twice.
+4. ~~Default proportions & which panels start visible.~~ Settled in `_apply_default_sizes`
+   plus a saved-layout file, with View ▸ Reset layout to get back.
+
+Still open:
+
+3. How exactly the debug workflow is *used* day-to-day (still being explored — the RE
+   toolkit was built partly to find out).
+5. **Whether `zxide.json`'s `main` should exist at all**, now that F5 assembles the file you
+   have open and `main` is only a fallback. It still matters for any build with no editor tab
+   involved (a future CLI, task runner, or build-on-run), so it stays until something needs
+   to decide.
 
 ---
 

@@ -18,7 +18,8 @@ Two pieces live here:
 
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, QPointF, QRectF, pyqtSignal
+from PyQt5.QtGui import QColor, QIcon, QPainter, QPalette, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QAction,
     QHBoxLayout,
@@ -30,6 +31,35 @@ from PyQt5.QtWidgets import (
 
 from zxemu_ui.controller import EmulatorController
 from zxemu_ui.panels.emulator_view import FULL_HEIGHT, FULL_WIDTH, EmulatorView
+
+
+def camera_icon(color: QColor, size: int = 32) -> QIcon:
+    """A minimal outline camera glyph for the Screenshot button.
+
+    Stock Qt ships no camera icon -- its nearest save glyph is a diskette
+    (SP_DialogSaveButton), which reads as "save machine state" and is better kept
+    for a Save Snapshot action. This draws a small camera instead, in the caller's
+    chosen colour so it tracks the theme.
+    """
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    pen = QPen(color)
+    pen.setWidthF(max(1.0, size / 12.0))
+    pen.setJoinStyle(Qt.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.NoBrush)
+    s = size
+    body = QRectF(0.10 * s, 0.34 * s, 0.80 * s, 0.50 * s)
+    painter.drawRoundedRect(body, 0.07 * s, 0.07 * s)
+    viewfinder = QRectF(0.33 * s, 0.23 * s, 0.24 * s, 0.13 * s)
+    painter.drawRoundedRect(viewfinder, 0.03 * s, 0.03 * s)
+    lens_center = QPointF(0.50 * s, 0.60 * s)
+    painter.drawEllipse(lens_center, 0.16 * s, 0.16 * s)
+    painter.drawEllipse(lens_center, 0.06 * s, 0.06 * s)
+    painter.end()
+    return QIcon(pixmap)
 
 
 class EmulatorStage(QWidget):
@@ -136,7 +166,7 @@ class EmulatorPanel(QWidget):
         self.reset_action.setToolTip("Reboot the machine")
         self.reset_action.triggered.connect(self.controller.reset)
 
-        self.screenshot_action = QAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Screenshot", self)
+        self.screenshot_action = QAction(camera_icon(self.palette().color(QPalette.ButtonText)), "Screenshot", self)
         self.screenshot_action.setToolTip("Save a screenshot (.scr + .bmp) to the project's screenshots folder")
         self.screenshot_action.triggered.connect(self.screenshot_requested)
 

@@ -12,6 +12,7 @@ in pure Python with no GUI dependency (the user interface lives separately in
 
 The machine itself sits at the top level -- these four files *are* the Spectrum:
 
+
     machine.py   Wires everything below into a whole "Spectrum" and runs it one
                  frame (1/50th of a second) at a time. ``Machine`` is the 48K;
                  ``Machine128`` subclasses it with 0x7FFD bank paging and the AY.
@@ -24,21 +25,34 @@ The machine itself sits at the top level -- these four files *are* the Spectrum:
                  speaker, and the I/O port (0xFE) the keyboard and border share.
     keyboard.py  The Spectrum's 8x5 key matrix, which the ULA reads.
 
+One more file sits alongside them, about the address space rather than the hardware:
+
+    memlayout.py Where things *fit*: free-space tracking across the banks, reserved
+                 ranges (screen, ROM, hand-written code) and the auto-locate search
+                 that places an imported asset somewhere it won't collide.
+
 Everything else is grouped by subsystem, each with its own overview:
 
     cpu/         The Z80 processor -- the "brain" that reads instructions out of
                  memory and executes them. The heart of the emulator.
     sound/       The beeper, the AY chip, and the mixer that sums them the way a
                  resistor network does in hardware.
-    storage/     Getting somebody else's program in: .sna snapshots and .tap tapes.
+    storage/     Getting somebody else's program in: .sna and .z80 snapshots,
+                 .tap and .tzx tapes.
+    assets/      Turning your source material into Spectrum bytes: bitmaps and
+                 sprite sheets, fonts, tilemaps, binaries, PT3 tunes, beeper SFX --
+                 plus the manifest that records them and the previews that draw them.
     debug/       Making sense of a running machine: disassembler, ROM routine
                  names, breakpoint expressions, and whole-program analysis.
 
-Why ``debug/`` lives here rather than in the UI: none of it needs a toolkit. It
-reasons about bytes and machine state, so it stays testable -- and reusable -- with
-no window in sight, and the panels in ``zxemu_ui`` are thin presentation over it.
+Why ``debug/`` and ``assets/`` live here rather than in the UI: neither needs a
+toolkit. They reason about bytes and machine state, so they stay testable -- and
+reusable -- with no window in sight, and the panels in ``zxemu_ui`` are thin
+presentation over them.
 
 Learning path: machine.py first (how a frame runs), then cpu/ (start at cpu/z80.py),
 then memory / ula / keyboard, then sound/. Leave storage/ and debug/ until last --
-both assume you already know how the CPU and ROM interact.
+both assume you already know how the CPU and ROM interact. ``assets/`` and
+``memlayout.py`` are independent of all of it: they are about your *build*, not about
+the running machine, and can be read at any point.
 """
