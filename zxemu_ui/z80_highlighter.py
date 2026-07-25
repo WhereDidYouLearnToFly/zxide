@@ -1,9 +1,21 @@
-"""A syntax highlighter for Z80 assembly (sjasmplus flavour).
+"""A syntax highlighter for Z80 assembly (sjasmplus flavour) -- and the Lua inside it.
 
 Colours mnemonics, assembler directives, registers, numbers (hex/bin/dec),
 strings, labels, and comments. The palette matches the dark editor theme. It's a
 line-at-a-time QSyntaxHighlighter: rules are applied in order, with strings and
 comments applied last so a ';' turns the rest of the line into a comment.
+
+**A ``.asm`` file here can contain a second language.** sjasmplus embeds Lua, and a
+``LUA`` / ``ENDLUA`` block is ordinary Lua source sitting in the middle of assembly --
+zxide's memory dumper generates exactly that to write a snapshot with a correct register
+header. Highlighting it as assembly is actively misleading: Lua's ``--`` comments would
+be read as a subtraction, its ``local`` and ``function`` as labels, and its strings would
+be the only thing coloured correctly.
+
+So the highlighter is a two-state machine. Assembly rules apply outside the block, Lua
+rules inside it, and the state is carried across lines with ``setCurrentBlockState`` --
+which is the only way a line-at-a-time highlighter can know it is halfway through
+something that started earlier.
 """
 
 from __future__ import annotations
@@ -24,8 +36,29 @@ _DIRECTIVES = (
     "org device end include incbin equ db dw dd ds defb defw defs defm dc dz byte "
     "word align assert macro endm module endmodule struct proc endp savesna savetap "
     "savebin savehob output emptytap savesld page slot mmu dup edup rept endr repeat "
-    "block if else endif ifdef ifndef define undefine export"
+    "block if else endif ifdef ifndef define undefine export lua endlua"
 ).split()
+
+# Lua 5.4 keywords -- sjasmplus embeds Lua, so a LUA/ENDLUA block is real Lua source.
+_LUA_KEYWORDS = (
+    "and break do else elseif end false for function goto if in local nil not or "
+    "repeat return then true until while self"
+).split()
+
+# The assembler's own Lua API. Worth its own colour: these are the whole reason there is
+# Lua in an .asm file at all, and they are what a reader will be looking for.
+_LUA_API = (
+    "sj zx print assert error pairs ipairs tostring tonumber type string table math io os"
+).split()
+
+#: A ``LUA`` block opener -- optionally followed by a pass selector (``LUA PASS1``,
+#: ``ALLPASS``), which is why this is a prefix match rather than a whole-line one.
+_LUA_START = QRegularExpression(r"^\s*lua\b", QRegularExpression.CaseInsensitiveOption)
+_LUA_END = QRegularExpression(r"^\s*endlua\b", QRegularExpression.CaseInsensitiveOption)
+
+#: Block states carried between lines. Qt uses -1 for "no state", so start at 0.
+_STATE_ASM = 0
+_STATE_LUA = 1
 
 # 8- and 16-bit registers and flag conditions.
 _REGISTERS = (
@@ -67,10 +100,54 @@ class Z80Highlighter(QSyntaxHighlighter):
         # so every marker is grey regardless of surrounding tokens.
         self._whitespace = (QRegularExpression(r"[ \t]+"), _fmt("#5a5a5a"))
 
+        # Lua, for the LUA/ENDLUA blocks sjasmplus allows. Deliberately the same palette
+        # as the assembly rules -- keywords blue, strings orange, comments green -- so the
+        # file reads as one document rather than two pasted together, while still being
+        # obviously a different language.
+        self._lua_rules = [
+            (_word_regex(_LUA_KEYWORDS), _fmt("#569cd6")),
+            (_word_regex(_LUA_API), _fmt("#4ec9b0")),     # the sj./zx. API -- teal
+            (QRegularExpression(r"(\b0[xX][0-9A-Fa-f]+\b|\b\d+\b)"), _fmt("#b5cea8")),
+        ]
+        # Lua comments start with `--`, not `;`. Getting this wrong is the most visible
+        # failure: every comment in the block would read as an arithmetic expression.
+        self._lua_string = (QRegularExpression(r"\"[^\"]*\"|'[^']*'|\[\[.*?\]\]"),
+                            _fmt("#ce9178"))
+        self._lua_comment = (QRegularExpression(r"--[^\n]*"), _fmt("#6a9955", italic=True))
+
     def highlightBlock(self, text: str) -> None:
+        """Highlight one line, in whichever language it belongs to.
+
+        The state from the previous line decides which, and the ``LUA``/``ENDLUA`` lines
+        themselves are treated as assembly directives -- they are the assembler's syntax,
+        not Lua's.
+        """
+        state = self.previousBlockState()
+        if state == -1:
+            state = _STATE_ASM
+
+        if state == _STATE_LUA:
+            if _LUA_END.match(text).hasMatch():
+                self._highlight_asm(text)          # ENDLUA is a directive
+                state = _STATE_ASM
+            else:
+                self._highlight_lua(text)
+        else:
+            self._highlight_asm(text)
+            if _LUA_START.match(text).hasMatch():
+                state = _STATE_LUA
+        self.setCurrentBlockState(state)
+
+    def _highlight_asm(self, text: str) -> None:
         for regex, fmt in self._rules:
             self._apply(regex, fmt, text)
         for regex, fmt in (self._label, self._string, self._comment, self._whitespace):
+            self._apply(regex, fmt, text)
+
+    def _highlight_lua(self, text: str) -> None:
+        for regex, fmt in self._lua_rules:
+            self._apply(regex, fmt, text)
+        for regex, fmt in (self._lua_string, self._lua_comment, self._whitespace):
             self._apply(regex, fmt, text)
 
     def _apply(self, regex: QRegularExpression, fmt: QTextCharFormat, text: str) -> None:

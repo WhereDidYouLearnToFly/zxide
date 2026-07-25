@@ -243,6 +243,17 @@ class Machine:
         # growing slice of the waveform.
         while self.frame_t_state < self.frame_tstates:
             self.frame_t_state += self.cpu.step()
+        self.end_frame()
+
+    def end_frame(self) -> None:
+        """Close out one frame: carry the remainder, run the tape motor, resample sound.
+
+        Separate from :meth:`run_frame` because ``run_frame`` is not the only way to
+        execute a frame. A debugger steps instruction by instruction so it can stop
+        anywhere, and it must still reach this seam -- otherwise no PCM is ever produced
+        and the machine falls silent for as long as you are debugging, which is not what
+        "run slowly" should mean.
+        """
         # Carry the sub-frame remainder so the average frame length stays exact. Block
         # instructions run one iteration per step() (see blockio.py), so a single step
         # never overshoots by more than a few T-states -- the remainder stays small and

@@ -2,7 +2,56 @@
 
 _Last updated: 2026-07-25._ A snapshot to make it easy to pick the project back up.
 
-## Latest session (2026-07-25, later still) — the memory dumper (DEV_PLAN 1b)
+## Latest session (2026-07-25, last) — two follow-ups from using the dumper
+
+**859 tests pass.** Both of these came from the user actually running a dump, which is the
+only way either would have been found.
+
+**Sound was silent while recording coverage — and it took two fixes, because there were two
+independent causes with one symptom.** Worth recording as a pattern: the first fix was
+correct, verifiable and *insufficient*, and only re-testing against the real UI showed it.
+
+1. **The mute policy.** `_update_audio()` muted whenever `self._recording` was set. That was
+   a guess about cost measurement doesn't support — a 48K debug frame with coverage on costs
+   ~15.1ms against a 20ms budget. Mute now applies only to pause, breakpoints and
+   watchpoints: states where the machine genuinely isn't producing sound. (This also
+   explained the second reported symptom, silence in the *rebuilt* project — "1. Record What
+   Runs" was still ticked when it was run. One cause, two symptoms.)
+2. **Nothing was being rendered anyway.** `_run_debug_frame` stepped `cpu.step()` directly
+   against a private `_debug_tstates` clock and never reached `Machine.run_frame`'s tail —
+   so `audio.end_frame()` was never called and no PCM existed to play. Worse, the beeper
+   timestamps each level change against `machine.frame_t_state`, which the debug loop left
+   frozen: every flip during a debug run was stamped at the moment the last full frame
+   ended, collapsing the waveform to a point.
+
+The fix removes the second clock rather than syncing it. `Machine.end_frame()` is now split
+out of `run_frame` — the frame *seam* (carry the T-state remainder, run the tape motor,
+resample sound) is a thing in its own right, because `run_frame` is not the only way to
+execute a frame. The debug loop and `_run_until` (step over/out) advance
+`machine.frame_t_state` and call `end_frame()` at the boundary, exactly as a free-running
+frame does. Two clocks for one machine was the underlying defect; the silence was a symptom.
+
+Side effect worth knowing: the tape motor now turns while stepping, so you can single-step
+through a loader and watch it load.
+
+**Lua is highlighted inside `LUA`/`ENDLUA` blocks** (`zxemu_ui/z80_highlighter.py`), which
+closes the ★ item in DEV_PLAN §5. This stopped being cosmetic the moment the dumper started
+generating such a block: highlighting Lua as assembly is *worse* than not highlighting it,
+because `--` comments read as subtraction and `local`/`function` as labels.
+
+The mechanism is a two-state machine with the state carried between lines via
+`setCurrentBlockState` — the only way a line-at-a-time `QSyntaxHighlighter` can know it is
+partway through something that started earlier. `LUA`/`ENDLUA` colour as directives (the
+assembler's syntax, not Lua's), and `LUA PASS1` / `LUA ALLPASS` open a block too, so the
+opener is a prefix match rather than a whole-line one. Standalone `.lua` files are
+deliberately out of scope — the Lua that matters lives inside `.asm`.
+
+Worth noting for the tests: an offscreen `QTextDocument` paints nothing, so Qt never runs
+the highlighter and every block state reads back as `-1`. `tests/unit/test_highlighter_lua.py`
+calls `rehighlight()` explicitly. The first run of those tests failed for that reason and not
+for any reason in the code under test.
+
+## Earlier this session (2026-07-25, later still) — the memory dumper (DEV_PLAN 1b)
 
 **850 tests pass.** `Reversing ▸ Dump to Project…` turns the running program's RAM into a
 **buildable, debuggable zxide project** — not a snapshot. `zxemu_core/debug/dumper.py` does

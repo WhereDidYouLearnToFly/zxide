@@ -103,6 +103,48 @@ def test_coverage_records_only_what_executed(qapp):
     assert not controller.coverage.executed[0x0100]  # never reached
 
 
+#: A speaker toggle in a tight loop -- the smallest program that makes a sound.
+#: LD A,$10 / OUT ($FE),A / XOR $10 / JR back to the OUT.
+_BEEPER_LOOP = {0x00: bytes([0x3E, 0x10, 0xD3, 0xFE, 0xEE, 0x10, 0x18, 0xFA])}
+
+
+def test_a_debug_frame_still_produces_sound(qapp):
+    """Recording coverage must not silence the machine.
+
+    Reported as "no music while recording". Unmuting was necessary but not sufficient:
+    the debug loop stepped the CPU directly and never reached the end-of-frame seam, so
+    no PCM was ever rendered. Audio was on and there was simply nothing to play.
+    """
+    m = _machine(_BEEPER_LOOP)
+    m.cpu.regs.pc = 0x0000
+    controller = EmulatorController(m)
+    controller.set_coverage_enabled(True)  # forces the per-instruction debug loop
+    controller.set_running(True)  # ...and, being merely a recording, must not mute
+    assert m.audio.enabled, "recording muted the machine"
+
+    _run_frames(controller, count=2)
+
+    assert m.audio.take_samples(), "a debug frame rendered no audio at all"
+
+
+def test_a_debug_frame_advances_the_machines_own_tstate_clock(qapp):
+    """Why the above works: one clock, not two.
+
+    The beeper timestamps every level change against ``machine.frame_t_state``. While the
+    debugger kept a private clock, that one stood still, so each flip was stamped at the
+    instant the last full frame ended -- a waveform collapsed to a point.
+    """
+    m = _machine(_BEEPER_LOOP)
+    m.cpu.regs.pc = 0x0000
+    controller = EmulatorController(m)
+    controller.set_coverage_enabled(True)
+
+    before = m.frame_t_state
+    _run_frames(controller)
+
+    assert m.frame_t_state != before
+
+
 def test_coverage_is_off_by_default(qapp):
     m = _machine({0x00: bytes([0x00])})
     controller = EmulatorController(m)

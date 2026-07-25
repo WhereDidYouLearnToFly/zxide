@@ -107,7 +107,10 @@ class EmulatorController(QObject):
         self.coverage = analysis.CoverageMap()
         self._follow_paging()
         self._trace: deque | None = None
-        self._debug_tstates = 0
+        # There is no separate debug T-state clock: stepping advances the machine's own
+        # ``frame_t_state``, which is what the beeper and AY timestamp their changes
+        # against. A second clock would drift from it, and every sound event during a
+        # debug run would be stamped at whatever moment the last full frame ended.
         self._skip_breakpoint: int | None = None
 
         # Real-time pacing state (see _tick for why we pace by wall clock).
@@ -283,20 +286,30 @@ class EmulatorController(QObject):
         return None
 
     def _update_audio(self) -> None:
-        """Enable sound only while free-running; mute during pause and debugging.
+        """Enable sound while the machine is actually running freely; mute when it stops.
 
-        The beeper is produced only on the fast ``run_frame`` path. While paused
-        there are no frames, and while debugging we run the slower, breakpoint-
-        checked loop that can't hold 50 fps -- audio there would just stutter -- so
-        we mute whenever breakpoints or watchpoints are armed. Toggling the beeper also
-        clears its buffered samples, so resuming never replays stale sound.
+        Muting is for the cases where the machine *stops*: paused (no frames at all), or
+        breakpoints/watchpoints armed (about to stop, repeatedly). Sound through those is
+        a stutter, and toggling the beeper clears its buffered samples so resuming never
+        replays stale audio.
+
+        **Recording coverage or a trace deliberately does not mute**, though it once did.
+        The old rule muted anything that forced the per-instruction loop, on the grounds
+        that it "can't hold 50 fps" -- but measured, a 48K debug frame with coverage on
+        costs 15.1ms against a 20ms budget, so it comfortably can. And the cost of getting
+        this wrong is worse than a stutter: recording exists so you can *exercise a program
+        and then dump it*, which means playing it. Playing a game in silence to record it
+        is a poor experience, and it reads as broken sound rather than as a deliberate
+        choice -- which is exactly how it was reported.
+
+        128K under a heavy program is nearer the limit and may stutter. That is the honest
+        trade, and a stutter you can hear beats silence you have to guess at.
         """
         on = (
             self._running
             and not self._breakpoints
             and not self._watching
             and self._temp_breakpoint is None
-            and not self._recording
         )
         self.machine.audio.enabled = on
         if self.audio is not None:
@@ -305,8 +318,9 @@ class EmulatorController(QObject):
     def set_machine(self, machine) -> None:
         """Swap the driven machine (e.g. 48K <-> 128K when the open project changes).
 
-        Pauses first, rebinds, and clears the debug clocks so stepping restarts clean
-        on the new machine. The sound sink is rebuilt only if it already exists and
+        Pauses first and rebinds. The new machine brings its own T-state clock, so
+        stepping restarts clean without anything to clear here. The sound sink is
+        rebuilt only if it already exists and
         the new machine's sample rate differs (each machine owns its own mixer); the
         real-time pacing clocks are model-independent and carry over untouched.
         """
@@ -314,7 +328,6 @@ class EmulatorController(QObject):
         old_rate = self.machine.audio.sample_rate
         self.machine = machine
         self._follow_paging()
-        self._debug_tstates = 0
         self._skip_breakpoint = None
         # Watchpoints belong to the machine they were set on: the instrumentation was
         # installed on the *old* Memory object, and port watches on the old Machine.
@@ -442,11 +455,11 @@ class EmulatorController(QObject):
         frame_tstates = self.machine.frame_tstates
         hit = None
         for _ in range(_STEP_OVER_MAX_INSTRUCTIONS):
-            if self._debug_tstates >= frame_tstates:
-                self._debug_tstates -= frame_tstates
+            if self.machine.frame_t_state >= frame_tstates:
+                self.machine.end_frame()
                 cpu.maskable_interrupt()
             previous_pc = cpu.regs.pc
-            self._debug_tstates += cpu.step()
+            self.machine.frame_t_state += cpu.step()
             if should_stop(previous_pc):
                 break
             pc = cpu.regs.pc
@@ -550,11 +563,14 @@ class EmulatorController(QObject):
                 self.coverage.mark(pc)
             if self._trace is not None:
                 self._trace.append((pc, self.machine.cpu.regs.sp))
-            if self._debug_tstates >= frame_tstates:
-                self._debug_tstates -= frame_tstates
+            if self.machine.frame_t_state >= frame_tstates:
+                # A frame boundary means more than "fire the interrupt": it is also where
+                # the tape motor turns and where the frame's sound activity is resampled
+                # into PCM. Stepping instruction by instruction must still cross it.
+                self.machine.end_frame()
                 self.machine.cpu.maskable_interrupt()
             elapsed = self.machine.cpu.step()
-            self._debug_tstates += elapsed
+            self.machine.frame_t_state += elapsed
             budget += elapsed
             tripped = self._check_watchpoints()
             if tripped is not None:

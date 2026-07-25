@@ -429,10 +429,15 @@ this backlog line is kept only as an index pointer.
   job:* the clickable-line plumbing (`OutputConsole.append_link`) already exists, so this is
   parsing `--fullpath` error output into (path, line) pairs and logging them as links.
 - **Symbol navigation** in the editor (go-to-definition for labels).
-- **★ Lua syntax support** -- sjasmplus embeds a Lua interpreter (`LUA ... ENDLUA` blocks,
-  the `sj.` emit/label API) for compile-time metaprogramming (lookup tables, codegen).
-  Highlight Lua inside those blocks and in standalone `.lua` files; add `.lua` to the
-  editable-text suffixes.
+- **★ Lua syntax support** ✅ *done* -- sjasmplus embeds a Lua interpreter (`LUA ... ENDLUA`
+  blocks, the `sj.` emit/label API) for compile-time metaprogramming, and zxide's own memory
+  dumper generates such a block to write the `.sna`. `z80_highlighter.py` is now a two-state
+  machine: assembly rules outside the block, Lua rules inside, the state carried between
+  lines with `setCurrentBlockState` -- the only way a line-at-a-time `QSyntaxHighlighter` can
+  know it is halfway through something that began earlier. `LUA` and `ENDLUA` themselves
+  colour as directives, because they are the assembler's syntax, not Lua's.
+  Standalone `.lua` files are deliberately **not** supported: the Lua that matters here lives
+  inside `.asm`, and nothing in zxide reads or writes a `.lua` file.
 - **Multiple build targets / configs**; **.szx or .tap as a build output**.
 - **Richer project templates** (a game skeleton, an AY music demo).
 
