@@ -175,8 +175,8 @@ def build(window, *, model_choices, scale_choices) -> Menus:
         Item("Mount in Drive &B…", lambda: window._mount_disk_dialog(1),
              tip="Drive A is where Load TRD/SCL puts a disk; this is the second drive"),
         SEPARATOR,
-        Item("&Write Protect", window._set_disk_write_protect, checkable=True,
-             tip="Stop the machine writing to the mounted disk"),
+        Item("&Write Protect", window._set_disk_write_protect, checkable=True, checked=True,
+             tip="On by default — untick it for the one disk you mean to write to"),
         Item("&Save Disk As…", window._save_disk_as,
              tip="Write the mounted image back out as a .trd, including anything the "
                  "machine has saved onto it"),
@@ -229,8 +229,9 @@ def build(window, *, model_choices, scale_choices) -> Menus:
     ])
 
     # Reversing: understanding somebody else's program -- questions about the whole of it
-    # rather than its current state. The planned memory->sources dumper lands here too,
-    # since it consumes exactly these results (see DEV_PLAN 1b).
+    # rather than about the machine's current state, which is what Breaks and Watch are for.
+    # The memory->sources dumper lives here because it *consumes* these results: coverage
+    # decides what it disassembles, and the same honesty applies to its output.
     add_items(window, bar.addMenu("&Reversing"), [
         Item("Find Bytes…", lambda: window._find_in_memory(as_text=False),
              tip="Search memory for a hex byte sequence"),
@@ -238,12 +239,22 @@ def build(window, *, model_choices, scale_choices) -> Menus:
         Item("Cross-references…", window._cross_references,
              tip="What calls, jumps to, reads or writes an address?"),
         SEPARATOR,
-        Item("Record Coverage", window._set_coverage, checkable=True,
-             tip="Record which addresses actually execute"),
-        Item("Show Coverage", window._show_coverage),
+        # The two halves of recovering a program, adjacent and in order, because the
+        # dependency between them is otherwise invisible: the dump is only as good as
+        # what was recorded, and nothing about a "Dump" item three groups below a
+        # "Record Coverage" checkbox says so. Trace has nothing to do with dumping and
+        # sits apart from them for that reason.
+        Item("1. Record What Runs", window._set_coverage, checkable=True,
+             tip="Mark every address the CPU executes. Turn this on, exercise the "
+                 "program, then dump — what ran becomes disassembly, the rest stays data"),
+        Item("2. Dump to Project…", window._dump_to_project,
+             tip="Turn the running program's RAM into a buildable, debuggable project"),
+        Item("Show What Ran", window._show_coverage,
+             tip="The recorded addresses, collapsed into ranges"),
         SEPARATOR,
         Item("Record Trace", window._set_trace, checkable=True,
-             tip="Keep a rolling log of the last few thousand instructions"),
+             tip="A rolling log of the last few thousand instructions — for 'how did I "
+                 "get here?' at a breakpoint. Not used by the dumper"),
         Item("Show Trace", window._show_trace),
     ])
 

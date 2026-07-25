@@ -14,8 +14,8 @@ has its own design document — see **[TRDOS.md](TRDOS.md)**, not repeated here.
 
 The milestone sections below are kept as written, with ✅ marks and follow-up notes added as
 work landed, because *why* something was sequenced the way it was outlives the sequencing.
-**Next up** is in "Recommended sequence" and the Milestone 5 section: the memory-dumper,
-then Visual Logic.
+**Next up** is Milestone 5, Visual Logic. The memory-dumper (1b) is done -- see that
+section and `dev-support/STATUS.md`.
 
 The raw original vision notes are preserved verbatim at the end ("Appendix: original vision").
 
@@ -296,7 +296,7 @@ understand what the machine is doing." Grouped by theme, not strictly ordered; t
 - **★ Register/flag tooltips & a T-state (cycle) counter** -- hover a flag to learn what it
   means; show the selected instruction's cycle cost.
 
-### 1b. Memory → sources: turn a running program into a debuggable project ★
+### 1b. Memory → sources: turn a running program into a debuggable project ✅ *done*
 
 *Menu home: **Reversing**, alongside the RE toolkit above — the dumper consumes exactly
 those results (coverage decides what is code, cross-references supply the labels), so
@@ -369,7 +369,8 @@ with "except these twelve bytes":
 
   * a **faithful dump** — pure `db`/code, no stub, byte-identical to the original. This
     is what the round-trip test checks, and it stays exact.
-  * a **runnable project** — the same data plus the restore stub and a `SAVESNA`. This
+  * a **runnable project** — the same data, with the snapshot written by a Lua block
+    in the generated source so no restore code is injected into the program. This
     is what you build and step through, and it gets its *own* exact test: build it,
     load the resulting `.sna`, and compare the emulator's full state — registers
     included — against the original snapshot's.

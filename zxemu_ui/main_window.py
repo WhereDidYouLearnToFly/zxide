@@ -55,6 +55,7 @@ from PyQt5.QtWidgets import (
 )
 
 from zxemu_core.machine import Machine
+from zxemu_core.memlayout import PAGED_MODELS
 from zxemu_core.debug import debug_expr
 from zxemu_core.assets.manifest import AssetKind
 from zxemu_core.assets.native_sprite import NATIVE_SUFFIX, blank_sprite_data
@@ -73,9 +74,11 @@ from zxemu_ui.machine_factory import build_machine, machine_model
 from zxemu_ui.panels.analysis_view import AnalysisView
 from zxemu_ui.panels.call_stack_view import CallStackView
 from zxemu_ui.panels.disassembly_view import DisassemblyView
+from zxemu_ui.panels.disk_view import DiskView
 from zxemu_ui.panels.memory_cells_view import MemoryCellsView
 from zxemu_ui.panels.memory_map_view import MemoryMapView
 from zxemu_ui.panels.output_console import OutputConsole
+from zxemu_ui.workspace.dump_project import dump_to_project
 from zxemu_ui.workspace.project import SOURCE_SUFFIXES, Project, is_text_file
 from zxemu_ui.panels.registers_view import RegistersView
 from zxemu_ui.workspace.search import search_project
@@ -133,9 +136,14 @@ class MainWindow(QMainWindow):
         # builds a *new* machine: kept here, your choice survives the swap (see set_machine).
         self._fast_load = True
         self._tape_audible = True
-        # Write protection can be ticked before a disk is in the drive; remember it so
-        # the next disk mounted honours what the menu already claims.
-        self._pending_write_protect = False
+        # Disks mount **write-protected by default**, and the tab on a real 3.5" disk is
+        # the right analogy: you slide it open deliberately, for the one disk you meant to
+        # write to. The asymmetry is what decides it -- a game refusing to save its high
+        # scores is a nuisance you notice immediately, while a loader quietly scribbling
+        # over a disk in an irreplaceable collection is silent and permanent. We have
+        # already had one bug erase a catalogue; a default that limits the blast radius of
+        # the next one is worth the occasional trip to the menu.
+        self._pending_write_protect = True
         # Model-menu radio items, keyed by model string. Populated by _build_menu and
         # kept in sync by set_machine, so the tick always follows the *live* machine --
         # whether it changed from the menu or from opening a project.
@@ -161,6 +169,15 @@ class MainWindow(QMainWindow):
         self.disassembly = DisassemblyView(machine)
         self.call_stack = CallStackView(machine)
         self.analysis = AnalysisView(machine)
+        self.disk = DiskView(machine)
+        # The panel asks; the window acts. It owns no dialogs and knows nothing about
+        # projects or where images live, so it stays a view rather than a second
+        # implementation of the Disk Drive menu.
+        self.disk.mount_requested.connect(self._mount_disk_dialog)
+        self.disk.eject_requested.connect(self._eject_disk)
+        self.disk.save_requested.connect(self._save_disk_as)
+        self.disk.write_protect_changed.connect(
+            lambda drive, protected: self._set_disk_write_protect(protected, drive))
         self.registers = RegistersView(machine)
         self.memory_map = MemoryMapView(machine)
         self.inspector = InspectorView()
@@ -244,6 +261,7 @@ class MainWindow(QMainWindow):
         self.disassembly.refresh(force=True)
         self.call_stack.refresh(force=True)
         self.memory_map.refresh()
+        self.disk.refresh()
 
     @staticmethod
     def _reveal_dock(dock) -> None:
@@ -339,6 +357,7 @@ class MainWindow(QMainWindow):
         self.analysis.machine = machine
         self.registers.machine = machine
         self.memory_map.machine = machine
+        self.disk.set_machine(machine)
         self.debug.machine = machine  # conditions are validated against the live machine
         # A fresh machine comes with the defaults, not with your deck settings; re-apply
         # them, or turning Fast Load off and then switching model silently turns it back on.
@@ -764,6 +783,80 @@ class MainWindow(QMainWindow):
         self._tape_stall_reported = False
         return True
 
+    def _dump_to_project(self) -> None:
+        """Turn the running program's RAM into a project you can build and step through.
+
+        The two caveats are put in front of you *before* the dump rather than in a README
+        afterwards, because both change what you would do next: a region with no coverage
+        is emitted as data even if it is really code you simply have not run yet, and only
+        what is *resident* is captured — a game that streams levels from disk has just the
+        part that was loaded at this instant.
+        """
+        coverage = self.controller.coverage
+        executed = coverage.count() if coverage.enabled else 0
+        if not executed:
+            # The dependency between recording and dumping is the one thing about this
+            # feature people get wrong, and the cost is silent: you get a correct dump in
+            # which nothing is disassembled. So it is asked here rather than left to be
+            # discovered from the result.
+            reply = QMessageBox.question(
+                self, "Dump to Project",
+                "Nothing has been recorded yet, so everything would be dumped as data "
+                "rather than disassembled.\n\n"
+                "Start recording now? Then exercise the program — play the menu, run the "
+                "level you care about — and dump again.\n\n"
+                "Yes: start recording.   No: dump anyway, all data.",
+            )
+            if reply == QMessageBox.Yes:
+                self._set_coverage(True)
+                for action in self.menuBar().findChildren(QAction):
+                    if action.text() == "1. Record What Runs":
+                        action.setChecked(True)
+                return
+        folder = QFileDialog.getExistingDirectory(self, "Dump to a new project folder",
+                                                  self._media_dir())
+        if not folder:
+            return
+        if any(Path(folder).iterdir()):
+            reply = QMessageBox.question(
+                self, "Dump to Project",
+                f"{folder} is not empty. Files with the same names will be overwritten.\n\n"
+                "Continue?",
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        model = machine_model(self.machine)
+        try:
+            project = dump_to_project(
+                self.machine, folder, model=model,
+                coverage_executed=coverage.executed if coverage.enabled else None,
+                coverage=coverage if coverage.enabled else None,
+                start_address=self.machine.cpu.regs.pc,
+            )
+        except (OSError, ValueError) as error:
+            self._log(f"Could not dump: {error}")
+            return
+
+        self._log(f"Dumped {model.upper()} RAM to {folder}.")
+        if executed:
+            self._log(f"  {executed} address(es) executed — those became disassembly; "
+                      "everything else is data.")
+        else:
+            self._log("  No coverage was recorded, so everything is data. Turn on "
+                      "Reversing ▸ Record Coverage, exercise the program, and dump again "
+                      "to get disassembly.")
+        self._log("  Only what was resident is here: a program that loads more from disk "
+                  "or tape later has just the part that was in memory.")
+        if model in PAGED_MODELS:
+            self._log("  All eight RAM banks were captured, including any paged out. A bank "
+                      "is disassembled where the CPU was seen to run with it mapped in, and "
+                      "kept as data otherwise.")
+        reply = QMessageBox.question(self, "Dump to Project",
+                                     "Open the dumped project now?")
+        if reply == QMessageBox.Yes:
+            self._open_project(str(project.folder))
+
     # --- the disk drives --------------------------------------------------------
 
     def _load_disk(self, path, drive: int = 0) -> bool:
@@ -789,6 +882,8 @@ class MainWindow(QMainWindow):
         image.write_protected = self._pending_write_protect
         self.machine.beta_drives[drive] = image
         self.controller.set_running(True)
+        self.disk.refresh()
+        self._reveal_dock(self._disk_dock)   # you just mounted a disk; show what is on it
         self.view.refresh()
         self._focus_emulator()
         for line in media.disk_summary(path.name, image, "AB"[drive] if drive < 2 else str(drive)):
@@ -1102,6 +1197,13 @@ class MainWindow(QMainWindow):
         self._beeper_sfx_editor_dock.resize(420, 360)
         self._beeper_sfx_editor_dock.hide()
 
+        # Disk drives: on-demand like the other tools, since only a Pentagon has any.
+        self._disk_dock = self._make_dock("Disk Drives", self.disk, "diskDock")
+        self.addDockWidget(Qt.RightDockWidgetArea, self._disk_dock)
+        self._disk_dock.setFloating(True)
+        self._disk_dock.resize(520, 380)
+        self._disk_dock.hide()
+
         # Full-width build/output console along the bottom.
         self._output_dock = self._make_dock("Output", self.output_console, "outputDock")
         self.addDockWidget(Qt.BottomDockWidgetArea, self._output_dock)
@@ -1110,7 +1212,8 @@ class MainWindow(QMainWindow):
             self._project_dock, self._inspector_dock, self._emulator_dock,
             self._memory_dock, self._registers_dock, self._memmap_dock,
             self._disasm_dock, self._callstack_dock, self._analysis_dock,
-            self._sprite_editor_dock, self._beeper_sfx_editor_dock, self._output_dock,
+            self._sprite_editor_dock, self._beeper_sfx_editor_dock, self._disk_dock,
+            self._output_dock,
         ]
 
     # --- menu -----------------------------------------------------------------

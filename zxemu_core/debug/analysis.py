@@ -102,6 +102,13 @@ def cross_references(memory, target: int, start: int = 0, end: int = ADDRESS_SPA
     return found
 
 
+#: The window a 128K/Pentagon pages banks through. Below it the mapping never moves --
+#: slot 1 is always RAM5 and slot 2 always RAM2 -- so a plain address identifies the bank
+#: unambiguously. Above it, the same address may belong to any of eight banks.
+PAGED_BASE = 0xC000
+PAGED_SIZE = ADDRESS_SPACE - PAGED_BASE
+
+
 class CoverageMap:
     """Records which addresses the CPU has executed.
 
@@ -113,17 +120,70 @@ class CoverageMap:
     What it is good for is the question static analysis cannot answer -- "is this code
     dead, or have I just not exercised it?" -- and the honest reading of an unmarked
     address is "not yet", never "never".
+
+    Which bank was it, though?
+    -------------------------
+    A flat address is a complete answer on a 48K, and on a 128K it is a complete answer
+    for everything below :data:`PAGED_BASE` -- slots 1 and 2 hold RAM5 and RAM2 and never
+    move. Above it the address alone is ambiguous: eight banks take turns at 0xC000, and
+    "0xC123 executed" does not say which one was there.
+
+    That ambiguity **cannot be resolved afterwards**. It is tempting to think the banks
+    could be compared against each other to work out which was running, but the
+    information was never recorded and is not latent in the bytes: two banks may hold
+    identical data, a bank may be modified after its code ran, and a program can swap
+    banks at the same address hundreds of times a second.
+
+    So it is recorded as it happens. :meth:`select_bank` is called when the machine pages
+    -- from ``Machine128.set_paging``, which is the one place the mapping changes and is
+    reached only on a port write -- and marking above 0xC000 then lands in that bank's own
+    flags as well as the flat map. Exact, rather than inferred.
+
+    The cost is one branch per instruction on a loop that is already the slow path
+    (recording coverage forces per-instruction stepping in the first place), and a 48K
+    session allocates no bank arrays at all: ``_paged_target`` stays None and the branch
+    falls straight through.
     """
 
     def __init__(self):
         self.executed = bytearray(ADDRESS_SPACE)
         self.enabled = False
+        #: Per-bank flags for the paged window, created only when a bank is selected.
+        self.bank_executed: dict[int, bytearray] = {}
+        self.current_bank: int | None = None
+        self._paged_target: bytearray | None = None
 
     def clear(self) -> None:
         self.executed = bytearray(ADDRESS_SPACE)
+        self.bank_executed = {}
+        self._paged_target = None
+        if self.current_bank is not None:
+            self.select_bank(self.current_bank)   # keep following the live mapping
+
+    def select_bank(self, bank: int) -> None:
+        """Follow the machine's paging: subsequent marks above 0xC000 belong to ``bank``.
+
+        Swapping the target array rather than testing a flag on every instruction is the
+        same trick used by ``Machine.set_port_watchpoints`` (which swaps the IO hooks) and
+        by memory watchpoints (which rebind ``memory.__class__``) -- and for the same
+        reason: the check would otherwise sit on a path taken millions of times.
+        """
+        self.current_bank = bank
+        target = self.bank_executed.get(bank)
+        if target is None:
+            target = bytearray(PAGED_SIZE)
+            self.bank_executed[bank] = target
+        self._paged_target = target
 
     def mark(self, address: int) -> None:
-        self.executed[address & 0xFFFF] = 1
+        address &= 0xFFFF
+        self.executed[address] = 1
+        if self._paged_target is not None and address >= PAGED_BASE:
+            self._paged_target[address - PAGED_BASE] = 1
+
+    def executed_in_bank(self, bank: int) -> bytearray | None:
+        """Flags for one bank's 16K window, or None if that bank never ran anything."""
+        return self.bank_executed.get(bank)
 
     def count(self) -> int:
         return sum(self.executed)

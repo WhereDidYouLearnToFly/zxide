@@ -10,7 +10,7 @@ CPU with 48K, 128K and Pentagon 128 machine models (memory paging, ULA, keyboard
 AY-3-8912), tape and snapshot loading (`.tap`/`.tzx`, both instant and at
 authentic pulse-level tape speed; `.sna`/`.z80` snapshots), wrapped in a dockable IDE with an assembler build pipeline, a
 source-level debugger, and an asset workflow that imports art and audio, places it in
-memory and generates the assembly to include it. 760 tests pass; the CPU is
+memory and generates the assembly to include it. 850 tests pass; the CPU is
 cross-checked against the FUSE reference emulator. See `dev-support/STATUS.md` for
 the full state and `DEV_PLAN.md` for what's next.
 
@@ -70,7 +70,7 @@ Menus are grouped by what you're doing rather than by which code implements them
 | **Disassembly** | the disassembly panel and where it points |
 | **Breaks** | breakpoint conditions, run-to-cursor |
 | **Watch** | pause when a value or port is *touched* |
-| **Reversing** | understanding someone else's program: search, cross-references, coverage, trace |
+| **Reversing** | understanding someone else's program: search, cross-references, coverage, trace, and dumping it back out as source |
 | **Compression** | optional addons (ZX0) copied into the open project |
 | **View** | panel visibility, interface scale, saved dock layout |
 
@@ -134,6 +134,76 @@ The one honest limit: auto-locate knows where *assets* and the screen live, and 
 previous build's SLD to avoid where your code landed last time — so on a project's very
 first build, before any SLD exists, it can still place an asset on top of hand-written
 code. Build twice, or place it by hand.
+
+### Reversing someone else's program
+
+The **Reversing** menu answers questions about *the whole program*, as opposed to Breaks
+and Watch, which are about what the machine is doing right now. Eight items in four groups:
+
+| item | what it does |
+|---|---|
+| **Find Bytes…** | search memory for a hex sequence (`21 00 40`) |
+| **Find Text…** | search memory for a string |
+| **Cross-references…** | given an address, list every instruction that calls, jumps to, reads, writes or loads it |
+| **1. Record What Runs** | mark every address the CPU executes |
+| **2. Dump to Project…** | turn what you recorded into source — see below |
+| **Show What Ran** | those addresses, collapsed into ranges |
+| **Record Trace** | a rolling log of the last ~2000 instructions — *not* used by the dumper |
+| **Show Trace** | print it |
+
+Results go to the **Analysis** panel.
+
+**Each of these says how much it can promise, and the differences matter.** Search is
+exact. Cross-references are a *static* byte scan: they see references inside code that
+never runs, and they **cannot see computed destinations at all** — `jp (hl)`, jump tables
+and self-modified operands are invisible to them. Coverage never lies about what ran, but
+only knows what has run *so far*, so an unmarked address means **"not yet", never
+"never"**. The trace is bounded on purpose; an unbounded one would be millions of entries
+a second.
+
+**Cross-references and coverage are opposites, and that is why you want both.** One is
+static and sees code that never executed; the other is observed and catches the computed
+jumps the scan cannot follow. Where the two disagree is usually where the interesting code
+is.
+
+Recording and dumping are numbered and adjacent because the dependency between them is
+otherwise invisible: **the dump is only as good as what you recorded.** Dump without
+recording and you get a correct project in which nothing is disassembled — so it asks
+first, and offers to start recording instead.
+
+Both recording options force the slower per-instruction loop, which is why they are off by
+default and say so in the Output when you switch them on.
+
+### Turning a program back into source
+
+**Reversing ▸ Dump to Project…** takes the RAM of whatever is running and writes it out as a
+zxide **project** — a manifest, a `main.asm`, and one source file per region — so somebody
+else's program becomes somewhere you can work: F5 builds it, the gutter sets breakpoints,
+the disassembly panel gets its labels from the build.
+
+Telling code from data is undecidable, so it isn't decided statically. **Coverage is the
+ground truth**: turn on *Record Coverage*, exercise the program, and the addresses that
+actually executed become disassembly while everything else stays bytes. Both assemble to
+the same program, so the dump is correct from the first run and gets *better* the more of
+the program you have exercised.
+
+The dump also restores the machine, not just its memory — the border, the interrupt mode
+and vector, every register and the paging latch, none of which live in RAM. Without them a
+rebuilt game comes up with a white border and, far worse, no interrupts at all, so it never
+reads the keyboard.
+
+It does that by **writing the snapshot itself**, from a Lua block in the generated source
+(sjasmplus embeds Lua), rather than by injecting restore code into the program. So nothing
+is added to RAM: a 128K or Pentagon dump is byte-for-byte the original, and a 48K one
+differs only in the two bytes the `.sna` format insists on keeping PC in, below the stack
+pointer — memory the program overwrites itself on its next push.
+
+What makes it trustworthy is that the build also writes a raw memory image, so you can
+assemble the dump and compare it byte-for-byte with the machine it came from (everything
+outside that stub must match exactly). Two honest
+limits, stated in the generated source itself: a region left as data may simply be code you
+have not run yet, and **only what was resident is captured** — a game that streams levels
+from disk has just the part that was in memory at that instant.
 
 ### Tapes, disks and snapshots
 

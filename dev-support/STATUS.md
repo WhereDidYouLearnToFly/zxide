@@ -2,6 +2,125 @@
 
 _Last updated: 2026-07-25._ A snapshot to make it easy to pick the project back up.
 
+## Latest session (2026-07-25, later still) — the memory dumper (DEV_PLAN 1b)
+
+**850 tests pass.** `Reversing ▸ Dump to Project…` turns the running program's RAM into a
+**buildable, debuggable zxide project** — not a snapshot. `zxemu_core/debug/dumper.py` does
+the reasoning (Qt-free), `zxemu_ui/workspace/dump_project.py` writes the files.
+
+Coverage is the ground truth: an address that executed *is* code, observed rather than
+guessed. Executed runs become disassembly with labels on branch targets and `equ`s for the
+ROM routines called; everything else stays bytes, which assembles to the same program
+either way. Emphatically **a project**, with a manifest carrying the model it came from, so
+Open Folder gives you F5, breakpoints and the memory map immediately.
+
+**The invariant is the whole point: assemble the dump and compare bytes with the memory it
+came from.** Proven end to end on a real program — Spectrofon booted from a `.trd` on
+Pentagon, dumped mid-run, reassembled with sjasmplus, **byte-identical**, with recognisable
+recovered source (`di / push af / push bc / push de / push hl` — an interrupt prologue).
+
+**Two things that test caught, and nothing else would have:**
+
+1. **`.sna` is the wrong thing to compare against.** A 48K snapshot has no PC field: its
+   loader `RET`s to an address pushed on the stack, so saving one *necessarily* overwrites
+   two bytes of the program at SP-2. The first end-to-end run came back with exactly one
+   differing byte. The dump now also emits `savebin "main.bin"` — a raw image with no such
+   artefact — and that is what verification compares.
+2. **Coverage marks instruction *starts*, not every byte.** `ld a,7 / out ($fe),a / ret`
+   marks three addresses and leaves the operand bytes unmarked, so treating only
+   *consecutive* marks as a run shreds real code into one-byte fragments that all fall
+   below the minimum run length -- and an executed routine dumps as data. `plan_regions`
+   now expands each mark to the whole instruction it begins. This hid for a while because
+   the early tests set coverage as a solid block of addresses, which no real program ever
+   produces; it only surfaced against a machine that had genuinely executed something.
+3. **Disassembly is not injective, and here that is fatal.** `DD DE nn` is `sbc a,n` with a
+   redundant IX prefix: the CPU ignores it, the disassembler rightly doesn't mention it, and
+   sjasmplus then emits *two* bytes where there were three. Everything after shifts by one —
+   which surfaced as a **branch displacement changing thirty bytes earlier**, because the
+   label had moved. Same problem with the seven duplicate `ED` encodings that all mean
+   `neg`. `dumper._round_trips` keeps those as raw bytes, falling back one byte at a time so
+   the damage stays local. Neither is exotic: both appear in the first kilobyte of the 48K
+   ROM, because both are what ordinary *data* decodes to when misclassified as code.
+
+**All eight banks are captured**, and the reason it was easier than expected is worth
+recording. On real hardware you would have to halt the machine, page each bank in, read it,
+and carefully restore the previous mapping. In an emulator a bank is a plain bytearray we
+can read whether or not it is mapped -- `Machine128.display_memory` already relies on
+exactly that for the shadow screen. Measured on Spectrofon running on Pentagon: **80K of
+RAM the address-space view would have missed**, byte-identical to the machine's own banks,
+and it still assembles.
+
+**Paged banks are disassembled too, now.** `CoverageMap` keeps a per-bank record for the
+one ambiguous window (0xC000+; below it slot 1 is always RAM5 and slot 2 always RAM2, so a
+flat address already identifies the bank). `Machine128.set_paging` announces the new bank
+through a `paging_listener`, which `EmulatorController` points at `coverage.select_bank` --
+so the bank is recorded *as it happens*.
+
+It has to be. The tempting idea is to compare banks afterwards and deduce which was
+running; that cannot work, because the information was never written down and is not latent
+in the bytes -- two banks may hold identical data, a bank may be modified after its code
+ran, and a program can swap banks at one address hundreds of times a second.
+
+**A dump restores RAM; it does not restore the machine -- and that difference is what a
+user hits first.** Reported symptoms: the rebuilt program ran, but with a white border and
+a dead keyboard. Same cause. `savesna` writes memory plus an entry address and *defaults
+every register*, so a game reading keys from an **IM 2** interrupt handler came back with
+IM 1, the wrong `I` (the vector-table base), and interrupts disabled. Alive and deaf.
+
+**The fix went through two designs, and the second is much better -- the user's idea.**
+
+The first was a **restore stub**: ~50 bytes of generated Z80 that set everything back and
+jumped to the real PC. It worked, and cost four bugs to place safely (the search picked
+**0x4000, the screen bitmap**, because a blank screen is a huge run of zeros coverage never
+marks as executed; `savesna` writes its entry address at the bottom of RAM, clobbering the
+stub's first bytes; `pop af` reads the word *at* SP, not below it, so `ld sp,label+2`
+silently swapped `AF` with `AF'`; and on a paged machine the stub must live below 0xC000 or
+it vanishes with the next bank switch -- found on a real Pentagon dump where it landed at
+0xC9B0 and never ran).
+
+Worse than the bugs was the premise. The stub had to sit *somewhere in the program's own
+memory*, chosen by the inference "unexecuted and currently zero". Coverage means **"not
+yet"**, and a large run of zeros is very often a buffer the program has not filled yet --
+a decompression target, a level scratch area. Exactly the kind of guess that breaks
+something later and elsewhere.
+
+**sjasmplus embeds Lua (5.4, since v1.20.0), so the snapshot can just be written
+correctly.** The generated `main.asm` now carries a `LUA`/`ENDLUA` block that reads the
+assembled bytes back with `sj.get_byte`, reaches every bank with `sj.set_page`, and writes
+the `.sna` itself with a proper register header. Nothing is injected into the program:
+
+| model | PC stored in | RAM bytes modified |
+|---|---|---|
+| 128K / Pentagon | the extra header | **zero** |
+| 48K | on the stack (no PC field) | 2, at SP-2 -- below the stack pointer, i.e. memory the program overwrites itself on its next push |
+
+Verified on the real case: Spectrofon on Pentagon, dumped mid-run, rebuilt -- **RAM
+byte-identical, all eight banks identical, border/I/IM/PC/0x7FFD all restored**. And the
+byte-identity invariant is **absolute again**, with no "except these fifty bytes" clause.
+
+`zx.save_snapshot_sna` is worth knowing about and does *not* help: same signature as
+`SAVESNA`, filename and start address only.
+
+**Two paging traps in the generated source, both caught by the byte-identity test rather
+than by reasoning.** sjasmplus starts a `zxspectrum128` device with **bank 0** in slot 3, so
+(a) the 0xC000-0xFFFF part of the flat dump was being assembled into the wrong bank, leaving
+the bank that was actually mapped empty; and (b) each bank's source ends with its own `PAGE`
+in effect, and both `SAVEBIN` and `SAVESNA` write whatever is mapped *at that point* -- so
+the saved image took its top 16K from whichever bank was included last. The generated
+`main.asm` now pages the live bank in before the includes and puts it back before saving.
+Worth noting the shape: the first of these made verification compare against the *wrong
+memory* and still pass, which is the failure mode a correctness test is supposed to prevent.
+
+**Cost: ~3.4% on the 48K debug loop; on 128K it is inside run-to-run noise.** Worth knowing
+*how* that was measured, because the first attempt said 60.9% and was wrong: it timed
+"coverage off" and then "coverage on" in sequence on the same machine, so the second run
+executed entirely different code. Re-run from identical state, alternating, the addition is
+free. A benchmark that advances the thing it is benchmarking measures nothing.
+
+**The doc guard earned its keep immediately**: added earlier the same session, it failed on
+this very work because `dumper.py` and `dump_project.py` were missing from their package
+overviews.
+
 ## Latest session (2026-07-25, later) — Pentagon 128, Beta 128, TR-DOS, disks
 
 **760 tests pass**, up from 727. Design document: **[../TRDOS.md](../TRDOS.md)** — read that
@@ -109,9 +228,35 @@ issued the malformed command a real ROM issues, and never reset from a state a p
 easily reach. Hands-on use found in minutes what a test suite built from my own assumptions
 could not.
 
-**Deliberately not done:** `.fdi` (needs bit-level geometry), a dedicated disk *panel* (the
-menu plus the Output catalogue listing covers the function), and `Write Track` beyond blanking
-a track — enough for `FORMAT`, not for a copier that inspects the format.
+**Demos: laggy, sometimes hanging — measured, and it is _not_ the disk.** Five disks run from
+a cold boot, core only (no Qt, no rendering, no audio device):
+
+| disk | mean ms/frame | worst | frames >20ms | LOST DATA | controller at end |
+|---|---|---|---|---|---|
+| DIHALT19 | 15.4 | 25.8 | 62/900 | 0 | idle |
+| Spectrofon 06 | 12.8 | 27.0 | 128/900 | 2 | idle, still running |
+| GAMES041 | **23.5** | 43.8 | **717/900** | 0 | idle |
+| Body 09 | 17.1 | 24.9 | 366/900 | 0 | idle |
+| Optron 23 | 14.4 | 41.6 | 90/900 | 0 | idle |
+
+The controller ends **idle in all five** — no stuck transfers, no held DRQ. The two LOST DATA
+events were the new timeout *working*: it recovered an abandoned transfer and the demo carried
+on. Before it existed those were permanent hangs.
+
+So the lag is **raw emulation speed**. A frame is 20ms of wall clock at 50Hz; GAMES041 averages
+23.5ms before Qt is even counted. Pentagon is the heaviest model by construction — a longer
+frame (71680 vs 69888 T) plus the `m1_hook` — roughly 10% over a 128K, enough to push
+borderline software under the line. The *hangs* are far more likely cycle-accuracy (contention
+not applied per access, no per-scanline border effects) than anything to do with the drive.
+
+**Decided:** not optimising for now. Speed is fine for games and an acceptable starting point
+for demo work, and this is a development platform rather than a preservation-grade emulator.
+If it is ever revisited, the two candidates are profiling the CPU dispatch loop and making the
+`m1_hook` cheaper — this codebase already has the right trick for the latter, since port
+watchpoints swap the hooks in and out rather than testing a flag on the fast path.
+
+**Deliberately not done:** `.fdi` (needs bit-level geometry) and `Write Track` (writes nothing,
+on purpose — see above).
 
 ## Latest session (2026-07-25) — tape edge replay, and Milestone 3 finally closes
 

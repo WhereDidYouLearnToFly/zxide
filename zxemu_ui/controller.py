@@ -105,6 +105,7 @@ class EmulatorController(QObject):
         # Coverage and trace are both off by default: each costs work per *instruction*,
         # so they force the debug loop and must never be paid for unasked.
         self.coverage = analysis.CoverageMap()
+        self._follow_paging()
         self._trace: deque | None = None
         self._debug_tstates = 0
         self._skip_breakpoint: int | None = None
@@ -166,6 +167,24 @@ class EmulatorController(QObject):
         """Set the PC addresses at which a running machine should pause."""
         self._breakpoints = set(addresses)
         self._update_audio()  # debug runs are muted (see _update_audio)
+
+    def _follow_paging(self) -> None:
+        """Have coverage record *which bank* an address above 0xC000 belonged to.
+
+        On a 128K or Pentagon eight banks take turns at that address, and a flat address
+        does not say which was mapped -- a fact no later analysis can recover, since two
+        banks may hold identical bytes and a program can swap them hundreds of times a
+        second. The machine knows at the moment it pages, so it is noted then.
+
+        Rebound whenever the machine is swapped, for the same reason every other view is:
+        the listener was attached to the *old* machine and would otherwise report a
+        mapping that no longer exists.
+        """
+        machine = self.machine
+        if not hasattr(machine, "paging_listener"):
+            return                       # a 48K: nothing pages, the flat map is complete
+        machine.paging_listener = self.coverage.select_bank
+        self.coverage.select_bank(machine.port_7ffd & 0x07)   # record the mapping as it stands
 
     def set_coverage_enabled(self, on: bool) -> None:
         """Start or stop recording which addresses execute."""
@@ -294,6 +313,7 @@ class EmulatorController(QObject):
         self.set_running(False)
         old_rate = self.machine.audio.sample_rate
         self.machine = machine
+        self._follow_paging()
         self._debug_tstates = 0
         self._skip_breakpoint = None
         # Watchpoints belong to the machine they were set on: the instrumentation was

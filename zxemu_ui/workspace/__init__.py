@@ -23,6 +23,11 @@ tools that build it, and the settings that say where those tools live.
                         debugger needs -- source line <-> address, and your labels.
     search.py           Find-in-project: every editable text file searched for a
                         string, skipping assets, build output and generated files.
+    dump_project.py     The reverse of everything above: takes a machine's RAM and
+                        writes it out as a *project* -- manifest, ``main.asm``, one
+                        source per region -- so somebody else's running program becomes
+                        somewhere you can work. The reasoning about what is code lives
+                        in ``zxemu_core.debug.dumper``; this half only writes files.
 
 The split that matters here is between *machine-wide* settings (where sjasmplus
 lives -- ``settings.py``) and *per-project* settings (which machine to target, what

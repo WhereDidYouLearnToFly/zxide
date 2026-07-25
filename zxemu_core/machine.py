@@ -302,6 +302,10 @@ class Machine128(Machine):
         )
         self.port_7ffd = 0
         self._locked = False
+        #: Called with the new RAM bank number whenever paging changes. Declared before
+        #: _wire(), which resets and therefore pages, so the very first mapping is
+        #: announced too rather than being missed until the program happens to page.
+        self.paging_listener = None
         self._wire()  # cpu/ula/keyboard/beeper/mixer + reset (see base Machine)
         self.frame_tstates = self.FRAME_TSTATES
         # The AY joins the beeper in the mixer, so both play through one stream.
@@ -328,6 +332,13 @@ class Machine128(Machine):
         self.memory.page(0, self.rom_for_slot0())
         self.memory.page(3, self.ram_banks[value & 0x07])
         self._locked = bool(value & 0x20)
+        if self.paging_listener is not None:
+            # Announce the change; the machine does not care who is listening. The
+            # debugger's coverage map uses it to record *which bank* an address above
+            # 0xC000 belonged to -- something no amount of later analysis can recover,
+            # and which is free to note here because this is the one place the mapping
+            # moves, reached only on a port write.
+            self.paging_listener(value & 0x07)
 
     def rom_for_slot0(self):
         """Which ROM bank belongs at 0x0000 for the current paging latch.

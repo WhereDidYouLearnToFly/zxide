@@ -139,7 +139,10 @@ def test_the_disk_drive_menu_exposes_the_transport(window):
         "Mount in Drive &B…", "&Write Protect", "&Save Disk As…", "E&ject Disk",
     ]
     protect = next(a for a in drive.actions() if a.text() == "&Write Protect")
-    assert protect.isCheckable() and not protect.isChecked()
+    # On by default: a game that cannot save its high scores is a nuisance you notice at
+    # once, while a loader quietly overwriting a disk in an irreplaceable collection is
+    # silent and permanent. The tab on a real disk works the same way round.
+    assert protect.isCheckable() and protect.isChecked()
 
 
 def test_separators_survive_the_move_to_data(window):
@@ -150,8 +153,18 @@ def test_separators_survive_the_move_to_data(window):
 
 def test_checkable_items_are_checkable_and_the_rest_are_not(window):
     reversing = {a.text(): a.isCheckable() for a in _menu(window, "&Reversing").actions()}
-    assert reversing["Record Coverage"] and reversing["Record Trace"]
+    assert reversing["1. Record What Runs"] and reversing["Record Trace"]
     assert not reversing["Find Bytes…"]
+
+
+def test_recording_and_dumping_are_adjacent_and_numbered(window):
+    """The dependency between them is invisible otherwise, and getting it wrong costs you
+    a correct dump in which nothing is disassembled. Trace is unrelated to dumping and
+    deliberately sits apart."""
+    labels = _labels(_menu(window, "&Reversing"))
+    record = labels.index("1. Record What Runs")
+    assert labels[record + 1] == "2. Dump to Project…"
+    assert labels.index("Record Trace") > labels.index("Show What Ran")
 
 
 def test_the_model_menu_ticks_the_live_machine(window):
@@ -163,7 +176,7 @@ def test_the_model_menu_ticks_the_live_machine(window):
 
 def test_the_view_menu_lists_every_dock(window):
     labels = _labels(_menu(window, "&View"))
-    assert len(window._all_docks) == 12
+    assert len(window._all_docks) == 13
     for dock in window._all_docks:
         assert dock.toggleViewAction().text() in labels
 

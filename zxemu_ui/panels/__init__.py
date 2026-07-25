@@ -25,6 +25,11 @@ Watching the machine:
     disassembly_view.py Code around PC, decoded, with ROM and project labels.
     call_stack_view.py  The inferred chain of callers.
     analysis_view.py    Results of whole-program queries (search, xrefs, coverage).
+    disk_view.py        What is in the drives and what is on it -- the catalogue read
+                        straight from the image, so it still answers when the machine
+                        is paused or a load has just gone wrong and TR-DOS's own CAT
+                        is out of reach. Also the only place the "modified, unsaved"
+                        state of a disk is visible.
 
 Working on your own material:
 

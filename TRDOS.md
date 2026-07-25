@@ -324,6 +324,16 @@ cause.
 * **Load ▸ Disk Drive** operates the disk you already mounted: mount in drive B, write
   protect, **Save Disk As…**, eject. Ejecting a disk the machine has written to asks first,
   because that is exactly how you would lose a game's save file.
+* **Disks mount write-protected by default.** The tab on a real 3.5" disk is the right
+  analogy: you slide it open deliberately, for the one disk you meant to write to. The
+  asymmetry decides it — a game that cannot save its high scores is a nuisance you notice
+  immediately, while a loader quietly overwriting a disk in an irreplaceable collection is
+  silent and permanent. We have already had one bug erase a catalogue.
+* **The Disk Drives panel** (View menu, or opened automatically when you mount something)
+  answers what a menu cannot: which drive holds what, the catalogue, whether the disk has
+  been **modified and not saved**, and whether it is protected. It reads the image
+  directly, so it still works with the emulator paused or after a load has failed — which
+  is exactly when TR-DOS's own `CAT` is out of reach.
 * Saving always writes `.trd`, never `.scl`, even for a disk that arrived as one: an SCL
   cannot express free space or a disk label, both of which exist by the time anything has
   been written.
@@ -337,12 +347,23 @@ cause.
   use. `.fdi` — a format that *can* represent them — was considered and deliberately dropped.
   Every image in the local library *parses*, but parsing is not running: no claim is made
   here that all 1852 of them boot.
-* **`Read Track` is approximate and `Write Track` is a stub.** The first returns the track's
-  sectors back to back with none of the gaps and address marks a real one would produce;
-  the second blanks the track and discards the format stream. Enough for TR-DOS's `FORMAT`,
-  not enough for a disk copier that inspects the format itself.
+* **`Read Track` is approximate and `Write Track` writes nothing.** The first returns the
+  track's sectors back to back with none of the gaps and address marks a real one would
+  produce. The second is deliberately inert — see the bug list; a command we cannot
+  interpret faithfully is not allowed to touch the disk. `FORMAT` still works in practice,
+  because images start blank and TR-DOS lays down its catalogue through ordinary Write
+  Sector commands; a disk copier that inspects the raw format will not.
 * **Custom TR-DOS replacements** — fast loaders that drive the FDC directly instead of calling
   TR-DOS — may depend on timing we do not model. Same class of problem as turbo tape loaders,
   and likely the same resolution: make the timing real where it is cheap to.
+* **Speedlock and friends are not chased, on purpose.** The tape work left one protected
+  loader unfinished and it stays that way: zxide is a *development platform*, and defeating
+  1980s copy protection is archaeology with almost no bearing on building your own
+  software. Nice to have, never worth blocking on.
 * **Pentagon timing is not cycle-exact.** No contention is correct, but per-scanline border
   effects remain unmodelled, so the most timing-critical demos may still misbehave.
+* **Demos that stutter or wedge are a speed and timing matter, not a disk one** — measured,
+  see `dev-support/STATUS.md`. Across five disks the controller finished idle every time,
+  with no held DRQ; the lag is the pure-Python core running at 15-24ms against a 20ms
+  frame, and Pentagon is the heaviest model by about 10%. Worth knowing before anyone goes
+  looking for the cause in this package.

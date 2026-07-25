@@ -15,12 +15,21 @@ testable on its own, and the UI panels in ``zxemu_ui`` are thin presentation ove
                      ``A == $FF``, ``(HL) == 0``, ``B == 0 and C == 0``.
     analysis.py      Whole-program questions: search memory, find what refers to an
                      address, record which addresses have actually executed.
+    dumper.py        The consumer of all of the above: memory back into *source*.
+                     Coverage decides what is code (an address that executed is code,
+                     observed rather than guessed); everything else stays bytes, which
+                     assembles to the same program either way. Arranged so the dump can
+                     be reassembled and compared byte-for-byte against the memory it
+                     came from -- the only thing that makes a disassembly trustworthy.
 
 A theme worth noticing while reading these: **they differ in how much they can
-promise, and each says so.** The disassembler is exact. Search is exact.
-Cross-references are a static scan that can be fooled by data resembling code and
-cannot follow computed jumps. Coverage never lies about what ran but only knows what
-has run *so far*. ROM names are a curated subset, left blank rather than guessed.
+promise, and each says so.** The disassembler is exact *as a decoding* -- though not
+reversible, which ``dumper.py`` has to work around: several byte patterns print as the
+same mnemonic, so it keeps those as raw bytes rather than let a rebuild change them.
+Search is exact. Cross-references are a static scan that can be fooled by data
+resembling code and cannot follow computed jumps. Coverage never lies about what ran
+but only knows what has run *so far*. ROM names are a curated subset, left blank
+rather than guessed.
 
 That honesty is not decoration. A debugging tool that hides its uncertainty sends you
 looking in the wrong place while feeling confident, which is worse than a tool that
@@ -29,6 +38,6 @@ tells you nothing.
 
 from __future__ import annotations
 
-from zxemu_core.debug import analysis, debug_expr, disassembler, rom_symbols
+from zxemu_core.debug import analysis, debug_expr, disassembler, dumper, rom_symbols
 
-__all__ = ["analysis", "debug_expr", "disassembler", "rom_symbols"]
+__all__ = ["analysis", "debug_expr", "disassembler", "dumper", "rom_symbols"]
