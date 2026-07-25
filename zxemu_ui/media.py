@@ -16,25 +16,59 @@ The four formats fall into two kinds, and the difference is not cosmetic:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from zxemu_core.storage import snapshot, tape, tzx, z80
-
-SNAPSHOT_SUFFIXES = {".sna", ".z80"}
-TAPE_SUFFIXES = {".tap", ".tzx"}
 
 SNAPSHOT = "snapshot"
 TAPE = "tape"
 
 
+@dataclass(frozen=True)
+class Format:
+    """One loadable file format: how to name it, and which kind of thing it is."""
+
+    suffix: str
+    label: str        # what the menu item and dialog title call it
+    description: str  # the file dialog's filter text, and the menu tooltip
+    kind: str         # SNAPSHOT or TAPE
+
+    @property
+    def menu_label(self) -> str:
+        return f"Load {self.label}…"
+
+    @property
+    def file_filter(self) -> str:
+        return f"{self.description} (*{self.suffix})"
+
+
+# The formats the Load menu offers, in menu order: tapes first (you load a game from
+# one), then snapshots. Each gets its own menu item rather than sharing a "Load Tape"
+# item behind a multi-extension filter -- the menu then says exactly what it will open,
+# and the file dialog shows one format's files instead of a mixed list. Adding a format
+# (.szx, say) means one entry here and nothing else.
+FORMATS = (
+    Format(".tap", "TAP", "TAP tape image", TAPE),
+    Format(".tzx", "TZX", "TZX tape image", TAPE),
+    Format(".sna", "SNA", "SNA snapshot", SNAPSHOT),
+    Format(".z80", "Z80", "Z80 snapshot", SNAPSHOT),
+)
+
+FORMATS_BY_SUFFIX = {fmt.suffix: fmt for fmt in FORMATS}
+SNAPSHOT_SUFFIXES = frozenset(f.suffix for f in FORMATS if f.kind == SNAPSHOT)
+TAPE_SUFFIXES = frozenset(f.suffix for f in FORMATS if f.kind == TAPE)
+
+
+def format_of(path: str | Path) -> Format | None:
+    """The :class:`Format` for a path's suffix, or None if we have no loader for it."""
+    return FORMATS_BY_SUFFIX.get(Path(path).suffix.lower())
+
+
 def kind_of(path: str | Path) -> str | None:
     """:data:`SNAPSHOT`, :data:`TAPE`, or None for a file we have no loader for."""
-    suffix = Path(path).suffix.lower()
-    if suffix in SNAPSHOT_SUFFIXES:
-        return SNAPSHOT
-    if suffix in TAPE_SUFFIXES:
-        return TAPE
-    return None
+    fmt = format_of(path)
+    return fmt.kind if fmt is not None else None
 
 
 def load_snapshot(machine, path: str | Path) -> None:

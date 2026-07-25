@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 
 from PyQt5.QtWidgets import QAction, QActionGroup, QMenu
 
+from zxemu_ui import media
+
 
 @dataclass(frozen=True)
 class Item:
@@ -67,8 +69,17 @@ def add_items(window, menu: QMenu, items) -> None:
             if item.shortcut:
                 action.setShortcut(item.shortcut)
             if item.handler is not None:
-                signal = action.toggled if item.checkable else action.triggered
-                signal.connect(item.handler)
+                if item.checkable:
+                    # A checkable item's handler wants the new state; toggled carries it.
+                    action.toggled.connect(item.handler)
+                else:
+                    # ``triggered`` carries a `checked` bool, and PyQt passes it to any
+                    # slot that will accept one -- which silently poisons a handler like
+                    # ``lambda f=fmt: ...``: it looks zero-argument but takes one, so
+                    # `f` arrives as False and the handler crashes the whole process
+                    # (an exception inside a Qt slot aborts, it doesn't just log). The
+                    # wrapper swallows the flag so no item author has to know this.
+                    action.triggered.connect(lambda _checked=False, h=item.handler: h())
         if item.tip:
             action.setToolTip(item.tip)
         menu.addAction(action)
@@ -114,13 +125,22 @@ def build(window, *, model_choices, scale_choices) -> Menus:
     ])
 
     # Loading someone else's snapshot/tape has nothing to do with building your own
-    # project, so it gets its own menu rather than sharing Build's.
+    # project, so it gets its own menu rather than sharing Build's. One item per format,
+    # generated from media.FORMATS -- see there for why, and for how to add one.
     load_menu = bar.addMenu("&Load")
-    add_items(window, load_menu, [
-        Item("Load Snapshot…", window._load_snapshot_dialog),
-        Item("Load Tape…", window._load_tape_dialog,
-             tip='Insert a .tap or .tzx tape, then LOAD "" from BASIC'),
-    ])
+    tips = {
+        media.TAPE: 'Insert the tape, then LOAD "" from BASIC',
+        media.SNAPSHOT: "Restore a machine mid-run — it resumes immediately",
+    }
+    previous_kind = None
+    for fmt in media.FORMATS:
+        if previous_kind is not None and fmt.kind != previous_kind:
+            load_menu.addSeparator()  # tapes and snapshots are different things
+        previous_kind = fmt.kind
+        add_items(window, load_menu, [
+            Item(fmt.menu_label, lambda f=fmt: window._load_format_dialog(f), tip=tips[fmt.kind]),
+        ])
+    load_menu.addSeparator()
     load_recent = load_menu.addMenu("Load &Recent")
     load_recent.aboutToShow.connect(window._populate_load_recent)
 

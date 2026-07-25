@@ -10,7 +10,7 @@ CPU with 48K and 128K machine models (memory paging, ULA, keyboard, beeper,
 AY-3-8912), tape and snapshot loading (`.tap`/`.tzx` fast loading, `.sna`/`.z80`
 snapshots), wrapped in a dockable IDE with an assembler build pipeline, a
 source-level debugger, and an asset workflow that imports art and audio, places it in
-memory and generates the assembly to include it. 653 tests pass; the CPU is
+memory and generates the assembly to include it. 658 tests pass; the CPU is
 cross-checked against the FUSE reference emulator. See `dev-support/STATUS.md` for
 the full state and `DEV_PLAN.md` for what's next.
 
@@ -63,7 +63,7 @@ Menus are grouped by what you're doing rather than by which code implements them
 | **File** | projects and source files |
 | **Edit** | finding your way around your own text: find in project, go to line |
 | **Build** | turning *your* project into a running program |
-| **Load** | running *someone else's* — a `.sna`/`.z80` snapshot or `.tap`/`.tzx` tape |
+| **Load** | running *someone else's* — one item per format: `.tap`, `.tzx`, `.sna`, `.z80` |
 | **Model** | which machine is emulated (48K / 128K), switchable any time |
 | **Disassembly** | the disassembly panel and where it points |
 | **Breaks** | breakpoint conditions, run-to-cursor |

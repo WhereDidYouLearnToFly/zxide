@@ -4,7 +4,7 @@ _Last updated: 2026-07-24._ A snapshot to make it easy to pick the project back 
 
 ## Latest session (2026-07-24) — build target, tape trap, new formats, editor navigation
 
-**653 tests pass** (`pytest tests/unit tests/integration`).
+**658 tests pass** (`pytest tests/unit tests/integration`).
 
 1. **F5 assembles the file you have open**, not a hard-coded `main.asm`. The manifest's
    `main` is only a fallback now, because a folder zxide didn't scaffold names its entry
@@ -70,7 +70,7 @@ Two design decisions worth knowing, both about not taxing the fast path:
   than building a replacement object, because the CPU, the machine and the 128K paging
   code all hold that same reference.
 
-**342 tests pass** *(at the time of that session — 653 now)*.
+**342 tests pass** *(at the time of that session — 658 now)*.
 
 ## Where we are
 

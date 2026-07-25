@@ -69,6 +69,46 @@ def test_the_documented_shortcuts_are_all_bound(window):
     assert shortcuts["Ctrl+Shift+S"] == "Save A&ll"
 
 
+def test_the_load_menu_offers_one_item_per_format(window):
+    """One item per format, generated from media.FORMATS, so the menu says what it opens
+    and the file dialog lists one format's files rather than a mixed bag."""
+    from zxemu_ui import media
+
+    labels = _labels(_menu(window, "&Load"))
+    assert labels[:4] == ["Load TAP…", "Load TZX…", "Load SNA…", "Load Z80…"]
+    assert labels == [f.menu_label for f in media.FORMATS] + ["Load &Recent"]
+    # Tapes and snapshots are different things, so they are separated.
+    assert sum(1 for a in _menu(window, "&Load").actions() if a.isSeparator()) == 2
+
+
+def test_each_load_item_opens_a_dialog_filtered_to_its_own_format(window, monkeypatch):
+    """The whole point of splitting them: clicking Load TZX must not show .tap files."""
+    seen = []
+
+    class _FakeFileDialog:
+        """Stands in for QFileDialog. Patched at the window's own reference, because
+        replacing a sip static method on the real class crashes the interpreter."""
+
+        @staticmethod
+        def getOpenFileName(*args):  # noqa: N802 (Qt naming)
+            seen.append(args)
+            return "", ""
+
+    monkeypatch.setattr("zxemu_ui.main_window.QFileDialog", _FakeFileDialog)
+
+    for action in _menu(window, "&Load").actions():
+        if action.text().startswith("Load ") and not action.menu():
+            action.trigger()
+
+    titles = [args[1] for args in seen]
+    filters = [args[3] for args in seen]
+    assert titles == ["Load TAP", "Load TZX", "Load SNA", "Load Z80"]
+    assert filters == [
+        "TAP tape image (*.tap)", "TZX tape image (*.tzx)",
+        "SNA snapshot (*.sna)", "Z80 snapshot (*.z80)",
+    ]
+
+
 def test_separators_survive_the_move_to_data(window):
     """A separator is a positional thing, so it can only be checked by counting."""
     assert sum(1 for a in _menu(window, "&File").actions() if a.isSeparator()) == 2
@@ -140,6 +180,22 @@ def test_a_prebuilt_action_is_reused_and_can_be_renamed(qapp, window):
 
     assert menu.actions() == [existing]
     assert existing.text() == "Show Disassembly"
+
+
+def test_a_handler_never_receives_the_triggered_checked_flag(qapp, window):
+    """PyQt hands ``triggered``'s bool to any slot that accepts an argument, which turns
+    a handler like ``lambda f=thing: ...`` into ``f=False`` -- and an exception inside a
+    Qt slot aborts the process rather than logging. add_items must absorb the flag."""
+    from PyQt5.QtWidgets import QMenu
+
+    got = []
+    menu = QMenu()
+    menu_builder.add_items(window, menu, [
+        Item := menu_builder.Item("Open", lambda value="the real default": got.append(value)),
+    ])
+    menu.actions()[0].trigger()
+
+    assert got == ["the real default"]
 
 
 def test_a_checkable_item_connects_to_toggled_not_triggered(qapp, window):

@@ -47,6 +47,21 @@ def test_kind_of_classifies_by_suffix(name, kind):
     assert media.kind_of(name) == kind
 
 
+def test_the_format_table_covers_every_suffix_the_loaders_handle():
+    """FORMATS is the single source of truth: the Load menu, the file dialogs' filters
+    and the suffix sets all come from it, so a format added here needs nothing else."""
+    assert [f.suffix for f in media.FORMATS] == [".tap", ".tzx", ".sna", ".z80"]
+    assert media.TAPE_SUFFIXES == {".tap", ".tzx"}
+    assert media.SNAPSHOT_SUFFIXES == {".sna", ".z80"}
+
+
+def test_each_format_names_itself_for_the_menu_and_the_dialog():
+    tap = media.format_of("game.TAP")
+    assert tap.menu_label == "Load TAP…"
+    assert tap.file_filter == "TAP tape image (*.tap)"
+    assert media.format_of("nope.szx") is None
+
+
 # --- snapshots ---------------------------------------------------------------
 
 def test_load_snapshot_picks_the_z80_loader_for_z80(tmp_path):

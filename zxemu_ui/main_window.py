@@ -19,7 +19,8 @@ The menu bar is split by *what you are doing*, not by which code implements it:
   * **File** -- projects and source files (new/open/save, recent projects),
   * **Build** -- turning *your* project into a running program (sjasmplus, then
     load the snapshot it produced), with or without breakpoints,
-  * **Load** -- running *somebody else's* program: a .sna/.z80 snapshot or a .tap/.tzx tape,
+  * **Load** -- running *somebody else's* program, one item per format (.tap/.tzx tapes,
+    .sna/.z80 snapshots),
   * **Disassembly** -- the disassembly panel and where it points,
   * **Breaks** -- conditions on breakpoints, and run-to-cursor/address,
   * **Reversing** -- understanding someone else's program: search, cross-references,
@@ -609,17 +610,17 @@ class MainWindow(QMainWindow):
         else:
             self.editor.clear_execution_line()  # PC is in code we have no source for
 
-    def _load_snapshot_dialog(self) -> None:
+    def _load_format_dialog(self, fmt) -> None:
+        """Pick a file of one specific format (see ``media.FORMATS``) and load it.
+
+        One menu item per format, so the item names what it opens and the dialog lists
+        one format's files rather than a mixed bag -- ``.tap`` and ``.tzx`` are both
+        tapes but behave differently enough to be worth choosing between deliberately.
+        """
         start_dir = str(self.project.folder) if self.project else ""
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load Snapshot", start_dir, "Snapshots (*.sna *.z80)"
+            self, f"Load {fmt.label}", start_dir, fmt.file_filter
         )
-        if path:
-            self._load_media(path)
-
-    def _load_tape_dialog(self) -> None:
-        start_dir = str(self.project.folder) if self.project else ""
-        path, _ = QFileDialog.getOpenFileName(self, "Load Tape", start_dir, "Tapes (*.tap *.tzx)")
         if path:
             self._load_media(path)
 
