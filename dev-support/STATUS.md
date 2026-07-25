@@ -2,7 +2,31 @@
 
 _Last updated: 2026-07-25._ A snapshot to make it easy to pick the project back up.
 
-## Latest session (2026-07-25, last) — two follow-ups from using the dumper
+## Latest session (2026-07-25, last) — fullscreen, then two follow-ups from using the dumper
+
+**866 tests pass.**
+
+**Emulator fullscreen** — `Alt+Enter` in, `Esc` out, also on View ▸ Emulator fullscreen.
+Both keys are free to borrow because **a Spectrum has neither**, which is asserted by a test
+rather than left as a comment: if either is ever mapped into the key matrix, that is where
+the collision surfaces.
+
+The design decision worth keeping: `panels/fullscreen_stage.py` **lends** the existing
+`EmulatorStage` to a bare black window instead of building a second renderer. Reparenting a
+live QWidget preserves its identity, so the same `EmulatorView` keeps its `frame_ready`
+connection, the Spectrum's key matrix and any keys currently held — going fullscreen
+mid-game does not drop a frame, and there is no second copy of anything to keep in step.
+
+That makes one invariant carry the whole feature: **the stage must always find its way
+home.** Every exit route (Esc, the menu item, Alt+Enter again, the window manager, closing
+the IDE while fullscreen) ends in the window closing, so a single `closing` handler
+reclaims it. A stage left parented to a destroyed window would take the emulator with it.
+Two details that would otherwise bite: the shortcut is `ApplicationShortcut`, because in
+fullscreen the emulator is a *separate top-level window* and a window-scoped shortcut would
+get you in and never out; and `MainWindow.closeEvent` leaves fullscreen first, or Qt's
+quit-on-last-window-closed would leave the app running as a bare Spectrum screen.
+
+## Earlier that session — two follow-ups from using the dumper
 
 **859 tests pass.** Both of these came from the user actually running a dump, which is the
 only way either would have been found.

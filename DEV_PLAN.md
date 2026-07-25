@@ -442,6 +442,14 @@ this backlog line is kept only as an index pointer.
 - **Richer project templates** (a game skeleton, an AY music demo).
 
 ### 6. Polish / fixes
+- **Emulator fullscreen** ✅ *done* -- `Alt+Enter` gives the emulator the whole display, `Esc`
+  returns to the IDE (View ▸ Emulator fullscreen; both keys are free because a Spectrum has
+  neither). `panels/fullscreen_stage.py` **lends** the existing `EmulatorStage` to a bare
+  black window rather than building a second renderer: reparenting a live widget keeps the
+  same `EmulatorView` object, so its signal connections, the Spectrum's key matrix and any
+  held keys survive, and going fullscreen mid-game does not drop a frame. The one invariant
+  is that every exit route ends in that window closing, so a single `closing` handler puts
+  the stage back -- including when the IDE itself is closed while fullscreen.
 - **Runtime swap-pause bug** -- opening a 128K project *while running* pauses the controller
   without resuming (startup swap is fine; only a live swap is affected).
 - Per-scanline **border effects** and tighter **contention** (a cycle-accuracy pass).

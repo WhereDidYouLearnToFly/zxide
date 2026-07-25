@@ -238,6 +238,17 @@ class MainWindow(QMainWindow):
         self._laid_out = True
         QTimer.singleShot(0, self._finish_layout)
 
+    def closeEvent(self, event) -> None:  # noqa: N802 (Qt override name)
+        """Leave fullscreen before the IDE goes away.
+
+        The fullscreen emulator is a top-level window of its own, so closing the IDE
+        while it is up would leave it on screen -- and, since Qt quits when the *last*
+        window closes, leave the application running with nothing but a Spectrum
+        screen and no way back to it.
+        """
+        self.emulator_panel.exit_fullscreen()
+        super().closeEvent(event)
+
     def _finish_layout(self) -> None:
         if self._saved_layout is not None:
             docks_by_name = {d.objectName(): d for d in self._all_docks}

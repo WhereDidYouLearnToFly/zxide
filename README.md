@@ -87,10 +87,14 @@ Menus are grouped by what you're doing rather than by which code implements them
 | `Ctrl+F` | Find in Project — results in Output, click one to jump to it |
 | `Ctrl+G` | Go to Line |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / Save All |
+| `Alt+Enter` | Emulator fullscreen — `Esc` returns to the IDE |
 
 The emulator's keys work by **physical position**, so a non-Latin keyboard layout (Cyrillic,
 Greek…) still types on the Spectrum: `LOAD ""` is the J key, then Ctrl+P twice, then Enter,
 wherever your layout puts those letters.
+
+`Alt+Enter` and `Esc` are safe to borrow because **a Spectrum has neither key** — nothing you
+can type on the emulated machine is lost to them.
 
 **F5 assembles the file you have open**, falling back to the manifest's `main` when the
 focused tab isn't a source file. A folder zxide didn't scaffold calls its entry point

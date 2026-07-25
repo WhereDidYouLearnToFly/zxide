@@ -17,7 +17,10 @@ Watching the machine:
     emulator_view.py    The screen itself: bitmap + attributes + border + FLASH, and
                         PC keys mapped onto the Spectrum's 8x5 matrix.
     emulator_panel.py   The screen plus its control strip (run / pause / step / reset /
-                        screenshot).
+                        screenshot), and the fullscreen toggle.
+    fullscreen_stage.py The bare window that borrows the emulator for the whole display
+                        (Alt+Enter in, Esc out) -- it lends the *same* live widget rather
+                        than building a second renderer, so nothing is disturbed.
     registers_view.py   Registers and flags, a T-state read-out, and click-to-edit.
     memory_cells_view.py  Hex dump, with a Poke field to write bytes back.
     memory_map_view.py  Bank-oriented overview with PC/SP markers and 128K paging --

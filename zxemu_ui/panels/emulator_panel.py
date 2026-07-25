@@ -14,6 +14,10 @@ Two pieces live here:
     EmulatorPanel  stacks the control strip above the stage and wires the controls
                    to an EmulatorController, keeping the buttons' enabled state in
                    step with whether the machine is running or paused.
+
+The panel also owns **fullscreen** (``toggle_fullscreen``), because it owns the stage:
+going fullscreen lends that one widget to a bare window (``fullscreen_stage.py``) and
+takes it back afterwards. Nothing is rebuilt, so the running machine is undisturbed.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ from PyQt5.QtWidgets import (
 
 from zxemu_ui.controller import EmulatorController
 from zxemu_ui.panels.emulator_view import FULL_HEIGHT, FULL_WIDTH, EmulatorView
+from zxemu_ui.panels.fullscreen_stage import FullScreenStage
 
 
 def camera_icon(color: QColor, size: int = 32) -> QIcon:
@@ -109,10 +114,16 @@ class EmulatorPanel(QWidget):
     #: where a screenshot gets saved), so it does the actual saving.
     screenshot_requested = pyqtSignal()
 
+    #: Emitted when fullscreen is entered (True) or left (False), so the window can keep
+    #: a checkable menu item in step with a state the user can also leave by pressing Esc.
+    fullscreen_changed = pyqtSignal(bool)
+
     def __init__(self, view: EmulatorView, controller: EmulatorController, parent=None):
         super().__init__(parent)
         self.controller = controller
+        self._view = view
         self._stage = EmulatorStage(view)
+        self._fullscreen: FullScreenStage | None = None
 
         self._build_actions()
 
@@ -120,10 +131,50 @@ class EmulatorPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self._build_control_bar())
+        self._layout = layout
         layout.addWidget(self._stage, 1)  # the stage soaks up the remaining space
 
         self.controller.running_changed.connect(self._on_running_changed)
         self._on_running_changed(self.controller.running)
+
+    # --- fullscreen -----------------------------------------------------------
+
+    @property
+    def is_fullscreen(self) -> bool:
+        return self._fullscreen is not None
+
+    def toggle_fullscreen(self) -> None:
+        self.exit_fullscreen() if self.is_fullscreen else self.enter_fullscreen()
+
+    def enter_fullscreen(self) -> None:
+        """Lend the stage to a bare fullscreen window (see ``fullscreen_stage.py``)."""
+        if self.is_fullscreen:
+            return
+        self._fullscreen = FullScreenStage(self._stage, near=self)
+        self._fullscreen.closing.connect(self._reclaim_stage)
+        self._fullscreen.showFullScreen()
+        # Focus follows the picture: a fullscreen emulator you have to click first would
+        # look broken, since there is nothing else on screen to click.
+        self._view.setFocus(Qt.OtherFocusReason)
+        self.fullscreen_changed.emit(True)
+
+    def exit_fullscreen(self) -> None:
+        if self._fullscreen is not None:
+            self._fullscreen.close()  # closeEvent -> closing -> _reclaim_stage
+
+    def _reclaim_stage(self) -> None:
+        """Take the stage back into the panel. The only way out of fullscreen.
+
+        Every exit route (Esc, the menu, Alt+Enter, the window manager) ends in the
+        window closing, so putting the stage back here means no route can lose it.
+        """
+        window, self._fullscreen = self._fullscreen, None
+        if window is None:
+            return
+        self._layout.addWidget(self._stage, 1)
+        window.deleteLater()
+        self._view.setFocus(Qt.OtherFocusReason)
+        self.fullscreen_changed.emit(False)
 
     # --- controls -------------------------------------------------------------
 

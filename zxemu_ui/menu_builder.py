@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QAction, QActionGroup, QMenu
 
 from zxemu_ui import media
@@ -316,6 +317,19 @@ def _build_view_menu(window, bar, scale_choices) -> None:
     window.editor.set_show_special(special.isChecked())  # apply the saved preference
     special.toggled.connect(window._set_show_special)
     view_menu.addAction(special)
+
+    # Fullscreen the emulator. Checkable, and kept in step with the panel rather than
+    # driving it: Esc and the window manager can also end fullscreen, and a tick that
+    # disagreed with the screen would be worse than no tick at all.
+    fullscreen = QAction("Emulator fullscreen", window, checkable=True)
+    fullscreen.setShortcut("Alt+Return")
+    # Application-wide, not window-wide: in fullscreen the emulator is a *separate*
+    # top-level window, so a window-scoped shortcut would get you in and never out.
+    fullscreen.setShortcutContext(Qt.ApplicationShortcut)
+    fullscreen.setToolTip("Give the emulator the whole display (Esc returns to the IDE)")
+    fullscreen.triggered.connect(window.emulator_panel.toggle_fullscreen)
+    window.emulator_panel.fullscreen_changed.connect(fullscreen.setChecked)
+    view_menu.addAction(fullscreen)
 
     view_menu.addSeparator()
     for dock in window._all_docks:
