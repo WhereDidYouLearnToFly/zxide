@@ -378,8 +378,13 @@ def test_measure_of_empty_source_is_all_zeroes():
 # --- the status-bar summary --------------------------------------------------------------------
 
 
-def test_format_result_reports_bytes_time_and_count():
-    assert format_result(measure("    ld a,1\n    nop\n")) == "3 bytes · 11 T · 2 instr"
+def test_format_result_leads_with_the_timing():
+    assert format_result(measure("    ld a,1\n    nop\n")) == "11 T · 3 bytes · 2 instr"
+
+
+def test_format_result_can_drop_the_timing():
+    """What the whole-file readout asks for: summing a file's instructions costs nothing real."""
+    assert format_result(measure("    ld a,1\n    nop\n"), timing=False) == "3 bytes · 2 instr"
 
 
 def test_format_result_shows_a_range_when_a_branch_makes_one():
@@ -387,7 +392,7 @@ def test_format_result_shows_a_range_when_a_branch_makes_one():
 
 
 def test_format_result_uses_the_singular_for_one_byte():
-    assert format_result(measure("    nop\n")).startswith("1 byte ·")
+    assert "1 byte ·" in format_result(measure("    nop\n"))
 
 
 def test_format_result_of_data_only_omits_the_timing():

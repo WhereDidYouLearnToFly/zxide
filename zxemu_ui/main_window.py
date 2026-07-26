@@ -387,10 +387,10 @@ class MainWindow(QMainWindow):
         """
         self._meter_label = QLabel("")
         self._meter_label.setToolTip(
-            "Z80 Assembly Meter — size and timing of the selected code, or of the whole "
-            "file when nothing is selected.\nT-states are the published uncontended "
-            "figures; a range means a conditional branch costs different amounts taken "
-            "and not taken."
+            "Z80 Assembly Meter — T-states and size of the selected code; size alone for "
+            "the whole file, since summing a file's instructions counts a loop body once "
+            "and answers nothing.\nT-states are the published uncontended figures; a "
+            "range means a conditional branch costs different amounts taken and not taken."
         )
 
         self._meter_bar = QWidget()
@@ -425,7 +425,10 @@ class MainWindow(QMainWindow):
             self._set_meter_text("")
             return
         text, is_selection = self.editor.selected_or_all_text()
-        summary = asm_meter.format_result(asm_meter.measure(text))
+        # Timing only for a selection. A whole file's T-state total sums every instruction
+        # once, which is not what any file costs to run -- a loop body counts one pass, a
+        # subroutine called all over counts once. Its byte total is real, so that stays.
+        summary = asm_meter.format_result(asm_meter.measure(text), timing=is_selection)
         # Spelled out rather than abbreviated: which of the two it is decides how to read
         # every number after it, and "sel:" was quiet enough that the readout looked like
         # it never followed the selection at all.

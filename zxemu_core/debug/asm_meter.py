@@ -543,19 +543,24 @@ def measure(text: str) -> MeterResult:
     return total
 
 
-def format_result(result: MeterResult) -> str:
-    """The one-line summary the status bar shows."""
+def format_result(result: MeterResult, timing: bool = True) -> str:
+    """The one-line summary the meter shows. Timing leads, because timing is the question.
+
+    ``timing=False`` drops the T-state total, which is what a *whole file* wants: summing
+    every instruction in a file counts each one exactly once, and a file is loops and
+    subroutines -- a routine called a hundred times contributes its cost once, a loop body
+    contributes one iteration. That number answers no question anybody has. Size does:
+    a file's byte total is what it occupies. So the file gets bytes, and a selection --
+    a straight run you deliberately marked out -- gets the cycles it costs to execute.
+    """
     if result.total_bytes == 0 and result.instructions == 0 and result.unknown == 0:
         return ""
     byte_word = "byte" if result.total_bytes == 1 else "bytes"
-    parts = ["{} {}".format(result.total_bytes, byte_word)]
+    parts = []
+    if timing and result.instructions:
+        parts.append("{}–{} T".format(result.t_states_min, result.t_states_max) if result.has_time_range else "{} T".format(result.t_states_min))
+    parts.append("{} {}".format(result.total_bytes, byte_word))
     if result.instructions:
-        timing = (
-            "{}–{} T".format(result.t_states_min, result.t_states_max)
-            if result.has_time_range
-            else "{} T".format(result.t_states_min)
-        )
-        parts.append(timing)
         parts.append("{} instr".format(result.instructions))
     if result.unknown:
         parts.append("{} unrecognised".format(result.unknown))
