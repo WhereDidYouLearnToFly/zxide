@@ -455,11 +455,108 @@ this backlog line is kept only as an index pointer.
 - Per-scanline **border effects** and tighter **contention** (a cycle-accuracy pass).
 - Optional **zexall under PyPy** as a conformance gate.
 
+### 7. Extended machines: ZX Spectrum Next and TS-Conf — *investigated, not scheduled*
+
+Two full hardware reference packs and staged implementation plans exist, produced by a
+separate investigation and **verified against this codebase**:
+
+- `E:\github\zxnext-ref` — ZX Spectrum Next (TBBlue), distilled from the **jnext** emulator.
+- `E:\github\tsconf-ref` — TS-Conf (ZX-Evolution/Pentevo), distilled from `tslabs/zx-evo`.
+
+Each pack holds `spec.md`, a machine-readable `registers.json` (**meant to be loaded at
+runtime as a decode table, not transcribed**), a `vm-guide.md`, and an
+`IMPLEMENTATION_PLAN.md` with zxide `file:line` anchors. Both plans are marked *shelved*.
+
+**Why this is recorded rather than started.** Two reasons, and the second is the real one.
+
+*Scale.* The Next plan is 10 stages, TS-Conf 6, several rated Large; between them they are
+bigger than everything zxide has built so far, and they compete for attention with
+**Milestone 5 (Visual Logic)** — the part that makes this an IDE rather than an emulator.
+Worse, doing the Next *adds a second code-generation target* to Visual Logic.
+
+*Nostalgia — the user's objection, and the decisive one.* **"Next has some potential in some
+way, but nostalgia is not with it."** The Next is a *new* machine in a Spectrum's shape:
+2017, not 1982. Nobody's childhood is on it. The machines people are nostalgic for are the
+ones zxide already emulates — 48K, 128K, Pentagon. Supporting the Next would make zxide a
+better tool for a scene already served by CSpect and ZEsarUX, at the cost of attention to
+the thing only zxide is trying to be. That is a positioning argument, not a technical one,
+and it outranks every row in the tables below. **Recorded here so it is not re-litigated:
+the answer was "no" for a good reason, not for lack of a plan.**
+
+**What was independently verified in our code** (2026-07-25), because a plan's value is
+entirely in whether its claims are true:
+
+| claim | anchor | outcome |
+|---|---|---|
+| `ED_TABLE` is module-global with a silent-NOP default, so Z80N needs a per-instance table | `cpu/instructions/_dispatch.py:29-31,36`, `cpu/z80.py:176-178` | accurate |
+| IM2 reads the vector with a hardcoded low byte; a vectored interrupt fabric needs a `bus_value` seam | `cpu/z80.py:128` | accurate |
+| `install_watch` swaps `__class__` to `WatchedMemory` *unconditionally* | `memory.py:110-137` | accurate, and a real trap |
+| `PAGED_MODELS` is the highest-surprise touchpoint for a new paging scheme | `memlayout.py:36,49,57` | accurate |
+
+The `install_watch` finding is worth keeping even if neither machine is ever built. It
+saves `_unwatched_class` to restore *from*, but hardcodes the class it swaps *to*, and
+`WatchedMemory` calls `Memory.read_byte(self, …)` directly. **Any** future `Memory`
+subclass therefore loses its overrides the instant a watchpoint is set — and the symptom
+would be "setting a watchpoint breaks paging", which nobody would connect to watchpoints.
+It is not a live bug (nothing else subclasses `Memory` today); it is a trap already laid.
+
+**If this is ever revived, the cheap part is worth doing on its own.** Both plans share a
+Stage 0 of small, self-contained changes that have value with or without a new machine:
+
+1. `Machine._finish_frame()` — factoring `run_frame`'s tail so anything that executes a
+   frame differently still reaches the seam. ✅ **already done**, as `Machine.end_frame()`
+   (see §6 and the audio fix it came from) — arrived at independently, which is mild
+   evidence the rest of the analysis is sound.
+2. `WATCHED_CLASS` as a per-class attribute (above).
+3. `maskable_interrupt(bus_value=0xFF)`.
+4. A `Machine.framebuffer() -> FrameBuffer | None` contract, `None` on classic models so
+   the existing render path is untouched. Any non-ULA display needs this.
+
+Then **Z80N alone** (Next Stage 1) is the natural next stopping point if we go that way:
+~30 ED opcodes, no video work, and sjasmplus already assembles them — it would make zxide a
+Next *assembler and debugger* without emulating a Next. Small, shippable, reversible.
+
+**Two asymmetries to weigh when deciding**, neither of which is about the hardware:
+
+- **ROMs.** TS-Conf's `zxevo.rom` is redistributable, so it would boot out of the box like
+  everything else here. The Next's cannot ship; every Next test would be skip-gated on
+  user-supplied files, which is a real dent in "clone it and it runs".
+- **Oracle.** jnext runs headless with a pinned clock and golden PNGs — a differential
+  oracle is what makes this class of work tractable. Unreal needs an MSVC build. Strongly
+  favours the Next.
+
+Also: jnext is itself AI-generated (its own README says so, and the pack repeats it), so
+Next facts are a distillation *of a distillation*, carrying VHDL citations that were never
+mechanically checked. TS-Conf's come from a maintained register spreadsheet. Both packs
+state their own weak points, which is the main reason to trust either.
+
+**Performance, stated once so it is never quietly assumed away:** neither machine can run
+at speed in pure Python — the Next's 28MHz turbo especially. Both plans accept this and
+isolate two hot seams for an optional native path. If these are built, they are built to
+*develop for* those machines, not to play them at full speed.
+
 ### Recommended sequence
-**TAP** (finish M3) -> then the **RE / debugging toolkit** (disassembly panel + labels +
-annotated ROM source) as the strongest *educational* bet, reusing the existing debugger ->
-then **Milestone 4 / Phase E** (the flashier "product" feature). The RE toolkit is where
-the *teaching* happens; Phase E is where zxide feels most like "Unity for the Spectrum."
+
+*The original sequence — TAP, then the RE/debugging toolkit, then Milestone 4 / Phase E —
+is **complete**, along with tape edge replay, Pentagon/TR-DOS/disks and the memory dumper.
+What follows is the sequence from here.*
+
+The foundation is done, so the question is no longer "what is missing from the emulator"
+but **"what makes this an IDE rather than an emulator"**. In that light:
+
+1. **The two dumper follow-ons** (§1b) -- split a dump into files by what the code *does*,
+   and recognise pictures/music inside data blobs. Small, and they extend something that
+   already works rather than opening a front.
+2. **Milestone 5: Visual Logic** -- the first piece of the actual "Unity" layer, and the
+   thing nothing else in the backlog substitutes for.
+3. **Extended machines** (§7) -- deliberately last, and currently **declined**. Largest item
+   here by a wide margin, it would *add a target* to Visual Logic's code generation, and
+   the nostalgia is not with those machines. Reference packs and verified plans exist if
+   that judgement ever changes.
+
+The through-line is unchanged from the start: the RE toolkit is where the *teaching*
+happens, Phase E is where zxide feels like "Unity for the Spectrum", and Visual Logic is
+where it stops being an assembler IDE.
 
 ---
 
