@@ -43,7 +43,7 @@ def reveal_command(path: str | Path, platform: str | None = None) -> list[str]:
             return ["explorer", str(path)]
         # The comma is not a typo and there is no space after it: explorer's /select
         # takes the file path glued on like this, and anything else opens My Documents.
-        return ["explorer", f"/select,{path}"]
+        return ["explorer", "/select,{}".format(path)]
     if platform == "darwin":
         return ["open", "-R", str(path)] if path.is_file() else ["open", str(path)]
     folder = path if path.is_dir() else path.parent
@@ -59,9 +59,9 @@ def reveal(path: str | Path) -> str | None:
     """
     path = Path(path)
     if not path.exists():
-        return f"{path} no longer exists"
+        return "{} no longer exists".format(path)
     try:
         subprocess.Popen(reveal_command(path))
     except (OSError, ValueError) as error:
-        return f"could not open a file manager: {error}"
+        return "could not open a file manager: {}".format(error)
     return None

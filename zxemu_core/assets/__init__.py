@@ -20,9 +20,10 @@ already has between ``zxemu_core.debug`` and its panels.
                          sprite sheets, sprite sequences, and fonts -- optionally
                          with real per-cell colour (``generate_attrs``), reusing the
                          same quantization the full screen uses.
-    native_sprite.py     The ``.zxspr.json`` format for sprites drawn in zxide's own
-                         pixel editor rather than imported -- plain pixels/attributes,
-                         no BMP round-trip needed for data that never had an image.
+    native_sprite.py     The ``.zx8x8``/``.zx16x16``/``.zxsprite`` formats (and their
+                         pixel-only ``…pix`` variants) for sprites drawn in zxide's own
+                         editor rather than imported -- the file *is* the bytes the Z80
+                         gets, no BMP round-trip for data that never had an image.
     binary_convert.py    The catch-all: raw bytes in, raw bytes out. Also the
                          building block a pre-packed raw-binary font reuses.
     pt3_convert.py       AY-music passthrough with a header sanity check (playback

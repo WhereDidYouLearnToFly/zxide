@@ -178,7 +178,7 @@ class PureTone:
             yield self.pulse_length
 
     def describe(self) -> str:
-        return f"Tone ({self.count} pulses of {self.pulse_length}T)"
+        return "Tone ({} pulses of {}T)".format(self.count, self.pulse_length)
 
 
 class PulseSequence:
@@ -198,7 +198,7 @@ class PulseSequence:
         return iter(self.lengths)
 
     def describe(self) -> str:
-        return f"Pulse sequence ({len(self.lengths)} pulses)"
+        return "Pulse sequence ({} pulses)".format(len(self.lengths))
 
 
 class Silence:
@@ -218,7 +218,7 @@ class Silence:
         return iter(())
 
     def describe(self) -> str:
-        return "Stop the tape" if self.pause_ms == 0 else f"Silence ({self.pause_ms}ms)"
+        return "Stop the tape" if self.pause_ms == 0 else "Silence ({}ms)".format(self.pause_ms)
 
 
 class TapePlayer:

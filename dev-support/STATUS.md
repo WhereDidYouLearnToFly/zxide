@@ -2,7 +2,110 @@
 
 _Last updated: 2026-07-25._ A snapshot to make it easy to pick the project back up.
 
-## Latest session (2026-07-25, last) — fullscreen, then two follow-ups from using the dumper
+## Latest session (2026-07-25, last) — a polish pass over the asset editors and the project tree
+
+**1194 tests pass** (1165 unit + 29 integration). All of this came from actually *using* the
+IDE for a while rather than from the plan — which is why two of it reverses decisions that
+looked right when they were made. The full write-up is in DEV_PLAN.md ("Polish pass over the
+asset editors and the project tree"); what follows is what a future session needs to know.
+
+**Native sprites are raw binary now, and the extension is the format.** `.zxspr.json` is
+superseded by six extensions across two axes — fixed size (`.zx8x8`, `.zx16x16`) vs
+arbitrary (`.zxsprite`, whose **first two bytes are width and height**), each with a `…pix`
+variant carrying no attribute plane. The file *is* the bytes the Z80 gets. The decision
+worth keeping: the two-byte header exists **only** where nothing else could supply the size,
+because a format whose whole point is that it needs no unpacking shouldn't spend bytes
+repeating what the filename already says. Frame count isn't stored either — it falls out of
+the file length. Old `.zxspr.json` files still load *and still save as JSON*: zxide does not
+quietly rewrite, rename or delete a file the user didn't ask it to touch.
+
+**The sprite editor keeps "drawing claims the cell", but the left button now toggles.**
+Worth recording because it took two attempts. The original complaint was that erasing a
+stray pixel meant switching the selected colour to that cell's paper first — under the old
+left-ink/right-paper scheme. The first fix split drawing and colouring into two tools, which
+removed the problem and introduced a worse one: the *common* case (draw a pixel in the
+colour I picked) became two actions in order to save the rare one. The right fix was
+smaller — keep one tool, make the left button toggle. Press decides the stroke's value from
+the pixel under the cursor, so a drag never alternates, and erasing is just clicking a lit
+pixel. Right-drag recolours without touching art; alt+click eyedrops. Neither is a mode.
+
+**The palette had never shown which colours were selected.** Checkable `QPushButton`s with a
+`background-color` stylesheet — and the stylesheet replaces the whole button rendering, so
+the checked state was silently never drawn. `_PaletteBar` paints the row itself now. The
+detail worth keeping: the selection ring must sit in the cell's *margin*, not inside the
+swatch. Drawing it inside was the obvious thing and it made selecting black produce a
+mostly-white square. That was found by rendering the panel to a PNG and looking at it, which
+no test would have flagged — the pixel-level tests around it were written afterwards, and
+one of them was then weakened in its claims once it turned out it wouldn't have caught the
+original layout.
+
+**The SFX editor is a bar chart of frequency over time**, and getting there took three
+passes. Each bar rises from the baseline: height = tone, width = duration. Drag up for
+higher, sideways to hold, shift to keep the pitch level, right-drag to erase.
+
+**The two passes before that built a musical piano roll — semitone rows, a piano keyboard,
+snapping — and it was the wrong model.** Worth recording, because the failure is a general
+one rather than a detail. The semitone grid was picked up front from a menu of plausible
+options, sounded obviously right, and survived two rebuilds because each round improved the
+*drawing* without ever questioning the *model*. A beeper effect is a swoop or a thud, not a
+melody; quantising a swoop to the chromatic scale fights the thing you are drawing. All that
+machinery is gone, including `beeper_sfx.py`'s note-grid helpers — they'd have lingered as
+tested dead code otherwise.
+
+What carried over, and why:
+
+- **One column is one video frame, with no setting for it.** This took a detour worth
+  remembering. A configurable "step" of several frames was added because per-frame columns
+  had looked like a wall of slivers, and it then got relabelled twice trying to make it
+  comprehensible. Both attempts answered the wrong question: **length already comes from how
+  far you drag**, so the step only decided the floor, and the right floor is the shortest
+  sound that exists. Deleting the control lost nothing. The real defect had always been that
+  *clicking* made sliver bars — fixing the interaction dissolved the setting, while two
+  rounds of polishing its label had made it look steadily more reasonable and left it just
+  as unnecessary. **A control that needs a good label is worth re-examining before it gets
+  one.** (Side effect that did need handling: mouse moves are sampled far more coarsely than
+  one report per column, so a fast drag skips frames — strokes now fill the gap and
+  interpolate the pitch across it.) Columns are 12px, generous on purpose: a single 20ms
+  frame has to be a block you can see and hit, or drawing it as bars buys nothing.
+- **The frequency axis is logarithmic**, 32Hz–4096Hz, one octave per equal step. Linear
+  would bury everything under 500Hz — where thuds and rumbles live — in the bottom eighth.
+  Seven octaves at 56px each also fits without vertical scrolling, which let the whole
+  "scroll to the content" mechanism the piano roll needed be deleted.
+- **The frequency scale and time ruler are pinned by painting at the scroll offset.** A
+  header that scrolls away labels something you can't see.
+- **Shift locks the pitch for a stroke**, because with continuous frequency a hand-drawn
+  "sideways" drag is never level and every wobble would otherwise be its own entry.
+
+Two notes for whoever works here next. `_step_at` takes widget coordinates and rejects the
+pinned-header band, which is correct — a real click can only land on a visible point — but it
+means synthetic mouse events must be sent with the scroll position known; the test helper
+parks both scrollbars at zero for exactly that reason. And the period↔frequency round trip is
+lossy by up to ~0.11% (≈2 cents) at the top of the range: inaudible, but *not* the "well under
+a tenth of a percent" an earlier version of the test asserted and that had already been said
+out loud. The test now states the bound in cents and sweeps the whole range.
+
+**Assets are visible as assets in the tree.** They were always *listed* — no name filter has
+ever been set — but with the generic OS icon, so `hero.zx8x8` and a stray file of the same
+type were indistinguishable without opening `zxide.json`. (The `zxemu_ui` overview had been
+claiming otherwise for some time.) `project_tree_model.py` overlays the manifest onto the
+listing as a decoration, never a filter. Double-clicking an unregistered sprite/SFX file
+used to do *nothing at all*; it now offers to adopt it.
+
+**Z80 Assembly Meter** (`zxemu_core/debug/asm_meter.py`) in the status bar: bytes and
+T-states for the selection, or the whole file. Timing is a range wherever branching makes
+one. It is a source-text table with nothing to share with `disassembler.py` — that goes the
+other way and carries no timing, so coupling them would be coincidence, not reuse.
+
+**Two structural notes for next time.** `MainWindow` is at ~1780 lines and is the one place
+in the codebase that has outgrown itself; the delete feature was written straight into it
+and then pulled back out into `workspace/project_files.py` (a decision that paid for itself
+immediately — that logic is now tested with no `QApplication` at all). The same treatment
+would suit the build/run and dump plumbing whenever someone has the appetite. Also, every
+path that changes the manifest now goes through one `MainWindow._assets_changed()`, so a
+new one can't update half the UI — the drag-drop import used to notify nobody, and now
+emits `MemoryMapView.assets_changed`.
+
+## Earlier session (2026-07-25) — fullscreen, then two follow-ups from using the dumper
 
 **866 tests pass.**
 

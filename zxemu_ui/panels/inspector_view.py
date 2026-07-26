@@ -161,14 +161,14 @@ class InspectorView(QWidget):
         self._title_label.setText(entry.symbol)
 
         placement = (
-            f"{entry.placement['bank']}:{entry.placement['offset']:#06x}"
+            "{}:{:#06x}".format(entry.placement['bank'], entry.placement['offset'])
             if isinstance(entry.placement, dict)
             else "auto (not yet placed)"
         )
         length = cached_length(project, entry)
-        size_text = f"{length} bytes" if length is not None else "not yet built"
+        size_text = "{} bytes".format(length) if length is not None else "not yet built"
         self._fields_label.setText(
-            f"kind: {entry.kind.value}\nsource: {entry.source}\nplacement: {placement}\nsize: {size_text}"
+            "kind: {}\nsource: {}\nplacement: {}\nsize: {}".format(entry.kind.value, entry.source, placement, size_text)
         )
         self._auto_locate_button.setVisible(entry.placement == "auto")
         self._play_button.setVisible(entry.kind is AssetKind.BEEPER_SFX)
@@ -202,7 +202,7 @@ class InspectorView(QWidget):
                 self._show_tilemap(read_bytes)
             # binary / pt3 / beeper_sfx: no visual preview, fields above are enough.
         except Exception as exc:  # noqa: BLE001 -- a broken asset must not crash the panel
-            self._error_label.setText(f"Couldn't preview this asset: {exc}")
+            self._error_label.setText("Couldn't preview this asset: {}".format(exc))
 
     def _show_bitmap(self, screen_bytes: bytes) -> None:
         buffer = bytearray(SCREEN_WIDTH * SCREEN_HEIGHT * 3)
@@ -238,12 +238,12 @@ class InspectorView(QWidget):
         tilemap = parse_tilemap_json(json.loads(read_bytes(self.entry.source)))
         tileset_entry = next((e for e in self.project.assets() if e.symbol == tilemap.tileset_symbol), None)
         if tileset_entry is None:
-            raise ValueError(f"tileset '{tilemap.tileset_symbol}' not found")
+            raise ValueError("tileset '{}' not found".format(tilemap.tileset_symbol))
         tileset = convert_asset(tileset_entry, read_bytes=read_bytes)
         rgb, width, height = asset_preview.render_tilemap_rgb(tilemap, tileset)
         scale = max(1, 512 // max(width, height))
         self._preview_label.setPixmap(_rgb_to_pixmap(rgb, width, height, scale))
-        self._tileset_button.setText(f"tileset: {tilemap.tileset_symbol}  →")
+        self._tileset_button.setText("tileset: {}  →".format(tilemap.tileset_symbol))
         self._tileset_button.setVisible(True)
 
     def _frame_row_visible(self, visible: bool) -> None:
@@ -258,7 +258,7 @@ class InspectorView(QWidget):
             tilemap = parse_tilemap_json(json.loads((self.project.folder / self.entry.source).read_text()))
             tileset_entry = next((e for e in self.project.assets() if e.symbol == tilemap.tileset_symbol), None)
         except Exception as exc:  # noqa: BLE001 -- a broken tilemap must not crash the panel
-            self._error_label.setText(f"Couldn't jump to the tileset: {exc}")
+            self._error_label.setText("Couldn't jump to the tileset: {}".format(exc))
             return
         if tileset_entry is not None:
             self.show_asset(self.project, tileset_entry)
@@ -277,7 +277,7 @@ class InspectorView(QWidget):
             entries = parse_beeper_sfx(text)
             samples = render_tone_sequence(entries)
         except Exception as exc:  # noqa: BLE001 -- a broken sfx file must not crash the panel
-            self._error_label.setText(f"Couldn't play this sound: {exc}")
+            self._error_label.setText("Couldn't play this sound: {}".format(exc))
             return
         if not samples:
             return

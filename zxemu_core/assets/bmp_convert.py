@@ -52,7 +52,7 @@ class ClashWarning:
     color_count: int
 
     def __str__(self) -> str:
-        return f"cell ({self.cell_x}, {self.cell_y}) has {self.color_count} colours, only 2 fit"
+        return "cell ({}, {}) has {} colours, only 2 fit".format(self.cell_x, self.cell_y, self.color_count)
 
 
 def convert_bitmap(image: BmpImage) -> tuple[bytes, list[ClashWarning]]:
@@ -64,7 +64,7 @@ def convert_bitmap(image: BmpImage) -> tuple[bytes, list[ClashWarning]]:
     """
     if image.width != SCREEN_WIDTH or image.height != SCREEN_HEIGHT:
         raise ValueError(
-            f"bitmap asset must be exactly {SCREEN_WIDTH}x{SCREEN_HEIGHT}, got {image.width}x{image.height}"
+            "bitmap asset must be exactly {}x{}, got {}x{}".format(SCREEN_WIDTH, SCREEN_HEIGHT, image.width, image.height)
         )
 
     bitmap = bytearray(SCREEN_BITMAP_BYTES)
@@ -157,15 +157,15 @@ def _frame_origins(layout: dict, frame_width: int, frame_height: int, image: Bmp
         elif axis == "vertical":
             origins = [(0, i * frame_height) for i in range(count)]
         else:
-            raise ValueError(f"strip axis must be 'horizontal' or 'vertical', got {axis!r}")
+            raise ValueError("strip axis must be 'horizontal' or 'vertical', got {!r}".format(axis))
     else:
         raise ValueError("layout must have a 'grid' or 'strip' key")
 
     for ox, oy in origins:
         if ox + frame_width > image.width or oy + frame_height > image.height:
             raise ValueError(
-                f"frame at ({ox},{oy}) size {frame_width}x{frame_height} doesn't fit "
-                f"in a {image.width}x{image.height} image"
+                "frame at ({},{}) size {}x{} doesn't fit "
+                "in a {}x{} image".format(ox, oy, frame_width, frame_height, image.width, image.height)
             )
     return origins
 
@@ -273,9 +273,9 @@ def convert_sprite_sheet(
     cell needing more than 2 colours) are appended to ``warnings`` if given.
     """
     if frame_width % 8 != 0:
-        raise ValueError(f"frame_width must be a multiple of 8, got {frame_width}")
+        raise ValueError("frame_width must be a multiple of 8, got {}".format(frame_width))
     if generate_attrs and frame_height % 8 != 0:
-        raise ValueError(f"frame_height must be a multiple of 8 for attributes, got {frame_height}")
+        raise ValueError("frame_height must be a multiple of 8 for attributes, got {}".format(frame_height))
     origins = _frame_origins(layout, frame_width, frame_height, image)
     if generate_mask and mask_color is None:
         raise ValueError("generate_mask requires a mask_color")
@@ -307,14 +307,14 @@ def convert_sprite_sequence(
         raise ValueError("sprite_sequence needs at least one image")
     frame_width, frame_height = images[0].width, images[0].height
     if frame_width % 8 != 0:
-        raise ValueError(f"frame width must be a multiple of 8, got {frame_width} (from the first image)")
+        raise ValueError("frame width must be a multiple of 8, got {} (from the first image)".format(frame_width))
     if generate_attrs and frame_height % 8 != 0:
-        raise ValueError(f"frame_height must be a multiple of 8 for attributes, got {frame_height} (from the first image)")
+        raise ValueError("frame_height must be a multiple of 8 for attributes, got {} (from the first image)".format(frame_height))
     for i, image in enumerate(images):
         if image.width != frame_width or image.height != frame_height:
             raise ValueError(
-                f"frame {i} is {image.width}x{image.height}, expected {frame_width}x{frame_height} "
-                "(all frames in a sprite_sequence must be the same size)"
+                "frame {} is {}x{}, expected {}x{} "
+                "(all frames in a sprite_sequence must be the same size)".format(i, image.width, image.height, frame_width, frame_height)
             )
     if generate_mask and mask_color is None:
         raise ValueError("generate_mask requires a mask_color")
@@ -345,8 +345,8 @@ def convert_font(
     if layout is None:
         if image.width % frame_width or image.height % frame_height:
             raise ValueError(
-                f"image {image.width}x{image.height} isn't evenly divisible into "
-                f"{frame_width}x{frame_height} glyphs; pass an explicit layout"
+                "image {}x{} isn't evenly divisible into "
+                "{}x{} glyphs; pass an explicit layout".format(image.width, image.height, frame_width, frame_height)
             )
         layout = {"grid": {"cols": image.width // frame_width, "rows": image.height // frame_height}}
     return convert_sprite_sheet(image, frame_width, frame_height, layout, generate_mask=False)

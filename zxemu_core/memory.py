@@ -31,7 +31,7 @@ class Bank:
     @classmethod
     def from_bytes(cls, data: bytes, *, readonly: bool = False, contended: bool = False) -> "Bank":
         if len(data) != BANK_SIZE:
-            raise ValueError(f"bank data must be {BANK_SIZE} bytes, got {len(data)}")
+            raise ValueError("bank data must be {} bytes, got {}".format(BANK_SIZE, len(data)))
         bank = cls(readonly=readonly, contended=contended)
         bank.data[:] = data
         return bank
@@ -42,7 +42,7 @@ class Memory:
 
     def __init__(self, slots: list[Bank]):
         if len(slots) != SLOT_COUNT:
-            raise ValueError(f"expected {SLOT_COUNT} slots, got {len(slots)}")
+            raise ValueError("expected {} slots, got {}".format(SLOT_COUNT, len(slots)))
         self.slots: list[Bank] = list(slots)
 
     def page(self, slot: int, bank: Bank) -> None:

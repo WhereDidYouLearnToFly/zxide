@@ -273,15 +273,15 @@ class EmulatorController(QObject):
             self.machine.port_watch_hit = None
             direction = "OUT" if port_hit.is_write else "IN"
             return (
-                f"{direction} port ${port_hit.port:04X} = ${port_hit.value:02X} "
-                f"(near PC ${port_hit.pc:04X})"
+                "{} port ${:04X} = ${:02X} "
+                "(near PC ${:04X})".format(direction, port_hit.port, port_hit.value, port_hit.pc)
             )
         access = memory_module.take_access(self.machine.memory)
         if access is not None:
             verb = "wrote" if access.is_write else "read"
             return (
-                f"{verb} ${access.address:04X} = ${access.value:02X} "
-                f"(near PC ${self.machine.cpu.regs.pc:04X})"
+                "{} ${:04X} = ${:02X} "
+                "(near PC ${:04X})".format(verb, access.address, access.value, self.machine.cpu.regs.pc)
             )
         return None
 
@@ -587,7 +587,7 @@ class EmulatorController(QObject):
         tick_hz = self._fps_ticks / window
         avg_emulate = self._emulate_ms / self._fps_frames if self._fps_frames else 0.0
         self.status_changed.emit(
-            f"{fps:.0f} fps (target 50) | timer {tick_hz:.0f}Hz | emulate {avg_emulate:.1f}ms/frame"
+            "{:.0f} fps (target 50) | timer {:.0f}Hz | emulate {:.1f}ms/frame".format(fps, tick_hz, avg_emulate)
         )
         self._fps_window_start = now
         self._fps_frames = 0

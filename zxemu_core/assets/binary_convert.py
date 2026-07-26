@@ -12,5 +12,5 @@ from __future__ import annotations
 
 def convert_binary(data: bytes, expected_length: int | None = None) -> bytes:
     if expected_length is not None and len(data) != expected_length:
-        raise ValueError(f"expected {expected_length} bytes, got {len(data)}")
+        raise ValueError("expected {} bytes, got {}".format(expected_length, len(data)))
     return bytes(data)

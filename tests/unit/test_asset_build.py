@@ -168,19 +168,55 @@ def test_regenerate_assets_asm_tilemap_bad_tileset_reference_raises(tmp_path):
 
 
 def test_regenerate_assets_asm_native_sprite_emits_attr_offset(tmp_path):
-    import json as json_module
-
-    from zxemu_core.assets.native_sprite import NATIVE_SUFFIX, blank_sprite_data
+    from zxemu_core.assets.native_sprite import blank_sprite
 
     project = _project(tmp_path)
-    path = project.folder / f"hero{NATIVE_SUFFIX}"
-    path.write_text(json_module.dumps(blank_sprite_data(8, 8)))
-    entry = project.add_asset(f"hero{NATIVE_SUFFIX}", AssetKind.SPRITE_SHEET, symbol="hero")
+    path = project.folder / "hero.zx8x8"
+    path.write_bytes(blank_sprite(8, 8).encode(with_header=False))
+    entry = project.add_asset("hero.zx8x8", AssetKind.SPRITE_SHEET, symbol="hero")
     project.set_asset_placement(entry.id, "ram2", 0)
 
     text = regenerate_assets_asm(project).read_text()
     assert "hero_ATTR_OFFSET: equ 8" in text  # 8-byte pixel plane, attrs start right after
     assert "hero_FRAME_STRIDE: equ 9" in text  # 8 pixel bytes + 1 attr byte
+    assert "hero_WIDTH: equ 8" in text
+    assert "hero_HEIGHT: equ 8" in text
+    assert "hero_DATA: equ hero + 0" in text  # no header on a fixed-size format
+
+
+def test_regenerate_assets_asm_pixel_only_sprite_has_no_attr_offset(tmp_path):
+    from zxemu_core.assets.native_sprite import blank_sprite
+
+    project = _project(tmp_path)
+    path = project.folder / "hero.zx16x16pix"
+    path.write_bytes(blank_sprite(16, 16, has_attrs=False).encode(with_header=False))
+    entry = project.add_asset("hero.zx16x16pix", AssetKind.SPRITE_SHEET, symbol="hero")
+    project.set_asset_placement(entry.id, "ram2", 0)
+
+    text = regenerate_assets_asm(project).read_text()
+    assert "hero_ATTR_OFFSET" not in text
+    assert "hero_FRAME_STRIDE: equ 32" in text  # 2 bytes/row * 16 rows, nothing else
+    assert (project.folder / ".zxide" / "generated" / "hero.bin").stat().st_size == 32
+
+
+def test_regenerate_assets_asm_arbitrary_size_sprite_prepends_its_header(tmp_path):
+    """The two width/height bytes lead the blob, and _DATA points past them."""
+    from zxemu_core.assets.native_sprite import blank_sprite
+
+    project = _project(tmp_path)
+    path = project.folder / "blob.zxsprite"
+    path.write_bytes(blank_sprite(24, 8).encode(with_header=True))
+    entry = project.add_asset("blob.zxsprite", AssetKind.SPRITE_SHEET, symbol="blob")
+    project.set_asset_placement(entry.id, "ram2", 0)
+
+    text = regenerate_assets_asm(project).read_text()
+    assert "blob_DATA: equ blob + 2" in text
+    assert "blob_WIDTH: equ 24" in text
+    assert "blob_HEIGHT: equ 8" in text
+
+    blob = (project.folder / ".zxide" / "generated" / "blob.bin").read_bytes()
+    assert blob[0] == 24 and blob[1] == 8
+    assert len(blob) == 2 + 27  # header + one 24x8 frame (3 bytes/row * 8 + 3 attr cells)
 
 
 def test_regenerate_assets_asm_sprite_sheet_with_generate_attrs(tmp_path):

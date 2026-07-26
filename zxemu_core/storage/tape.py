@@ -110,13 +110,13 @@ class TapeBlock:
         block's flag and size. Purely cosmetic -- loading never depends on it.
         """
         if self.is_header:
-            kind = _HEADER_TYPES.get(self.data[1], f"type {self.data[1]}")
+            kind = _HEADER_TYPES.get(self.data[1], "type {}".format(self.data[1]))
             name = bytes(self.data[2:12]).decode("ascii", "replace").rstrip()
             length = self.data[12] | (self.data[13] << 8)
-            return f'Header "{name}" ({kind}, {length} bytes)'
+            return 'Header "{}" ({}, {} bytes)'.format(name, kind, length)
         flag = self.flag
-        label = "data" if flag == FLAG_DATA else "header" if flag == FLAG_HEADER else f"flag ${flag:02X}"
-        return f"Block ({label}, {len(self.data)} bytes)"
+        label = "data" if flag == FLAG_DATA else "header" if flag == FLAG_HEADER else "flag ${:02X}".format(flag)
+        return "Block ({}, {} bytes)".format(label, len(self.data))
 
 
 def parse_tap(data: bytes) -> list[TapeBlock]:

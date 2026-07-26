@@ -62,7 +62,7 @@ def load_sna(machine, data: bytes) -> None:
         load_sna_128k(machine, data)
     else:
         raise ValueError(
-            f"not a .sna: expected {SNA_48K_SIZE} or {SNA_128K_SIZE} bytes, got {len(data)}"
+            "not a .sna: expected {} or {} bytes, got {}".format(SNA_48K_SIZE, SNA_128K_SIZE, len(data))
         )
 
 

@@ -58,7 +58,7 @@ def _word(data: bytes, offset: int) -> int:
 def load_z80(machine, data: bytes) -> None:
     """Restore a ``.z80`` snapshot (v1, v2 or v3) into ``machine``."""
     if len(data) < V1_HEADER_SIZE:
-        raise ValueError(f"not a .z80: only {len(data)} bytes")
+        raise ValueError("not a .z80: only {} bytes".format(len(data)))
 
     is_128k_machine = hasattr(machine, "ram_banks")
     pc = _word(data, 6)
@@ -74,14 +74,14 @@ def load_z80(machine, data: bytes) -> None:
 
     extra_length = _word(data, V1_HEADER_SIZE)
     if extra_length not in (23, 54, 55):
-        raise ValueError(f"unknown .z80 extra header length {extra_length} (not v2 or v3)")
+        raise ValueError("unknown .z80 extra header length {} (not v2 or v3)".format(extra_length))
     modes = _V2_MODES if extra_length == 23 else _V3_MODES
     mode_byte = data[34]
     model = modes.get(mode_byte)
     if model is None:
-        raise ValueError(f"unsupported .z80 hardware mode {mode_byte}")
+        raise ValueError("unsupported .z80 hardware mode {}".format(mode_byte))
     if model not in (_MODE_48K, _MODE_128K):
-        raise ValueError(f"unsupported machine in .z80: {model}")
+        raise ValueError("unsupported machine in .z80: {}".format(model))
     if model == _MODE_128K and not is_128k_machine:
         raise NotImplementedError("a 128K .z80 snapshot needs the 128K machine")
     if model == _MODE_48K and is_128k_machine:
@@ -155,7 +155,7 @@ def _restore_ay(machine, data: bytes) -> None:
 def _write_48k_image(machine, image: bytes) -> None:
     """Write a flat 48K RAM image ($4000-$FFFF) into slots 1-3."""
     if len(image) < 3 * PAGE_SIZE:
-        raise ValueError(f"truncated 48K .z80 image: {len(image)} bytes, expected {3 * PAGE_SIZE}")
+        raise ValueError("truncated 48K .z80 image: {} bytes, expected {}".format(len(image), 3 * PAGE_SIZE))
     for slot in (1, 2, 3):
         start = (slot - 1) * PAGE_SIZE
         machine.memory.slots[slot].data[:] = image[start:start + PAGE_SIZE]
@@ -164,7 +164,7 @@ def _write_48k_image(machine, image: bytes) -> None:
 def _write_page(machine, page: int, block: bytes, *, is_128k: bool) -> None:
     """Place one 16K page. Pages we don't emulate (ROM images, Interface I) are dropped."""
     if len(block) != PAGE_SIZE:
-        raise ValueError(f"page {page} is {len(block)} bytes, expected {PAGE_SIZE}")
+        raise ValueError("page {} is {} bytes, expected {}".format(page, len(block), PAGE_SIZE))
     if is_128k:
         bank = page - 3
         if 0 <= bank <= 7:

@@ -39,6 +39,7 @@ from PyQt5.QtWidgets import (
 )
 
 from zxemu_core.assets.manifest import AssetKind
+from zxemu_core.assets.native_sprite import sprite_suffix
 from zxemu_core.assets.registry import guess_kind
 from zxemu_core.memlayout import bank_ids_for_model
 from zxemu_core.memory import BANK_SIZE, SCREEN_BYTES, SCREEN_SLOT
@@ -75,6 +76,9 @@ class MemoryMapView(QWidget):
 
     #: Emitted with an AssetEntry's id when its placed rectangle is clicked in Design mode.
     asset_selected = pyqtSignal(str)
+    #: Emitted after a drop imports a file as an asset -- the manifest now has one more
+    #: entry, which the project tree badges and the Inspector may be showing.
+    assets_changed = pyqtSignal()
 
     def __init__(self, machine, parent=None):
         super().__init__(parent)
@@ -170,14 +174,18 @@ class MemoryMapView(QWidget):
         options = [label for label, _kind in _KIND_CHOICES]
         default_index = next((i for i, (_l, k) in enumerate(_KIND_CHOICES) if k == kind), 0)
         label, ok = QInputDialog.getItem(
-            self, "Import Asset", f"Import '{path.name}' as:", options, default_index, False
+            self, "Import Asset", "Import '{}' as:".format(path.name), options, default_index, False
         )
         if not ok:
             return
         chosen_kind = dict(zip(options, (k for _l, k in _KIND_CHOICES)))[label]
 
         params: dict = {}
-        if chosen_kind in (AssetKind.SPRITE_SHEET, AssetKind.FONT):
+        # A native sprite file already states its frame size, layout and colour-ness in its
+        # own header and extension, and its converter ignores params entirely -- so asking
+        # for them would be four dialogs whose answers are thrown away.
+        is_native_sprite = sprite_suffix(path.name) is not None
+        if chosen_kind in (AssetKind.SPRITE_SHEET, AssetKind.FONT) and not is_native_sprite:
             width, ok = QInputDialog.getInt(self, "Frame size", "Frame width (px):", _DEFAULT_FRAME_SIZE, 8, 256, 8)
             if not ok:
                 return
@@ -207,6 +215,7 @@ class MemoryMapView(QWidget):
 
         entry = self.project.add_asset(source, chosen_kind, params=params)
         self._canvas.update()
+        self.assets_changed.emit()
         return entry
 
 
@@ -288,9 +297,9 @@ class _MapCanvas(QWidget):
     def _draw_slot_label(self, p, i, bank, x, y, col_w, label_h, paging) -> None:
         # On 128K name the actual bank in the slot (ROM0/RAM5/...); on 48K just ROM/RAM.
         if paging is not None:
-            text = f"slot {i} · {paging.slot_labels[i]}"
+            text = "slot {} · {}".format(i, paging.slot_labels[i])
         else:
-            text = f"slot {i} · {'ROM' if bank.readonly else 'RAM'}"
+            text = "slot {} · {}".format(i, 'ROM' if bank.readonly else 'RAM')
         p.setPen(_MUTED)
         p.drawText(QRectF(x, y, col_w, label_h), Qt.AlignCenter, text)
 
@@ -309,8 +318,8 @@ class _MapCanvas(QWidget):
     def _draw_paging_readout(self, p, paging, x, y, w) -> None:
         """A compact one-line summary of the live 0x7FFD paging state (128K only)."""
         text = (
-            f"$7FFD=${paging.port_7ffd:02X}  ROM{paging.rom_index}"
-            f"  screen RAM{paging.screen_bank}" + ("  LOCK" if paging.locked else "")
+            "$7FFD=${:02X}  ROM{}"
+            "  screen RAM{}".format(paging.port_7ffd, paging.rom_index, paging.screen_bank) + ("  LOCK" if paging.locked else "")
         )
         p.setPen(_MUTED)
         p.drawText(QRectF(x, y, w - 2 * x, 14), Qt.AlignLeft | Qt.AlignVCenter, text)
@@ -321,7 +330,7 @@ class _MapCanvas(QWidget):
         y = bar_top + (offset / BANK_SIZE) * bar_h
         p.setPen(color)
         p.drawLine(int(x), int(y), int(x + col_w), int(y))
-        p.drawText(QRectF(x, y - 13, col_w - 2, 12), Qt.AlignRight | Qt.AlignVCenter, f"{label} {address:04X}")
+        p.drawText(QRectF(x, y - 13, col_w - 2, 12), Qt.AlignRight | Qt.AlignVCenter, "{} {:04X}".format(label, address))
 
     def _draw_legend(self, p, x, y, w) -> None:
         items = [("ROM", _ROM), ("screen", _SCREEN), ("RAM", _RAM)]
@@ -381,7 +390,7 @@ class _MapCanvas(QWidget):
             p.setPen(_ASSET_BORDER)
             p.drawRect(rect)
             p.setPen(Qt.white)
-            label = f"{glyph_for_kind(entry.kind)} {entry.symbol}"
+            label = "{} {}".format(glyph_for_kind(entry.kind), entry.symbol)
             text_rect = QRectF(rect.x() + 2, rect.y(), rect.width() - 4, max(12.0, rect.height()))
             p.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, label)
 

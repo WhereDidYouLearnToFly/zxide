@@ -41,11 +41,11 @@ class Format:
 
     @property
     def menu_label(self) -> str:
-        return f"Load {self.label}…"
+        return "Load {}…".format(self.label)
 
     @property
     def file_filter(self) -> str:
-        return f"{self.description} (*{self.suffix})"
+        return "{} (*{})".format(self.description, self.suffix)
 
 
 # The formats the Load menu offers, in menu order: tapes first (you load a game from
@@ -136,14 +136,14 @@ def disk_summary(name: str, image, drive_letter: str = "A") -> list[str]:
     """
     info = image.info()
     label = info.label or "(unlabelled)"
-    lines = [f"Mounted {name} in drive {drive_letter}: {label} — "
-             f"{info.file_count} file(s), {info.free_sectors} free sector(s)"]
+    lines = ["Mounted {} in drive {}: {} — "
+             "{} file(s), {} free sector(s)".format(name, drive_letter, label, info.file_count, info.free_sectors)]
     for entry in image.catalogue()[:24]:
-        lines.append(f"    {entry.display_name:<14} <{entry.extension}> "
-                     f"{entry.length:>6} bytes, {entry.sectors} sector(s)")
+        lines.append("    {:<14} <{}> "
+                     "{:>6} bytes, {} sector(s)".format(entry.display_name, entry.extension, entry.length, entry.sectors))
     remaining = len(image.catalogue()) - 24
     if remaining > 0:
-        lines.append(f"    …and {remaining} more")
+        lines.append("    …and {} more".format(remaining))
     if not info.valid:
         # Not fatal: an unformatted disk is a legitimate thing to mount, and TR-DOS's
         # own FORMAT has to start from one.
@@ -162,9 +162,9 @@ def tape_summary(name: str, items, notes: list[str], model: str) -> list[str]:
     menu: there is no ``LOAD ""`` prompt until you have chosen a BASIC from it.
     """
     blocks = tape.data_blocks(items)
-    lines = [f"Inserted {name} — {len(blocks)} loadable block(s):"]
-    lines += [f"    {block.describe()}" for block in blocks]
-    lines += [f"    · {note}" for note in notes]
+    lines = ["Inserted {} — {} loadable block(s):".format(name, len(blocks))]
+    lines += ["    {}".format(block.describe()) for block in blocks]
+    lines += ["    · {}".format(note) for note in notes]
     if model in ("128k", "pentagon"):
         lines.append('Choose "128 BASIC" (or "48 BASIC"), then type LOAD "" ⏎ to load.')
     else:

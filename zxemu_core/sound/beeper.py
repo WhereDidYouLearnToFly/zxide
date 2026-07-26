@@ -86,7 +86,7 @@ class Beeper:
         # fractional-sample remainder between frames.
         if sample_rate % frame_rate != 0:
             raise ValueError(
-                f"sample_rate ({sample_rate}) must be a whole multiple of frame_rate ({frame_rate})"
+                "sample_rate ({}) must be a whole multiple of frame_rate ({})".format(sample_rate, frame_rate)
             )
         self.sample_rate = sample_rate
         self.samples_per_frame = sample_rate // frame_rate

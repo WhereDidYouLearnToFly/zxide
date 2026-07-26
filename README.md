@@ -32,9 +32,12 @@ the full state and `DEV_PLAN.md` for what's next.
   - `assets/` — converters (`bmp_convert.py`, `tilemap_convert.py`,
     `binary_convert.py`, `pt3_convert.py`, `beeper_sfx.py`, `native_sprite.py`),
     the `manifest.py` that records them, and `preview.py` that draws them.
-  - `debug/` — `disassembler.py`, `rom_symbols.py`, `debug_expr.py`, `analysis.py`.
+  - `debug/` — `disassembler.py`, `rom_symbols.py`, `debug_expr.py`, `analysis.py`,
+    `dumper.py` (memory back into source), and `asm_meter.py` (source into
+    bytes and T-states).
 - `zxemu_ui/` — the PyQt5 layer. Shell at the top level (`main_window.py`,
-  `controller.py`, `editor.py`, `theme.py`, `system_open.py`, …), plus:
+  `controller.py`, `editor.py`, `project_tree_model.py`, `theme.py`,
+  `system_open.py`, …), plus:
   - `panels/` — the dockable views: screen, registers, memory, memory map,
     disassembly, call stack, analysis, Output, Inspector, and the sprite and
     beeper-SFX editors.
@@ -118,6 +121,26 @@ which — a call stack is reconstructed rather than recorded, cross-references a
 static scan that cannot follow computed jumps, and an address absent from coverage
 means "not executed *yet*", never "unreachable".
 
+Not everything needs the machine running, though. The **Z80 Assembly Meter** in the
+status bar costs whatever you select in the editor — or the whole file when nothing is
+selected — in bytes and T-states:
+
+```
+file: 24 bytes · 271–316 T · 14 instr
+```
+
+On a machine with 48K of RAM and 69888 T-states per frame, "does this fit" and "does
+this finish in time" are the two questions that decide whether a routine works, and
+both are answerable from the source alone. Timing is a **range** wherever a conditional
+jump, call, return or repeating block instruction costs different amounts taken and not
+taken, rather than picking one and being quietly wrong half the time. The figures are
+the published uncontended ones — no ULA contention (which depends on where the code
+sits and when the beam is, neither knowable from source text) and no M1 waits — so real
+timing in contended memory will be higher. `db`/`dw`/`ds` count toward bytes and cost no
+time, and anything the table doesn't recognise (a macro invocation, an `incbin` whose
+file it can't see) is reported as *unrecognised* beside the totals rather than silently
+counting as zero.
+
 ### Assets
 
 Drop a `.bmp`, `.bin`, `.pt3` or beeper-SFX file into the project and it becomes an
@@ -129,10 +152,29 @@ refers to `sprite_hero` rather than to a hard-coded address that moves the momen
 anything before it grows.
 
 Bitmaps become bitmaps, sprite sheets, sprite sequences or fonts, with optional masks
-and attribute planes. The **Inspector** previews whatever is selected. Two things can be
-authored in the IDE rather than imported: sprites (in real ZX colours, with the
-two-colours-per-cell limit enforced by the tool) and beeper effects (rows of Hz +
-frames, with a Play button). Both autosave on every edit.
+and attribute planes. The **Inspector** previews whatever is selected, and the project
+tree badges every file the manifest knows about with its kind's icon — so an asset is
+distinguishable at a glance from a file of the same type that is merely sitting in the
+folder. Double-clicking one of those offers to adopt it.
+
+Two things can be authored in the IDE rather than imported, and both autosave:
+
+- **Sprites**, in real ZX colours, with one tool rather than a mode to switch between:
+  drawing a pixel also gives its 8×8 cell the selected ink and paper, because on this
+  hardware those are the same decision. The left button *toggles*, so erasing a stray
+  pixel is a click rather than a trip to the palette; right-drag recolours a cell without
+  touching the art, and Alt+click picks a cell's colours back up. A native sprite file
+  **is** the bytes the Z80 gets, and its extension says how to read it: `.zx8x8` /
+  `.zx16x16` for fixed sizes, `.zxsprite` for anything else (its first two bytes are
+  width and height), each with a `…pix` variant that stores pixels only, for sprites the
+  code colours itself.
+- **Beeper effects**, as a bar chart of frequency over time. Each bar rises from the
+  baseline: its height is the tone, its width is how long that tone lasts. Drag up for
+  higher, sideways to make it last longer (shift keeps the pitch level), right-drag to
+  erase, and there's a Play button — no settings, because length is what the drag is for.
+  One column is one video frame, 20ms, the shortest sound the format can express. The
+  frequency axis is logarithmic; a linear one would squash everything below 500Hz, which
+  is exactly where thuds and rumbles live.
 
 The one honest limit: auto-locate knows where *assets* and the screen live, and reads the
 previous build's SLD to avoid where your code landed last time — so on a project's very

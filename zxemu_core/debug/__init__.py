@@ -8,6 +8,10 @@ testable on its own, and the UI panels in ``zxemu_ui`` are thin presentation ove
     disassembler.py  Bytes back into Z80 mnemonics. Decodes via the classic octal
                      split of the opcode byte, so the whole instruction set is a
                      handful of rules rather than a 1500-entry table.
+    asm_meter.py     The opposite direction, and the only module here that reads
+                     *source* rather than memory: how many bytes and T-states a run
+                     of assembly costs, so "does this fit" and "does this finish
+                     inside a frame" are answerable by selecting the code.
     rom_symbols.py   Traditional names for 48K ROM entry points, so ``call $15E6``
                      reads as ``; INPUT-AD`` and stepping through the ROM tells you
                      which routine you are in.
@@ -38,6 +42,6 @@ tells you nothing.
 
 from __future__ import annotations
 
-from zxemu_core.debug import analysis, debug_expr, disassembler, dumper, rom_symbols
+from zxemu_core.debug import analysis, asm_meter, debug_expr, disassembler, dumper, rom_symbols
 
-__all__ = ["analysis", "debug_expr", "disassembler", "dumper", "rom_symbols"]
+__all__ = ["analysis", "asm_meter", "debug_expr", "disassembler", "dumper", "rom_symbols"]

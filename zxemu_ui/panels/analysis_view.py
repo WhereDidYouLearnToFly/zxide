@@ -69,8 +69,8 @@ class AnalysisView(QWidget):
         if name is None:
             inside = rom_symbols.enclosing(address) if self.machine.rom_symbols_valid() else None
             if inside is not None:
-                name = f"{inside[0]}+${inside[1]:02X}"
-        return f"  ${address:04X}" + (f"   {name}" if name else "")
+                name = "{}+${:02X}".format(inside[0], inside[1])
+        return "  ${:04X}".format(address) + ("   {}".format(name) if name else "")
 
     def _on_double_click(self, event) -> None:
         """Double-clicking a result line jumps the disassembly there."""
@@ -86,30 +86,30 @@ class AnalysisView(QWidget):
     def _truncated(hits) -> tuple[list, str]:
         if len(hits) <= MAX_RESULTS:
             return hits, ""
-        return hits[:MAX_RESULTS], f"  … and {len(hits) - MAX_RESULTS} more (showing {MAX_RESULTS})"
+        return hits[:MAX_RESULTS], "  … and {} more (showing {})".format(len(hits) - MAX_RESULTS, MAX_RESULTS)
 
     # --- queries ---------------------------------------------------------------
 
     def find_bytes(self, pattern: bytes, description: str) -> None:
         hits = analysis.search_bytes(self.machine.memory, pattern)
         shown, note = self._truncated(hits)
-        header = f"Search for {description} — {len(hits)} match(es). Exact: these bytes are there."
+        header = "Search for {} — {} match(es). Exact: these bytes are there.".format(description, len(hits))
         self._show([header, ""] + [self._describe(a) for a in shown] + ([note] if note else []))
 
     def find_text(self, text: str) -> None:
-        self.find_bytes(text.encode("ascii", "ignore"), f'text "{text}"')
+        self.find_bytes(text.encode("ascii", "ignore"), 'text "{}"'.format(text))
 
     def cross_references(self, target: int) -> None:
         references = analysis.cross_references(self.machine.memory, target)
         shown, note = self._truncated(references)
         lines = [
-            f"References to ${target & 0xFFFF:04X} — {len(references)} found.",
+            "References to ${:04X} — {} found.".format(target & 65535, len(references)),
             "Static scan: may match data that looks like code, and cannot see",
             "computed destinations (JP (HL), jump tables, self-modified operands).",
             "",
         ]
         for reference in shown:
-            lines.append(f"{self._describe(reference.address)}   {reference.kind}")
+            lines.append("{}   {}".format(self._describe(reference.address), reference.kind))
         self._show(lines + ([note] if note else []))
 
     def show_coverage(self, coverage) -> None:
@@ -117,23 +117,23 @@ class AnalysisView(QWidget):
         runs = coverage.ranges(minimum_length=2)
         shown, note = self._truncated(runs)
         lines = [
-            f"Coverage — {executed} addresses executed, in {len(runs)} run(s).",
+            "Coverage — {} addresses executed, in {} run(s).".format(executed, len(runs)),
             "Unmarked means 'not executed yet', never 'unreachable'.",
             "",
         ]
         for start, end in shown:
-            lines.append(f"  ${start:04X}-${end - 1:04X}   {end - start} bytes")
+            lines.append("  ${:04X}-${:04X}   {} bytes".format(start, end - 1, end - start))
         if not runs:
             lines.append("  (nothing recorded — switch on Reversing ▸ Record Coverage and run)")
         self._show(lines + ([note] if note else []))
 
     def show_trace(self, entries) -> None:
         lines = [
-            f"Execution trace — last {len(entries)} instruction(s), oldest first.",
+            "Execution trace — last {} instruction(s), oldest first.".format(len(entries)),
             "",
         ]
         for address, sp in entries[-MAX_RESULTS:]:
-            lines.append(f"{self._describe(address)}   sp=${sp:04X}")
+            lines.append("{}   sp=${:04X}".format(self._describe(address), sp))
         if not entries:
             lines.append("  (nothing recorded — switch on Reversing ▸ Record Trace and run)")
         self._show(lines)

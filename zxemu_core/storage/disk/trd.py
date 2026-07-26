@@ -93,7 +93,7 @@ class TrdFile:
 
     @property
     def display_name(self) -> str:
-        return f"{self.name}.{self.extension}" if self.extension.strip() else self.name
+        return "{}.{}".format(self.name, self.extension) if self.extension.strip() else self.name
 
 
 @dataclass(frozen=True)
@@ -272,7 +272,7 @@ def parse_trd(data: bytes, name: str = "") -> TrdImage:
     """
     if len(data) < TRACK_SIZE:
         raise ValueError(
-            f"too short to be a .trd disk image: {len(data)} bytes, "
-            f"track 0 alone is {TRACK_SIZE}"
+            "too short to be a .trd disk image: {} bytes, "
+            "track 0 alone is {}".format(len(data), TRACK_SIZE)
         )
     return TrdImage(data, name=name)

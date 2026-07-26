@@ -773,6 +773,208 @@ Inspector preview).
   accessor), so it's always crisp at the Spectrum's real resolution, border included,
   regardless of window size.
 
+### Polish pass over the asset editors and the project tree
+
+*A round of usability work after living with the above for a while. Two of the decisions
+recorded earlier are deliberately reversed here; both entries above are left as written,
+because why they were made the first way is worth keeping.*
+
+- **Native sprites are now raw binary, and the extension carries the format.**
+  `.zxspr.json` is superseded by six extensions, differing along two axes -- how the frame
+  size is known, and whether colour is stored:
+
+  | | pixels + attributes | pixels only |
+  |---|---|---|
+  | 8x8 frames | `.zx8x8` | `.zx8x8pix` |
+  | 16x16 frames | `.zx16x16` | `.zx16x16pix` |
+  | any size | `.zxsprite` | `.zxspritepix` |
+
+  The file **is** the bytes the Z80 gets -- pixel plane then attribute plane per frame,
+  no container and no encode step at build time. The two fixed sizes carry no header,
+  since the extension already says the size and repeating it would be dead weight; the
+  arbitrary-size pair opens with **byte 0 = width, byte 1 = height**, which is the only
+  place that information could live. Frame *count* isn't stored either -- it follows from
+  the file length divided by the stride, keeping every number in the file a number the
+  program actually needs. The `…pix` variants exist because a great many sprites are
+  coloured by the code that plots them, and for those an attribute plane is bytes of
+  nothing; the editor drops to black-and-white when it opens one. `FrameSequence` gained
+  a `header` field (kept *out* of `data`, so frame indexing by stride from byte zero still
+  works for every source format) and the build emits `_DATA`/`_WIDTH`/`_HEIGHT` equs
+  beside the existing `_FRAME_COUNT`/`_FRAME_STRIDE`/`_ATTR_OFFSET`. Old `.zxspr.json`
+  files still load and still save as JSON -- zxide does not quietly rewrite, rename, or
+  delete a file the user didn't ask it to touch.
+- **Drawing still claims the cell -- but the left button toggles.** The "every paint action
+  reclaims its whole cell's attribute" invariant above is *kept*; what was wrong with it was
+  never the claiming, it was the left-ink/right-paper button scheme around it, under which
+  erasing a stray pixel meant first switching the selected colour to whatever that cell's
+  paper happened to be. Splitting drawing and colouring into two tools was tried as the fix
+  and was the wrong one -- it made the common case (draw a pixel in the colour I picked) two
+  actions to save the rare one. So: one tool, no modes. Press decides the stroke's value
+  from the pixel under the cursor and the drag paints that one value (so dragging back over
+  pixels you just set doesn't undo them), and every paint -- setting *or* clearing -- writes
+  the selected ink/paper/bright into that cell. Erasing is clicking a lit pixel. Two escape
+  hatches keep that from being restrictive, and neither is a mode, just something the mouse
+  does: **right-drag** recolours cells without touching pixels, **alt+click** eyedrops a
+  cell's colours back into the palette.
+- **The palette now shows which colours are selected**, which it previously did not at all.
+  The swatch rows were checkable `QPushButton`s carrying a `background-color` stylesheet,
+  and that stylesheet replaced the whole button rendering -- so the *checked* state, the one
+  thing indicating the selection, was never drawn. `_PaletteBar` paints the row itself: the
+  selected swatch is drawn markedly larger **and** ringed, two signals because one is not
+  enough for a palette containing both black and white. The ring goes in the cell's margin,
+  never over the colour -- the first attempt drew it inside, and a 2px ring in a small
+  swatch swallowed most of it, so selecting black produced a mostly-white square: the
+  indicator hiding the one thing it was pointing at. (Found by rendering the panel to a PNG
+  and looking at it, not by reading the code.) A `_ColorPreview` tile beside the rows shows
+  the ink/paper pair as a cell actually looks, since knowing which two *entries* are picked
+  is not the same as seeing what they look like together.
+- **The Beeper SFX editor is a piano roll.** The Hz-and-frames spin boxes were honest and
+  unusable: an effect is a *shape over time*, and no one hears a shape by reading a column
+  of numbers. Time across, pitch up, one row per semitone; drag to paint, right-drag to
+  erase. Saving is run-length coding the columns back into `period,duration` entries, which
+  is also why a held note draws as one bar. **Columns hold periods, not rows**: loading maps
+  a period to the nearest semitone only to decide where to *draw* it, so a table hand-typed
+  at some deliberate off-note frequency round-trips exactly and only a repainted column
+  snaps to the grid. The file format is unchanged; `beeper_sfx.py` gained the note grid
+  (`note_period`/`nearest_semitone`/`note_name`) and the run-length coding
+  (`expand_to_frames`/`pack_frames`).
+
+  Getting it *readable* took three passes, all driven by rendering the panel to a PNG rather
+  than by reading the code.
+
+  The first two built a musical piano roll -- semitone rows, a piano keyboard down the side,
+  pitches snapping to notes -- and it was wrong, in a way only using it revealed: **a beeper
+  effect is a swoop or a thud, not a melody**, and quantising a swoop to the chromatic scale
+  fights what you are drawing. All of that machinery is gone. Recorded because the mistake is
+  a general one: the semitone grid was chosen up front from a menu of options, sounded
+  obviously right, and stayed wrong for two rebuilds because each round improved the
+  *drawing* without questioning the *model*. `beeper_sfx.py`'s note-grid helpers went with
+  it, rather than lingering as tested dead code.
+
+  What it is now: **a bar chart of frequency over time.** Each bar rises from the baseline,
+  its height the tone and its width the duration -- drag up for higher, sideways to hold.
+  What survived the rewrite, and why:
+
+  - **One column is one video frame, and there is no setting for it.** This one went the
+    long way round and the detour is the lesson. A configurable "step" of several frames
+    was added because per-frame columns had looked like a wall of slivers; the control was
+    then relabelled twice trying to make it comprehensible (`bar: 4 frames`, which had to
+    be explained out loud on first reading -- itself the verdict; then `Draw in steps of
+    [80 ms]`, with the noun outside the box and a unit anyone can act on). Both were
+    answers to the wrong question. **Length already comes from how far you drag**, so the
+    step only ever decided the *floor* -- and the right floor is simply the shortest sound
+    that exists. The control was deleted, the grid fixed at one frame, and nothing was lost.
+
+    Worth keeping because the failure repeats: the original problem was never the
+    granularity, it was that *clicking* produced sliver-sized bars. Fixing the interaction
+    (drag for length) dissolved the need for the setting entirely, and two rounds of
+    polishing the setting's label had made it look progressively more reasonable while
+    leaving it just as unnecessary. A control that needs a good label is worth re-examining
+    before it gets one.
+
+    One consequence had to be handled: mouse moves are sampled far more coarsely than one
+    report per column, so a quick drag skips whole frames and leaves a comb of gaps. Every
+    stroke fills in the frames between the last reported position and this one,
+    interpolating the pitch across them, so a fast diagonal drag draws a smooth ramp
+    instead of a dotted line.
+
+    A column is 12px, which is deliberately generous -- the shortest possible sound, a
+    single 20ms frame, is still a solid block you can see and hit, and that is the whole
+    point of drawing this as bars rather than as a line graph. It costs horizontal room (a
+    second of audio is 600px) and that is what the scrollbar is for; effects are rarely
+    more than a second or two long.
+  - **The frequency axis is logarithmic**, one octave per equal step, 32Hz to 4096Hz. A
+    linear axis puts everything below 500Hz in the bottom eighth of the panel -- and the low
+    end is where thuds, rumbles and engine noises live, so a linear axis makes unusable
+    exactly the half an effect most often needs. Seven octaves at 56px each also means the
+    whole range fits without vertical scrolling, which deleted the "scroll to the content"
+    machinery the piano roll had needed.
+  - **The frequency scale and the time ruler are *pinned*** to the viewport, painted at the
+    current scroll offset. A header that scrolls away is a label for something you can no
+    longer see.
+  - **Shift holds the pitch for a stroke.** Frequency is continuous now, so "drag sideways to
+    hold the tone" would otherwise produce a row of almost-equal bars -- one entry per
+    wobble of the hand -- instead of one held bar. Without shift a diagonal drag sweeps,
+    which is the other thing you want to draw.
+  - **The summary line quotes the compiled size in bytes**, beside the duration and the
+    entry count. The two questions an effect raises are "how long does it sound" and "how
+    much room does it cost", and only the second competes with the rest of the program --
+    but the price is invisible in the drawing, because a bar is one 3-byte entry however
+    long it is, so holding a tone is free and sweeping costs 3 bytes per frame it changes
+    on. The arithmetic lives in `beeper_sfx.table_size`, not in the panel, and is tested
+    against `convert_beeper_sfx`'s real output so the quoted number cannot drift from it.
+  - **Tuning, stated accurately.** A period is a whole number of T-states, so a drawn
+    frequency round-trips with an error up to ~0.11% at the top of the range. That is about
+    2 cents, comfortably below the ~5 cents where pitch discrimination gives out -- but it is
+    *not* "well under a tenth of a percent", which is what the first version of the test
+    asserted and what had already been said out loud. The test now states the bound in cents,
+    the unit that says whether it matters, and sweeps the whole range rather than checking a
+    few round numbers.
+- **Assets are now visible *as assets* in the project tree.** They were always listed --
+  the tree has no name filter -- but with the generic OS icon and nothing else, so
+  `hero.zx8x8` (converted, placed, addressable as `hero`) and a stray file of exactly the
+  same type looked identical, and telling them apart meant opening `zxide.json`. (The
+  `zxemu_ui` overview had claimed `asset_icons.py` drew "icons for the asset kinds in the
+  project tree" for some time; it didn't, and now it does.) `zxemu_ui/project_tree_model.py`
+  is a `QFileSystemModel` subclass that overlays the manifest onto the listing: the kind's
+  icon as the file's decoration and a `symbol — kind asset` tooltip, using the same
+  `asset_icons` table as the Inspector badge and the Design-mode map, so one asset looks
+  like itself everywhere. Deliberately a *decoration and never a filter* -- a project is a
+  folder you can put anything in, and a tree that hid what it didn't recognise would be
+  lying about what is on disk. The asset map is rebuilt on demand through one
+  `MainWindow._assets_changed()` (rather than re-read on every repaint), which every path
+  that can change the manifest now calls -- including a new `MemoryMapView.assets_changed`
+  signal for the drag-drop import, which previously told nobody.
+- **Double-clicking a sprite/SFX file that isn't in the manifest offers to adopt it.** It
+  used to do nothing at all -- no editor, no message -- which is indistinguishable from
+  the IDE being broken. The extension already says exactly what the file is; the only
+  thing missing was the manifest entry, so it asks for that. The two near-identical
+  `_open_sprite_editor_for_path` / `_open_beeper_sfx_editor_for_path` methods collapsed
+  into one `_open_asset_editor_for_path` plus an extension→(panel, dock, kind) lookup, so
+  adding a third asset editor is one table row rather than a third copy of the method.
+- **Delete from the project tree** (context menu, and the Delete key while the tree has
+  focus), for files and for folders recursively. Deleting is three things at once, because
+  leaving any of them behind produces a state that looks fine until the next build: the
+  file, its editor tab, and its manifest asset entry plus that asset's cached bytes. The
+  confirmation says up front what else is going -- how many items are inside a folder,
+  which assets it will drop -- and the project folder itself is refused.
+- **A Z80 Assembly Meter** in the status bar (`zxemu_core/debug/asm_meter.py`): bytes and
+  T-states for the editor selection, or for the whole file when nothing is selected. On a
+  machine with 48K of RAM and 69888 T-states a frame, "does this fit" and "does this
+  finish in time" are the two questions that decide whether a routine works, and both are
+  answerable from the source alone -- if you have the instruction table memorised. This
+  module *is* that table. Timing is a **range** wherever a conditional jump, call, return
+  or repeating block instruction costs different amounts taken and not taken, rather than
+  picking one and being quietly wrong half the time; the figures are the published
+  uncontended ones (no ULA contention -- that depends on where the code sits and when the
+  beam is, neither of which source text can know -- and no M1 waits). `db`/`dw`/`ds` count
+  toward bytes and cost no time. Anything unrecognised (a macro invocation, an `incbin`
+  whose file it can't see) is counted as *unknown* and shown alongside the totals, so the
+  number is never quietly short. It is a source-text table with nothing to share with
+  `disassembler.py`, which goes the other way and carries no timing.
+
+  **It moved out of the status bar** and is now a strip along the bottom of the editor,
+  which is where it belonged from the start: it measures the text directly above it, and
+  the bottom-right corner of the window is both the furthest point on screen from that
+  text and the most crowded spot on it. The corner belongs to the size grip, and a
+  *maximized* window has no grip -- so `QStatusBar` stopped reserving that space and the
+  label ran flush to the screen edge with its last glyph clipped. Windowed, the grip holds
+  the space open and nothing looks wrong, which is why it took a maximized screenshot to
+  see it at all. As the editor's own footer it has the full width of the central widget
+  and nothing can squeeze it; the strip hides itself entirely when there is nothing to
+  measure, rather than leaving an empty row under a text file.
+
+  The status bar had one real argument in its favour, and moving out satisfies it rather
+  than ignoring it: the controller pushes transient messages ("running", "paused at
+  $8000") through `showMessage`, which hides ordinary status-bar widgets -- so the meter
+  had to be a *permanent* widget there, i.e. pinned to exactly the corner that turned out
+  to be the problem. Outside the status bar the conflict doesn't exist.
+
+  The readout also names its scope in full now -- `selection: …` / `whole file: …` rather
+  than `sel:`/`file:` -- because which of the two it is decides how to read every number
+  after it, and the abbreviation was quiet enough that the meter looked like it simply
+  never followed the selection.
+
 ## Milestone 5: Visual Logic (design, not yet started)
 
 *Sequenced after Milestone 4 -- actions like `draw_sprite` need assets to already exist.

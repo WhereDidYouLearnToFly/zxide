@@ -197,9 +197,9 @@ _SINGLE_KEY_MAP = {
     Qt.Key_Control: "SYM SHIFT",
 }
 for _letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
-    _SINGLE_KEY_MAP[getattr(Qt, f"Key_{_letter}")] = _letter
+    _SINGLE_KEY_MAP[getattr(Qt, "Key_{}".format(_letter))] = _letter
 for _digit in "0123456789":
-    _SINGLE_KEY_MAP[getattr(Qt, f"Key_{_digit}")] = _digit
+    _SINGLE_KEY_MAP[getattr(Qt, "Key_{}".format(_digit))] = _digit
 
 # Qt key -> multiple Spectrum matrix keys pressed together. Two purposes:
 #  - Editing keys the Spectrum places on CAPS SHIFT + a digit (delete, cursors)
@@ -263,7 +263,7 @@ _SCANCODE_ROWS = (
 _SCANCODE_TO_QT_KEY: dict[int, int] = {}
 for _first_code, _row in _SCANCODE_ROWS:
     for _offset, _character in enumerate(_row):
-        _SCANCODE_TO_QT_KEY[_first_code + _offset] = getattr(Qt, f"Key_{_character}")
+        _SCANCODE_TO_QT_KEY[_first_code + _offset] = getattr(Qt, "Key_{}".format(_character))
 _SCANCODE_TO_QT_KEY.update({
     0x1C: Qt.Key_Return,
     0x39: Qt.Key_Space,

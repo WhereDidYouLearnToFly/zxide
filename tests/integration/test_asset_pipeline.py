@@ -94,36 +94,39 @@ def test_regenerating_after_moving_an_asset_updates_its_address(tmp_path):
     assert [machine2.memory.read_byte(0x8000 + 1000 + i) for i in range(4)] == [1, 2, 3, 4]
 
 
-def test_hand_drawn_native_sprite_builds_with_correct_pixels_and_attrs(tmp_path):
-    """Draw a sprite through the real editor's paint_pixel, then build it for real.
-
-    This is the sprite-editor feature's own end-to-end proof: editor -> .zxspr.json ->
-    convert -> place -> assemble -> snapshot, with the actual pixel and attribute
-    bytes verified in the resulting memory image.
-    """
+def _offscreen_qapp():
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PyQt5.QtWidgets import QApplication
 
-    _app = QApplication.instance() or QApplication([])  # keep a reference -- an unbound QApplication is GC'd
+    return QApplication.instance() or QApplication([])  # the caller keeps a reference alive
 
-    from zxemu_core.assets.native_sprite import NATIVE_SUFFIX, blank_sprite_data
+
+def test_hand_drawn_native_sprite_builds_with_correct_pixels_and_attrs(tmp_path):
+    """Draw a sprite through the real editor's tools, then build it for real.
+
+    This is the sprite-editor feature's own end-to-end proof: editor -> .zx8x8 ->
+    convert -> place -> assemble -> snapshot, with the actual pixel and attribute
+    bytes verified in the resulting memory image.
+    """
+    _app = _offscreen_qapp()  # noqa: F841 -- an unbound QApplication is garbage-collected
+
+    from zxemu_core.assets.native_sprite import blank_sprite
     from zxemu_ui.panels.sprite_editor_view import SpriteEditorView
 
     project = Project.create(tmp_path / "p48c", "P48c", "48k")
-    path = project.folder / f"hero{NATIVE_SUFFIX}"
-    path.write_text(__import__("json").dumps(blank_sprite_data(8, 8)))
-    entry = project.add_asset(f"hero{NATIVE_SUFFIX}", AssetKind.SPRITE_SHEET, symbol="hero")
+    path = project.folder / "hero.zx8x8"
+    path.write_bytes(blank_sprite(8, 8).encode(with_header=False))
+    entry = project.add_asset("hero.zx8x8", AssetKind.SPRITE_SHEET, symbol="hero")
     project.set_asset_placement(entry.id, "ram3", 300)  # clear of the template's own code/screen
 
     editor = SpriteEditorView()
     editor.show_asset(project, entry)
-    editor._ink_row._select(2)  # red
-    editor._paper_row._select(5)  # cyan
+    editor._ink_bar.select(2)  # red
+    editor._paper_bar.select(5)  # cyan
     editor._bright_check.setChecked(True)
-    editor.paint_pixel(0, 0, ink=True)  # top-left pixel: ink, claiming the cell's attribute
-    editor.paint_pixel(7, 0, ink=False)  # top-right pixel: explicitly paper
+    editor.paint_pixel(0, 0, 1)  # one action: the pixel, and the colours its cell takes
 
     result = builder.build(project, _FakeSettings())
     assert result.ok, result.output
@@ -136,3 +139,59 @@ def test_hand_drawn_native_sprite_builds_with_correct_pixels_and_attrs(tmp_path)
     assert attr_byte & 0x07 == 2  # ink = red
     assert (attr_byte >> 3) & 0x07 == 5  # paper = cyan
     assert attr_byte & 0x40 == 0x40  # bright
+
+
+def test_arbitrary_size_sprite_builds_with_its_size_header_in_memory(tmp_path):
+    """A .zxsprite's first two bytes really are its width and height, in the built image."""
+    _app = _offscreen_qapp()  # noqa: F841
+
+    from zxemu_core.assets.native_sprite import blank_sprite
+    from zxemu_ui.panels.sprite_editor_view import SpriteEditorView
+
+    project = Project.create(tmp_path / "p48d", "P48d", "48k")
+    path = project.folder / "blob.zxsprite"
+    path.write_bytes(blank_sprite(24, 8).encode(with_header=True))
+    entry = project.add_asset("blob.zxsprite", AssetKind.SPRITE_SHEET, symbol="blob")
+    project.set_asset_placement(entry.id, "ram3", 400)
+
+    editor = SpriteEditorView()
+    editor.show_asset(project, entry)
+    editor.paint_pixel(23, 0, 1)  # last pixel of the first row -> bit 0 of the third byte
+
+    result = builder.build(project, _FakeSettings())
+    assert result.ok, result.output
+
+    machine = Machine(bytes(0x4000))
+    load_sna(machine, result.snapshot.read_bytes())
+    base = 0xC000 + 400
+    assert machine.memory.read_byte(base) == 24      # width
+    assert machine.memory.read_byte(base + 1) == 8   # height
+    assert machine.memory.read_byte(base + 2 + 2) == 0x01  # frames start past the header
+
+
+def test_pixel_only_sprite_builds_without_an_attribute_plane(tmp_path):
+    _app = _offscreen_qapp()  # noqa: F841
+
+    from zxemu_core.assets.native_sprite import blank_sprite
+    from zxemu_ui.panels.sprite_editor_view import SpriteEditorView
+
+    project = Project.create(tmp_path / "p48e", "P48e", "48k")
+    path = project.folder / "mask.zx8x8pix"
+    path.write_bytes(blank_sprite(8, 8, frame_count=2, has_attrs=False).encode(with_header=False))
+    entry = project.add_asset("mask.zx8x8pix", AssetKind.SPRITE_SHEET, symbol="mask")
+    project.set_asset_placement(entry.id, "ram3", 500)
+
+    editor = SpriteEditorView()
+    editor.show_asset(project, entry)
+    editor._frame_spin.setValue(1)
+    editor.paint_pixel(0, 0, 1)  # first pixel of the *second* frame
+
+    result = builder.build(project, _FakeSettings())
+    assert result.ok, result.output
+
+    machine = Machine(bytes(0x4000))
+    load_sna(machine, result.snapshot.read_bytes())
+    base = 0xC000 + 500
+    # Frame 1 starts 8 bytes in -- no attribute plane between the two frames.
+    assert machine.memory.read_byte(base + 8) == 0x80
+    assert "mask_FRAME_STRIDE: equ 8" in (project.folder / "assets_generated.asm").read_text()

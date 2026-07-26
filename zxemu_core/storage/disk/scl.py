@@ -69,7 +69,7 @@ def parse_scl(data: bytes, name: str = "") -> TrdImage:
     entries_end = HEADER_SIZE + count * ENTRY_SIZE
     if entries_end > len(data):
         raise ValueError(
-            f"truncated .scl: claims {count} files, but the catalogue runs past the file end"
+            "truncated .scl: claims {} files, but the catalogue runs past the file end".format(count)
         )
 
     image = TrdImage(bytes(DEFAULT_TRACKS * DEFAULT_SIDES * SECTORS_PER_TRACK * SECTOR_SIZE),
@@ -87,7 +87,7 @@ def parse_scl(data: bytes, name: str = "") -> TrdImage:
         sectors = entry[13]
         if cursor + sectors > total_sectors:
             raise ValueError(
-                f"the files in this .scl need more than a {DEFAULT_TRACKS}-track disk holds"
+                "the files in this .scl need more than a {}-track disk holds".format(DEFAULT_TRACKS)
             )
         track, sector = divmod(cursor, SECTORS_PER_TRACK)
         # The TR-DOS entry is the SCL entry plus the position we just chose for it.

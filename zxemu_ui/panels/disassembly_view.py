@@ -56,7 +56,7 @@ class DisassemblyView(QWidget):
 
         bar = QHBoxLayout()
         bar.addWidget(QLabel("Addr"))
-        self._addr_edit = QLineEdit(f"{self._base:04X}")
+        self._addr_edit = QLineEdit("{:04X}".format(self._base))
         self._addr_edit.setMaximumWidth(70)
         self._addr_edit.setValidator(QRegExpValidator(QRegExp("[0-9A-Fa-f]{1,4}")))
         self._addr_edit.editingFinished.connect(self._on_addr_edited)
@@ -82,7 +82,7 @@ class DisassemblyView(QWidget):
         """Show the listing from ``address``, releasing Follow PC so it stays there."""
         self._base = address & 0xFFFF
         self._follow_pc.setChecked(False)
-        self._addr_edit.setText(f"{self._base:04X}")
+        self._addr_edit.setText("{:04X}".format(self._base))
         self.refresh(force=True)
 
     def goto_pc(self) -> None:
@@ -110,7 +110,7 @@ class DisassemblyView(QWidget):
         pc = self.machine.cpu.regs.pc
         base = pc if self._follow_pc.isChecked() else self._base
         if self._follow_pc.isChecked():
-            self._addr_edit.setText(f"{base:04X}")
+            self._addr_edit.setText("{:04X}".format(base))
 
         # ROM routine names are only meaningful when the 48-BASIC ROM is the one paged
         # in; on a 128K showing ROM 0 they would label the wrong code (see rom_symbols).
@@ -119,19 +119,19 @@ class DisassemblyView(QWidget):
         lines = []
         inside = rom_symbols.enclosing(pc) if label_roms else None
         if inside is not None:
-            lines.append(f"; in {inside[0]}+${inside[1]:02X}")
+            lines.append("; in {}+${:02X}".format(inside[0], inside[1]))
         for address, raw, text in disassembler.disassemble(
             self.machine.memory, base, INSTRUCTION_COUNT
         ):
             marker = ">" if address == pc else " "
-            hex_bytes = " ".join(f"{b:02X}" for b in raw)
+            hex_bytes = " ".join("{:02X}".format(b) for b in raw)
             name = rom_symbols.name_for(address) if label_roms else None
             if name is None and self.source_map is not None:
                 name = self.source_map.label_for(address)  # your own labels
             if name is not None:
-                lines.append(f" {name}:")
+                lines.append(" {}:".format(name))
             text = rom_symbols.annotate(text, label_roms)
-            lines.append(f"{marker}{address:04X}  {hex_bytes:<{_MAX_OPCODE_BYTES * 3}} {text}")
+            lines.append("{}{:04X}  {:<{}} {}".format(marker, address, hex_bytes, _MAX_OPCODE_BYTES * 3, text))
         self._listing.setPlainText("\n".join(lines))
 
     def set_mono_scale(self, scale: float) -> None:

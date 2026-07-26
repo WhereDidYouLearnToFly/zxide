@@ -124,5 +124,5 @@ def annotate(text: str, enabled: bool = True) -> str:
             if address < ROM_TOP:
                 name = name_for(address)
                 if name is not None:
-                    return f"{text}  ; {name}"
+                    return "{}  ; {}".format(text, name)
     return text

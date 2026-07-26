@@ -25,6 +25,10 @@ The shell, at the top level:
                       signals, so nothing else needs to know how timing works.
     editor.py         The central multi-tab code editor, with a breakpoint gutter
                       and an execution-line marker.
+    project_tree_model.py  The project folder as the tree sees it, with the files the
+                      manifest calls assets badged by kind -- otherwise ``hero.zx8x8``
+                      (built and placed) and a stray file of the same type look
+                      identical, and telling them apart means opening the manifest.
     z80_highlighter.py    Syntax colouring for Z80 assembly.
     machine_factory.py    Builds the right machine (48K, 128K or Pentagon 128) for a
                       model string, and loads that model's ROMs. The one place either
@@ -33,7 +37,10 @@ The shell, at the top level:
                       QtMultimedia sink that fails quiet when there isn't one).
     layout_store.py   Saves and restores the dock layout as readable JSON.
     theme.py          The dark Fusion palette and the fonts used throughout.
-    asset_icons.py    Small drawn icons for the asset kinds in the project tree.
+    asset_icons.py    A colour and a glyph per asset kind, drawn as a small icon. One
+                      table, used everywhere a kind needs to be recognisable at a
+                      glance: the project tree, the Inspector's badge, and the placed
+                      rectangles on the Design-mode memory map.
     system_open.py    Hands a path to the desktop's own file manager ("Show in
                       Explorer"), one command per platform.
 

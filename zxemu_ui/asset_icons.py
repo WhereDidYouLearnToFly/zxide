@@ -1,8 +1,10 @@
 """A colour and a short glyph per asset kind, so the eye can tell them apart at a glance.
 
 Used everywhere an asset's kind needs a quick visual cue rather than reading its label:
-placed-asset rectangles in the Design-mode memory map, and the Inspector's kind badge.
-One table here means both stay in sync automatically when a new kind is added.
+placed-asset rectangles in the Design-mode memory map, the Inspector's kind badge, and
+the project tree, where the badge does double duty -- it also marks *which* files in the
+folder the manifest actually knows about. One table here means all three stay in sync
+automatically when a new kind is added.
 """
 
 from __future__ import annotations

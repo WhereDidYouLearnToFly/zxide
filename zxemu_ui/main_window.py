@@ -35,38 +35,41 @@ The menu bar is split by *what you are doing*, not by which code implements it:
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
     QDockWidget,
     QFileDialog,
-    QFileSystemModel,
+    QHBoxLayout,
     QInputDialog,
+    QLabel,
     QMainWindow,
     QMenu,
     QMessageBox,
     QTreeView,
+    QVBoxLayout,
     QWidget,
 )
 
 from zxemu_core.machine import Machine
 from zxemu_core.memlayout import PAGED_MODELS
-from zxemu_core.debug import debug_expr
+from zxemu_core.debug import asm_meter, debug_expr
 from zxemu_core.assets.manifest import AssetKind
-from zxemu_core.assets.native_sprite import NATIVE_SUFFIX, blank_sprite_data
+from zxemu_core.assets.native_sprite import blank_sprite, sprite_format, sprite_suffix, suffix_for
 from zxemu_core.assets.beeper_sfx import SUFFIX as BEEPER_SFX_SUFFIX
-from zxemu_ui.workspace import builder
+from zxemu_ui.workspace import builder, project_files
 from zxemu_ui.controller import EmulatorController
 from zxemu_ui.editor import EditorArea
 from zxemu_ui.panels.emulator_panel import EmulatorPanel
 from zxemu_ui.panels.emulator_view import EmulatorView
 from zxemu_ui import layout_store, media, menu_builder
 from zxemu_ui.debug_session import DebugSession
+from zxemu_ui.project_tree_model import ProjectFilesModel
 from zxemu_ui.panels.inspector_view import InspectorView
 from zxemu_ui.panels.sprite_editor_view import SpriteEditorView
 from zxemu_ui.panels.beeper_sfx_editor_view import BeeperSfxEditorView
@@ -79,7 +82,7 @@ from zxemu_ui.panels.memory_cells_view import MemoryCellsView
 from zxemu_ui.panels.memory_map_view import MemoryMapView
 from zxemu_ui.panels.output_console import OutputConsole
 from zxemu_ui.workspace.dump_project import dump_to_project
-from zxemu_ui.workspace.project import SOURCE_SUFFIXES, Project, is_text_file
+from zxemu_ui.workspace.project import ASM_SUFFIXES, SOURCE_SUFFIXES, Project, is_text_file
 from zxemu_ui.panels.registers_view import RegistersView
 from zxemu_ui.workspace.search import search_project
 from zxemu_ui.workspace.settings import Settings
@@ -158,9 +161,15 @@ class MainWindow(QMainWindow):
         for corner in (Qt.TopRightCorner, Qt.BottomRightCorner):
             self.setCorner(corner, Qt.RightDockWidgetArea)
 
-        # Central anchor: the code/text editor.
+        # Central anchor: the code/text editor, with the assembly meter as its footer.
         self.editor = EditorArea()
-        self.setCentralWidget(self.editor)
+        central = QWidget()
+        column = QVBoxLayout(central)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(0)
+        column.addWidget(self.editor, 1)
+        column.addWidget(self._build_asm_meter())
+        self.setCentralWidget(central)
 
         # Panels (each becomes a dock below).
         self.view = EmulatorView(machine)
@@ -214,6 +223,8 @@ class MainWindow(QMainWindow):
         self.analysis.address_activated.connect(self._disasm_goto)
         # Clicking a placed asset in the Design-mode memory map shows it in the Inspector.
         self.memory_map.asset_selected.connect(self._on_asset_selected)
+        # A file dropped onto the Design-mode map becomes an asset -- the tree badges it.
+        self.memory_map.assets_changed.connect(self._assets_changed)
         self.emulator_panel.screenshot_requested.connect(self._save_screenshot)
         self.editor.breakpoints_changed.connect(self._sync_breakpoints)
         # The execution-line marker: cleared while running, shown (and moved) whenever
@@ -304,7 +315,7 @@ class MainWindow(QMainWindow):
 
     def _make_project_tree(self) -> QTreeView:
         """A live view of the open project's folder on disk (empty until one opens)."""
-        self._fs_model = QFileSystemModel()
+        self._fs_model = ProjectFilesModel()
         tree = QTreeView()
         tree.setModel(self._fs_model)
         tree.setHeaderHidden(True)
@@ -317,6 +328,13 @@ class MainWindow(QMainWindow):
         # Lets a file be dragged onto the Design-mode memory map to import it as an asset.
         tree.setDragEnabled(True)
         tree.selectionModel().currentChanged.connect(self._on_tree_selection_changed)
+        # Delete works from the keyboard too, but only while the tree has focus -- the
+        # shortcut is scoped to the widget so it can never fire while you're typing code.
+        delete_action = QAction("Delete", tree)
+        delete_action.setShortcut(QKeySequence.Delete)
+        delete_action.setShortcutContext(Qt.WidgetShortcut)
+        delete_action.triggered.connect(self._delete_selected)
+        tree.addAction(delete_action)
         self.project_tree = tree
         return tree
 
@@ -334,6 +352,91 @@ class MainWindow(QMainWindow):
         if self.project is not None:
             self.inspector.show_asset_id(self.project, asset_id)
 
+    def _assets_changed(self) -> None:
+        """The manifest's asset list changed -- re-badge the tree and redraw the map.
+
+        One method rather than two calls at each of the five sites that can change it
+        (new sprite, new SFX, imported sequence, dropped file, deleted file), so a sixth
+        can't forget half of the update.
+        """
+        self._fs_model.refresh_assets()
+        self.memory_map.refresh()
+
+    # --- the Z80 assembly meter -------------------------------------------------
+
+    def _build_asm_meter(self) -> QWidget:
+        """A live byte/T-state readout, as a strip along the bottom of the editor.
+
+        It sits with the editor rather than in the status bar because it is a fact *about
+        the text above it* -- it measures whatever the caret has selected -- and the far
+        bottom-right corner of the window is both a long way from the code being measured
+        and the most crowded spot on the screen: the corner belongs to the size grip, and
+        a maximized window (which has no grip) let the readout run flush to the screen
+        edge with its last glyph clipped. As a footer under the tabs it has the full width
+        of the editor to itself and cannot be squeezed by anything.
+
+        The status bar was the first home for a different reason, still worth stating: the
+        controller pushes transient messages ("running", "paused at $8000") through
+        ``showMessage``, so an ordinary status-bar widget would be hidden by them exactly
+        when you're stepping through the code you just measured. Moving out of the status
+        bar removes that hazard rather than working around it.
+
+        Recomputation is debounced -- measuring the whole file on every keystroke is
+        wasted work when the next keystroke is 40ms away, and the numbers are still live
+        to the eye at this interval.
+        """
+        self._meter_label = QLabel("")
+        self._meter_label.setToolTip(
+            "Z80 Assembly Meter — size and timing of the selected code, or of the whole "
+            "file when nothing is selected.\nT-states are the published uncontended "
+            "figures; a range means a conditional branch costs different amounts taken "
+            "and not taken."
+        )
+
+        self._meter_bar = QWidget()
+        self._meter_bar.setObjectName("asmMeterBar")
+        # A hairline above it, so the strip reads as the editor's footer rather than as a
+        # line of text floating under the last row of code.
+        self._meter_bar.setStyleSheet(
+            "#asmMeterBar { border-top: 1px solid #3a3a3a; background: #2b2b2b; }"
+            # A soft green rather than the UI grey: the numbers are a measurement of the
+            # code above, not another piece of chrome, and a desaturated tint separates
+            # them from the editor without shouting at the corner of your eye.
+            "#asmMeterBar QLabel { color: #9ecf9e; }"
+        )
+        row = QHBoxLayout(self._meter_bar)
+        row.setContentsMargins(10, 3, 10, 3)
+        row.addWidget(self._meter_label)
+        row.addStretch(1)
+
+        self._meter_timer = QTimer(self)
+        self._meter_timer.setSingleShot(True)
+        self._meter_timer.setInterval(150)
+        self._meter_timer.timeout.connect(self._update_asm_meter)
+        self.editor.cursor_or_text_changed.connect(self._meter_timer.start)
+        self.editor.currentChanged.connect(lambda _index: self._meter_timer.start())
+        return self._meter_bar
+
+    def _update_asm_meter(self) -> None:
+        path = self.editor.current_path()
+        if path is None or Path(path).suffix.lower() not in ASM_SUFFIXES:
+            # Not assembly -- a byte count would be nonsense, and an empty strip under a
+            # text file is a row of height spent saying nothing, so the bar goes with it.
+            self._set_meter_text("")
+            return
+        text, is_selection = self.editor.selected_or_all_text()
+        summary = asm_meter.format_result(asm_meter.measure(text))
+        # Spelled out rather than abbreviated: which of the two it is decides how to read
+        # every number after it, and "sel:" was quiet enough that the readout looked like
+        # it never followed the selection at all.
+        scope = "selection" if is_selection else "file"
+        self._set_meter_text("{}: {}".format(scope, summary) if summary else "")
+
+    def _set_meter_text(self, text: str) -> None:
+        """Show the readout, or hide the whole strip when there is nothing to say."""
+        self._meter_label.setText(text)
+        self._meter_bar.setVisible(bool(text))
+
     # --- project ---------------------------------------------------------------
 
     def _open_project(self, folder) -> None:
@@ -341,17 +444,18 @@ class MainWindow(QMainWindow):
         folder = Path(folder)
         self.project = Project(folder)
         self._fs_model.setRootPath(str(folder))
+        self._fs_model.set_project(self.project)  # badge this project's assets in the tree
         self.project_tree.setRootIndex(self._fs_model.index(str(folder)))
         self.memory_map.set_project(self.project)
-        self.setWindowTitle(f"zxide — {self.project.name}")
+        self.setWindowTitle("zxide — {}".format(self.project.name))
         self.settings.set("last_project", str(folder))
         self.settings.push_recent("recent_projects", str(folder))
-        self._log(f"Opened project: {folder}")
+        self._log("Opened project: {}".format(folder))
         # Boot the machine the project targets; swap only if it differs from the current one.
         model = self.project.model
         if model != machine_model(self.machine):
             self.set_machine(build_machine(model))
-            self._log(f"Switched to the {model.upper()} machine for this project.")
+            self._log("Switched to the {} machine for this project.".format(model.upper()))
 
     def set_machine(self, machine) -> None:
         """Swap the emulated machine (48K <-> 128K) and re-point every view at it.
@@ -422,40 +526,75 @@ class MainWindow(QMainWindow):
         path = self._fs_model.filePath(index)
         if not path or not Path(path).is_file():
             return
-        if path.lower().endswith(NATIVE_SUFFIX) and self._open_sprite_editor_for_path(path):
-            return
-        if path.lower().endswith(BEEPER_SFX_SUFFIX) and self._open_beeper_sfx_editor_for_path(path):
+        if self._open_asset_editor_for_path(path):
             return
         if is_text_file(path):
             self.editor.open_file(path)
 
-    def _open_sprite_editor_for_path(self, path: str) -> bool:
-        """Show ``path`` in the Sprite Editor if it's a registered asset. False if not (caller falls back)."""
-        if self.project is None:
+    def _asset_editor_for(self, path: str):
+        """``(panel, dock, kind)`` for the editor that handles this file type, or None.
+
+        The file's *extension* decides, not the manifest -- so a sprite file that hasn't
+        been added to the project yet still routes to the sprite editor rather than
+        falling through to "unknown file, do nothing".
+        """
+        if sprite_suffix(path) is not None:
+            return self.sprite_editor, self._sprite_editor_dock, AssetKind.SPRITE_SHEET
+        if path.lower().endswith(BEEPER_SFX_SUFFIX):
+            return self.beeper_sfx_editor, self._beeper_sfx_editor_dock, AssetKind.BEEPER_SFX
+        return None
+
+    def _open_asset_editor_for_path(self, path: str) -> bool:
+        """Open ``path`` in its asset editor. False if nothing here edits that file type."""
+        target = self._asset_editor_for(path)
+        if target is None or self.project is None:
             return False
-        source = self.project.relative(path)
-        entry = next((e for e in self.project.assets() if e.source == source), None)
+        panel, dock, kind = target
+        entry = self._fs_model.asset_for(path) or self._offer_to_register(path, kind)
         if entry is None:
-            return False
-        self.sprite_editor.show_asset(self.project, entry)
-        self._reveal_dock(self._sprite_editor_dock)
+            return False  # not an asset, and the user declined to make it one
+        panel.show_asset(self.project, entry)
+        self._reveal_dock(dock)
         return True
 
-    def _open_beeper_sfx_editor_for_path(self, path: str) -> bool:
-        """Show ``path`` in the Beeper SFX Editor if it's a registered asset. False if not (caller falls back)."""
-        if self.project is None:
-            return False
+    def _offer_to_register(self, path: str, kind: AssetKind):
+        """Adopt a sprite/SFX file that is in the folder but not in the manifest.
+
+        Double-clicking one of these used to do nothing at all -- no editor, no message --
+        which is indistinguishable from the IDE being broken. The file is obviously
+        editable (its extension says exactly what it is); the only thing missing is the
+        manifest entry, so ask for that instead of silently refusing.
+        """
         source = self.project.relative(path)
-        entry = next((e for e in self.project.assets() if e.source == source), None)
-        if entry is None:
-            return False
-        self.beeper_sfx_editor.show_asset(self.project, entry)
-        self._reveal_dock(self._beeper_sfx_editor_dock)
-        return True
+        name = Path(path).name
+        if source is None:
+            QMessageBox.information(
+                self, "Add to project",
+                "“{}” is outside the project folder. Copy it in first — an asset's "
+                "source is recorded relative to the project so the folder can be moved.".format(name),
+            )
+            return None
+        answer = QMessageBox.question(
+            self, "Add to project",
+            "“{}” isn't one of this project's assets yet, so it isn't converted, "
+            "placed in memory, or addressable from your code.\n\nAdd it as a "
+            "{} asset?".format(name, kind.value),
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Yes,
+        )
+        if answer != QMessageBox.Yes:
+            return None
+        entry = self.project.add_asset(source, kind)
+        self._assets_changed()
+        self._log("Added asset '{}' ({}) from {}".format(entry.symbol, kind.value, source))
+        return entry
 
     def _show_tree_menu(self, pos) -> None:
         if self.project is None:
             return
+        # Right-clicking does not move the selection in a QTreeView, so the menu asks the
+        # view what is under the cursor rather than trusting whatever was selected before.
+        clicked = self._fs_model.filePath(self.project_tree.indexAt(pos))
         menu = QMenu(self)
         menu.addAction("New File…", self._new_file)
         menu.addAction("New Folder…", self._new_folder)
@@ -463,12 +602,84 @@ class MainWindow(QMainWindow):
         menu.addAction("New Beeper SFX Asset…", self._new_beeper_sfx_asset)
         menu.addSeparator()
         menu.addAction("Import Animation Sequence…", self._import_animation_sequence)
+        if clicked:
+            menu.addSeparator()
+            label = "Delete Folder…" if Path(clicked).is_dir() else "Delete…"
+            menu.addAction(label, lambda: self.delete_path(clicked))
         menu.addSeparator()
-        menu.addAction(f"Show in {FILE_MANAGER_NAME}", self._reveal_in_file_manager)
+        menu.addAction("Show in {}".format(FILE_MANAGER_NAME), self._reveal_in_file_manager)
         menu.exec_(self.project_tree.viewport().mapToGlobal(pos))
 
+    def _delete_selected(self) -> None:
+        """What the Delete key does: remove whatever the tree has selected."""
+        index = self.project_tree.currentIndex()
+        if index.isValid():
+            self.delete_path(self._fs_model.filePath(index))
+
+    def delete_path(self, path: str) -> bool:
+        """Delete a file or folder from the project, after confirming. Returns whether it went.
+
+        Only the parts that need a window are here -- asking whether you meant it, closing
+        the editor tab, logging. What actually has to happen to the project (its assets,
+        their cached bytes, then the file) is ``workspace.project_files.delete``, which
+        needs no Qt and is tested without it.
+        """
+        if self.project is None or not path:
+            return False
+        target = Path(path)
+        if not target.exists():
+            return False
+        if target.resolve() == self.project.folder.resolve():
+            QMessageBox.information(
+                self, "Delete", "That's the project folder itself — close the project and delete it from disk."
+            )
+            return False
+
+        if not self._confirm_delete(target):
+            return False
+
+        # The tab goes first: it is the one thing that can't be undone by re-reading disk,
+        # and a tab over a deleted file would recreate it on the next Save All.
+        self.editor.close_files_under(str(target))
+        try:
+            removed = project_files.delete(self.project, target)
+        except OSError as exc:
+            QMessageBox.critical(self, "Delete", "Could not delete {}:\n{}".format(target.name, exc))
+            return False
+
+        self._log("Deleted {}".format(target) + (" (and {} asset(s))".format(len(removed)) if removed else ""))
+        self._assets_changed()
+        self.inspector.clear()
+        return True
+
+    def _confirm_delete(self, target: Path) -> bool:
+        """Ask, saying up front everything that goes along with the file itself."""
+        consequences = []
+        if target.is_dir():
+            contents = project_files.count_contents(target)
+            consequences.append("{} item{} inside it".format(contents, 's' if contents != 1 else ''))
+        assets = project_files.assets_under(self.project, target)
+        if assets:
+            names = ", ".join(sorted(entry.symbol for entry in assets))
+            consequences.append("{} asset{} in the manifest ({})".format(len(assets), 's' if len(assets) != 1 else '', names))
+
+        detail = "\n\nThis also removes {}.".format(' and '.join(consequences)) if consequences else ""
+        answer = QMessageBox.warning(
+            self,
+            "Delete",
+            "Delete {} “{}”?{}\n\nThis cannot be undone.".format('folder' if target.is_dir() else 'file', target.name, detail),
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        return answer == QMessageBox.Yes
+
     def _new_sprite_asset(self) -> None:
-        """A blank sprite drawn in zxide's own editor, not imported from a file."""
+        """A blank sprite drawn in zxide's own editor, not imported from a file.
+
+        Size and colour-ness pick the file's *extension* rather than being recorded
+        anywhere: a native sprite file is exactly the bytes the Z80 gets, so its name is
+        the only place left to say how to read it back (see ``native_sprite``).
+        """
         if self.project is None:
             return
         size_label, ok = QInputDialog.getItem(
@@ -477,14 +688,20 @@ class MainWindow(QMainWindow):
         if not ok:
             return
         if size_label == "Custom":
-            width, ok = QInputDialog.getInt(self, "New Sprite Asset", "Width (multiple of 8):", 8, 8, 256, 8)
+            width, ok = QInputDialog.getInt(self, "New Sprite Asset", "Width (multiple of 8):", 8, 8, 248, 8)
             if not ok:
                 return
-            height, ok = QInputDialog.getInt(self, "New Sprite Asset", "Height (multiple of 8):", 8, 8, 256, 8)
+            height, ok = QInputDialog.getInt(self, "New Sprite Asset", "Height (multiple of 8):", 8, 8, 248, 8)
             if not ok:
                 return
         else:
             width, height = (8, 8) if size_label == "8x8" else (16, 16)
+        colour_label, ok = QInputDialog.getItem(
+            self, "New Sprite Asset", "Data:", ["Pixels + attributes", "Pixels only"], 0, False
+        )
+        if not ok:
+            return
+        has_attrs = colour_label == "Pixels + attributes"
         frame_count, ok = QInputDialog.getInt(self, "New Sprite Asset", "Frame count:", 1, 1, 64, 1)
         if not ok:
             return
@@ -493,13 +710,15 @@ class MainWindow(QMainWindow):
             return
 
         symbol = name.strip()
-        path = self._target_dir() / f"{symbol}{NATIVE_SUFFIX}"
-        path.write_text(json.dumps(blank_sprite_data(width, height, frame_count), indent=2), encoding="utf-8")
+        suffix = suffix_for(width, height, has_attrs)
+        path = self._target_dir() / "{}{}".format(symbol, suffix)
+        document = blank_sprite(width, height, frame_count, has_attrs=has_attrs)
+        path.write_bytes(document.encode(with_header=sprite_format(suffix).has_header))
         entry = self.project.add_asset(self.project.relative(path), AssetKind.SPRITE_SHEET, symbol=symbol)
 
         self.sprite_editor.show_asset(self.project, entry)
         self._reveal_dock(self._sprite_editor_dock)
-        self.memory_map.refresh()
+        self._assets_changed()
 
     def _new_beeper_sfx_asset(self) -> None:
         """A blank beeper sound effect built in zxide's own editor, not hand-typed."""
@@ -510,13 +729,13 @@ class MainWindow(QMainWindow):
             return
 
         symbol = name.strip()
-        path = self._target_dir() / f"{symbol}{BEEPER_SFX_SUFFIX}"
+        path = self._target_dir() / "{}{}".format(symbol, BEEPER_SFX_SUFFIX)
         path.write_text("", encoding="utf-8")  # empty -- add tones/rests in the editor
         entry = self.project.add_asset(self.project.relative(path), AssetKind.BEEPER_SFX, symbol=symbol)
 
         self.beeper_sfx_editor.show_asset(self.project, entry)
         self._reveal_dock(self._beeper_sfx_editor_dock)
-        self.memory_map.refresh()
+        self._assets_changed()
 
     def _import_animation_sequence(self) -> None:
         """A sprite_sequence asset: several individually-drawn frame images, one file each.
@@ -534,7 +753,7 @@ class MainWindow(QMainWindow):
             return
         sources = [self.project.relative(path) or path for path in paths]
         self.project.add_asset(sources, AssetKind.SPRITE_SEQUENCE, symbol=symbol.strip())
-        self.memory_map.refresh()
+        self._assets_changed()
 
     def _target_dir(self) -> Path:
         """Where a new file/folder goes: the selected folder (or a file's parent)."""
@@ -577,17 +796,17 @@ class MainWindow(QMainWindow):
         if self.project is None:
             self._log("No project open — use File ▸ New Project or Open Folder first.")
             return
-        self._log(f"── {'Build & Debug' if debug else 'Build & Run'} ──")
+        self._log("── {} ──".format('Build & Debug' if debug else 'Build & Run'))
         self.editor.save_all()  # you can't assemble a tab, only a file on disk
         main = self._compile_target()
         if main is not None:
-            self._log(f"Assembling {main}")
+            self._log("Assembling {}".format(main))
         result = builder.build(self.project, self.settings, main)
         self._log("$ " + " ".join(result.command))
         if result.output.strip():
             self._log(result.output.rstrip())
         if result.returncode != 0:
-            self._log(f"Build failed (exit code {result.returncode}).")
+            self._log("Build failed (exit code {}).".format(result.returncode))
             return
         if result.snapshot is None:
             self._log("Build succeeded, but no snapshot was produced.")
@@ -640,7 +859,7 @@ class MainWindow(QMainWindow):
         The editor's execution-line highlight follows from the pause itself
         (see _on_running_marker), so it lands on the right line automatically.
         """
-        self._log(f"Breakpoint hit at ${address:04X}")
+        self._log("Breakpoint hit at ${:04X}".format(address))
 
     def _on_watchpoint_hit(self, description: str) -> None:
         """Execution paused on a watchpoint: report what was touched, and by roughly what.
@@ -649,7 +868,7 @@ class MainWindow(QMainWindow):
         look, so the reported address is where execution *is*, not the exact opcode.
         Open the disassembly to see the instruction just above it.
         """
-        self._log(f"Watchpoint: {description}")
+        self._log("Watchpoint: {}".format(description))
         self._refresh_all_panels()
 
     def _on_running_marker(self, running: bool) -> None:
@@ -678,7 +897,7 @@ class MainWindow(QMainWindow):
         tapes but behave differently enough to be worth choosing between deliberately.
         """
         path, _ = QFileDialog.getOpenFileName(
-            self, f"Load {fmt.label}", self._media_dir(), fmt.file_filter
+            self, "Load {}".format(fmt.label), self._media_dir(), fmt.file_filter
         )
         if path:
             self._load_media(path)
@@ -715,7 +934,7 @@ class MainWindow(QMainWindow):
         """
         path = Path(path)
         if not path.exists():
-            self._log(f"File no longer exists: {path}")
+            self._log("File no longer exists: {}".format(path))
             self.settings.remove_recent("recent_files", str(path))
             return False
         kind = media.kind_of(path)
@@ -726,7 +945,7 @@ class MainWindow(QMainWindow):
         elif kind == media.DISK:
             ok = self._load_disk(path)
         else:
-            self._log(f"Don't know how to load {path.name}.")
+            self._log("Don't know how to load {}.".format(path.name))
             ok = False
         if ok:
             self.settings.push_recent("recent_files", str(path))
@@ -742,7 +961,7 @@ class MainWindow(QMainWindow):
         try:
             media.load_snapshot(self.machine, path)
         except (ValueError, NotImplementedError, OSError) as error:
-            self._log(f"Could not load {path.name}: {error}")
+            self._log("Could not load {}: {}".format(path.name, error))
             return False
         # Resume. A snapshot *is* a running machine, so loading one into a paused
         # emulator -- paused by the Pause button, or by a breakpoint from an earlier
@@ -753,7 +972,7 @@ class MainWindow(QMainWindow):
         self.controller.set_running(True)
         self._refresh_all_panels()
         self._focus_emulator()
-        self._log(f"Loaded {path.name} — running.")
+        self._log("Loaded {} — running.".format(path.name))
         return True
 
     def _focus_emulator(self) -> None:
@@ -778,7 +997,7 @@ class MainWindow(QMainWindow):
         try:
             blocks, notes = media.read_tape(path)
         except (ValueError, OSError) as error:
-            self._log(f"Could not load {path.name}: {error}")
+            self._log("Could not load {}: {}".format(path.name, error))
             return False
 
         self.controller.reset()             # clean power-on state before inserting
@@ -831,8 +1050,8 @@ class MainWindow(QMainWindow):
         if any(Path(folder).iterdir()):
             reply = QMessageBox.question(
                 self, "Dump to Project",
-                f"{folder} is not empty. Files with the same names will be overwritten.\n\n"
-                "Continue?",
+                "{} is not empty. Files with the same names will be overwritten.\n\n"
+                "Continue?".format(folder),
             )
             if reply != QMessageBox.Yes:
                 return
@@ -846,13 +1065,13 @@ class MainWindow(QMainWindow):
                 start_address=self.machine.cpu.regs.pc,
             )
         except (OSError, ValueError) as error:
-            self._log(f"Could not dump: {error}")
+            self._log("Could not dump: {}".format(error))
             return
 
-        self._log(f"Dumped {model.upper()} RAM to {folder}.")
+        self._log("Dumped {} RAM to {}.".format(model.upper(), folder))
         if executed:
-            self._log(f"  {executed} address(es) executed — those became disassembly; "
-                      "everything else is data.")
+            self._log("  {} address(es) executed — those became disassembly; "
+                      "everything else is data.".format(executed))
         else:
             self._log("  No coverage was recorded, so everything is data. Turn on "
                       "Reversing ▸ Record Coverage, exercise the program, and dump again "
@@ -883,7 +1102,7 @@ class MainWindow(QMainWindow):
         try:
             image = media.read_disk(path)
         except (ValueError, OSError) as error:
-            self._log(f"Could not load {path.name}: {error}")
+            self._log("Could not load {}: {}".format(path.name, error))
             return False
 
         if getattr(self.machine, "beta", None) is None:
@@ -917,7 +1136,7 @@ class MainWindow(QMainWindow):
             # Ejecting a written-to disk is how you lose a game's save file, so it asks.
             reply = QMessageBox.question(
                 self, "Eject disk",
-                f"{image.name or 'This disk'} has unsaved changes. Eject anyway?",
+                "{} has unsaved changes. Eject anyway?".format(image.name or 'This disk'),
                 QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
             )
             if reply == QMessageBox.Cancel:
@@ -930,7 +1149,7 @@ class MainWindow(QMainWindow):
     def _mount_disk_dialog(self, drive: int) -> None:
         """Pick a disk image for a specific drive (drive A is Load TRD/SCL's own target)."""
         path, _ = QFileDialog.getOpenFileName(
-            self, f"Mount in drive {'AB'[drive]}", self._media_dir(),
+            self, "Mount in drive {}".format('AB'[drive]), self._media_dir(),
             "TR-DOS disk image (*.trd *.scl)",
         )
         if path:
@@ -972,12 +1191,12 @@ class MainWindow(QMainWindow):
         try:
             Path(path).write_bytes(image.to_bytes(pad=True))
         except OSError as error:
-            self._log(f"Could not save {path}: {error}")
+            self._log("Could not save {}: {}".format(path, error))
             return False
         image.dirty = False
         image.name = Path(path).name
         self._remember_media_dir(path)   # saving somewhere is just as good a hint as loading
-        self._log(f"Saved disk to {path}.")
+        self._log("Saved disk to {}.".format(path))
         return True
 
     # --- the tape deck ----------------------------------------------------------
@@ -1071,8 +1290,8 @@ class MainWindow(QMainWindow):
             return
         self._tape_stall_reported = True
         blocks_read = deck.index
-        self._log(f"No tape block has been read for {TAPE_STALL_FRAMES // 50}s "
-                  f"({blocks_read} of {len(deck.blocks)} loaded).")
+        self._log("No tape block has been read for {}s "
+                  "({} of {} loaded).".format(TAPE_STALL_FRAMES // 50, blocks_read, len(deck.blocks)))
         if blocks_read == 0:
             self._log('  The machine is waiting for you to start it — type LOAD "" ⏎ '
                       "(or pick Tape Loader from the 128K menu).")
@@ -1103,11 +1322,11 @@ class MainWindow(QMainWindow):
         menu.clear()
         paths = self.settings.get(key, [])
         if not paths:
-            disabled = menu.addAction(f"({empty_label})")
+            disabled = menu.addAction("({})".format(empty_label))
             disabled.setEnabled(False)
             return
         for index, path in enumerate(paths, start=1):
-            prefix = f"&{index}  " if index <= 9 else ""
+            prefix = "&{}  ".format(index) if index <= 9 else ""
             action = menu.addAction(prefix + self._recent_label(path))
             action.setToolTip(path)
             action.triggered.connect(lambda _checked=False, p=path: handler(p))
@@ -1120,14 +1339,14 @@ class MainWindow(QMainWindow):
         """A compact menu label: the item's name plus its parent folder for context."""
         p = Path(path)
         parent = p.parent.name
-        return f"{p.name}  ({parent})" if parent else p.name
+        return "{}  ({})".format(p.name, parent) if parent else p.name
 
     def _open_recent_project(self, folder) -> None:
         """Open a project from the recent list, pruning it if the folder is gone."""
         if Path(folder).is_dir():
             self._open_project(folder)
         else:
-            self._log(f"Project folder no longer exists: {folder}")
+            self._log("Project folder no longer exists: {}".format(folder))
             self.settings.remove_recent("recent_projects", str(folder))
 
     def _open_settings(self) -> None:
@@ -1191,7 +1410,7 @@ class MainWindow(QMainWindow):
         self._analysis_dock.resize(520, 400)
         self._analysis_dock.hide()
 
-        # Sprite Editor: opened on demand (New Sprite Asset, or opening a .zxspr.json),
+        # Sprite Editor: opened on demand (New Sprite Asset, or opening a sprite file),
         # so it starts floating and hidden like the other on-demand tools above.
         self._sprite_editor_dock = self._make_dock("Sprite Editor", self.sprite_editor, "spriteEditorDock")
         self.addDockWidget(Qt.RightDockWidgetArea, self._sprite_editor_dock)
@@ -1251,10 +1470,10 @@ class MainWindow(QMainWindow):
         if model == machine_model(self.machine):
             return  # already there -- re-ticking the current item shouldn't reset the machine
         self.set_machine(build_machine(model))
-        self._log(f"Switched to the {model.upper()} machine.")
+        self._log("Switched to the {} machine.".format(model.upper()))
         if self.project is not None:
             self.project.set_model(model)
-            self._log(f'Project "{self.project.name}" now targets {model.upper()}.')
+            self._log('Project "{}" now targets {}.'.format(self.project.name, model.upper()))
 
     # --- analysis (thin: the work is in analysis_view / zxemu_core.debug.analysis) --------
 
@@ -1274,9 +1493,9 @@ class MainWindow(QMainWindow):
         try:
             pattern = bytes(int(part, 16) for part in text.split())
         except ValueError:
-            self._log(f"Not a hex byte sequence: {text.strip()}")
+            self._log("Not a hex byte sequence: {}".format(text.strip()))
             return
-        self.analysis.find_bytes(pattern, " ".join(f"{b:02X}" for b in pattern))
+        self.analysis.find_bytes(pattern, " ".join("{:02X}".format(b) for b in pattern))
 
     def _cross_references(self) -> None:
         address = self._ask_hex("Cross-references", "Address (hex):")
@@ -1310,7 +1529,7 @@ class MainWindow(QMainWindow):
         expression, ok = QInputDialog.getText(
             self,
             "Breakpoint Condition",
-            f"Stop at ${address & 0xFFFF:04X} only when:",
+            "Stop at ${:04X} only when:".format(address & 65535),
             text=self.debug.condition_for(address) or "A == $FF",
         )
         if not ok:
@@ -1318,14 +1537,14 @@ class MainWindow(QMainWindow):
         expression = expression.strip()
         if not expression:  # cleared
             self.debug.remove_condition(address)
-            self._log(f"Condition on ${address & 0xFFFF:04X} removed.")
+            self._log("Condition on ${:04X} removed.".format(address & 65535))
             return
         try:
             self.debug.set_condition(address, expression)
         except debug_expr.ExpressionError as error:
-            self._log(f"Bad condition: {error}")
+            self._log("Bad condition: {}".format(error))
             return
-        self._log(f"Breakpoint ${address & 0xFFFF:04X} stops only when: {expression}")
+        self._log("Breakpoint ${:04X} stops only when: {}".format(address & 65535, expression))
 
     def _run_to_cursor(self) -> None:
         """Run until execution reaches the line the caret is on."""
@@ -1338,16 +1557,16 @@ class MainWindow(QMainWindow):
             return
         address = self.debug.address_for(path, line)
         if address is None:
-            self._log(f"Line {line} produced no code — nothing to run to.")
+            self._log("Line {} produced no code — nothing to run to.".format(line))
             return
-        self._log(f"Running to ${address:04X} (line {line})")
+        self._log("Running to ${:04X} (line {})".format(address, line))
         self.controller.run_to(address)
 
     def _run_to_address(self) -> None:
         address = self._ask_hex("Run to Address", "Address (hex):")
         if address is None:
             return
-        self._log(f"Running to ${address & 0xFFFF:04X}")
+        self._log("Running to ${:04X}".format(address & 65535))
         self.controller.run_to(address)
 
     def _list_breakpoint_conditions(self) -> None:
@@ -1355,7 +1574,7 @@ class MainWindow(QMainWindow):
             self._log("No breakpoint conditions set.")
             return
         for address, expression in sorted(self.debug.conditions.items()):
-            self._log(f"  ${address:04X}  when  {expression}")
+            self._log("  ${:04X}  when  {}".format(address, expression))
 
     def _clear_breakpoint_conditions(self) -> None:
         self.debug.clear_conditions()
@@ -1371,24 +1590,24 @@ class MainWindow(QMainWindow):
         try:
             return int(text.strip().lstrip("$#").removeprefix("0x"), 16)
         except ValueError:
-            self._log(f"Not a hex value: {text.strip()}")
+            self._log("Not a hex value: {}".format(text.strip()))
             return None
 
     def _watch_memory(self, write: bool) -> None:
         label = "Write" if write else "Read"
-        address = self._ask_hex(f"Watch Memory {label}", "Address (hex):")
+        address = self._ask_hex("Watch Memory {}".format(label), "Address (hex):")
         if address is None:
             return
         self.debug.watch_memory(address, write=write)
-        self._log(f"Watching ${address & 0xFFFF:04X} for {label.lower()}s")
+        self._log("Watching ${:04X} for {}s".format(address & 65535, label.lower()))
 
     def _watch_port(self, write: bool) -> None:
         label = "OUT" if write else "IN"
-        port = self._ask_hex(f"Watch Port ({label})", "Port (hex, e.g. FE or 7FFD):")
+        port = self._ask_hex("Watch Port ({})".format(label), "Port (hex, e.g. FE or 7FFD):")
         if port is None:
             return
         self.debug.watch_port(port, write=write)
-        self._log(f"Watching {label} on port ${port:04X}")
+        self._log("Watching {} on port ${:04X}".format(label, port))
 
     def _clear_watchpoints(self) -> None:
         self.debug.clear_watchpoints()
@@ -1416,9 +1635,9 @@ class MainWindow(QMainWindow):
             return
         address = self.debug.address_for_label(name)
         if address is None:
-            self._log(f"No unique label matching {name.strip()!r}.")
+            self._log("No unique label matching {!r}.".format(name.strip()))
             return
-        self._log(f"{name.strip()} = ${address:04X}")
+        self._log("{} = ${:04X}".format(name.strip(), address))
         self._show_disassembly()
         self.disassembly.goto(address)
 
@@ -1429,7 +1648,7 @@ class MainWindow(QMainWindow):
         try:
             address = int(text.strip().lstrip("$#").removeprefix("0x"), 16)
         except ValueError:
-            self._log(f"Not a hex address: {text.strip()}")
+            self._log("Not a hex address: {}".format(text.strip()))
             return
         self._show_disassembly()
         self.disassembly.goto(address)
@@ -1442,14 +1661,14 @@ class MainWindow(QMainWindow):
         try:
             added, skipped = self.project.add_addon(addon)
         except OSError as error:
-            self._log(f"Could not add {label}: {error}")
+            self._log("Could not add {}: {}".format(label, error))
             return
         if added:
-            self._log(f"Added {label}: {', '.join(added)}")
+            self._log("Added {}: {}".format(label, ', '.join(added)))
         for name in skipped:
-            self._log(f"{label}: {name} already exists — left untouched.")
+            self._log("{}: {} already exists — left untouched.".format(label, name))
         if not added and not skipped:
-            self._log(f"{label} addon is empty — nothing to add.")
+            self._log("{} addon is empty — nothing to add.".format(label))
 
     def _set_show_special(self, on: bool) -> None:
         """Toggle whitespace markers and remember the choice (auto-saved)."""
@@ -1476,7 +1695,7 @@ class MainWindow(QMainWindow):
         """Write each dock's location/size/visibility to the JSON file, and log it."""
         path = layout_store.save(self._layout_path, self, self._all_docks)
         self._saved_layout = layout_store.load(path)
-        self._log(f"Layout saved to {path}")
+        self._log("Layout saved to {}".format(path))
         self.statusBar().showMessage("Layout saved", 3000)
 
     def _reset_layout(self) -> None:
@@ -1513,24 +1732,24 @@ class MainWindow(QMainWindow):
 
         hits, truncated = search_project(self.project.folder, query)
         self._reveal_dock(self._output_dock)
-        self._log(f'── Find "{query}" ──')
+        self._log('── Find "{}" ──'.format(query))
         if not hits:
             self._log("No matches.")
             return
         for hit in hits:
             self.output_console.append_link(
-                f"{hit.relative}:{hit.line}: {hit.text}", hit.path, hit.line
+                "{}:{}: {}".format(hit.relative, hit.line, hit.text), hit.path, hit.line
             )
         files = len({hit.relative for hit in hits})
-        summary = f'{len(hits)} match(es) in {files} file(s) — click a line to open it'
+        summary = '{} match(es) in {} file(s) — click a line to open it'.format(len(hits), files)
         if truncated:
-            summary += f" (stopped at {len(hits)}; narrow the search to see the rest)"
+            summary += " (stopped at {}; narrow the search to see the rest)".format(len(hits))
         self._log(summary)
 
     def _open_search_hit(self, path: str, line: int) -> None:
         """A clicked search result: open the file and put the caret on the line."""
         if not Path(path).exists():
-            self._log(f"{path} no longer exists.")
+            self._log("{} no longer exists.".format(path))
             return
         self.editor.goto_line(path, line)
         self.editor.setFocus()
@@ -1543,7 +1762,7 @@ class MainWindow(QMainWindow):
             return
         maximum = max(1, self.editor.line_count())
         line, ok = QInputDialog.getInt(
-            self, "Go to Line", f"Line (1–{maximum}):", current or 1, 1, maximum, 1
+            self, "Go to Line", "Line (1–{}):".format(maximum), current or 1, 1, maximum, 1
         )
         if ok:
             self.editor.goto_line(path, line)
@@ -1560,7 +1779,7 @@ class MainWindow(QMainWindow):
             return
         error = reveal(target)
         if error:
-            self._log(f"Could not show {target}: {error}")
+            self._log("Could not show {}: {}".format(target, error))
 
     def _save_screenshot(self) -> None:
         """Save the current screen as both a real .scr and a viewable .bmp.
@@ -1580,7 +1799,7 @@ class MainWindow(QMainWindow):
         folder = self.project.folder if self.project is not None else Path(__file__).resolve().parent.parent
         screenshots_dir = folder / "screenshots"
         screenshots_dir.mkdir(exist_ok=True)
-        base = screenshots_dir / f"screenshot_{datetime.now():%Y%m%d_%H%M%S}"
+        base = screenshots_dir / "screenshot_{:%Y%m%d_%H%M%S}".format(datetime.now())
 
         scr_path = base.with_suffix(".scr")
         scr_path.write_bytes(bytes(self.machine.display_memory()[:6912]))
@@ -1588,4 +1807,4 @@ class MainWindow(QMainWindow):
         bmp_path = base.with_suffix(".bmp")
         self.view.current_image().save(str(bmp_path), "BMP")
 
-        self._log(f"Saved screenshot: {scr_path.name}, {bmp_path.name}")
+        self._log("Saved screenshot: {}, {}".format(scr_path.name, bmp_path.name))

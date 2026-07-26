@@ -82,14 +82,14 @@ def _evaluate_operand(text: str, machine) -> int:
 
     number = _parse_number(text)
     if number is None:
-        raise ExpressionError(f"don't understand {text!r}")
+        raise ExpressionError("don't understand {!r}".format(text))
     return number
 
 
 def _evaluate_comparison(text: str, machine) -> bool:
     match = _COMPARISON_RE.search(text)
     if match is None:
-        raise ExpressionError(f"no comparison in {text.strip()!r} (expected ==, !=, <, <=, >, >=)")
+        raise ExpressionError("no comparison in {!r} (expected ==, !=, <, <=, >, >=)".format(text.strip()))
     left = _evaluate_operand(text[: match.start()], machine)
     right = _evaluate_operand(text[match.end():], machine)
     return _COMPARISONS[match.group(1)](left, right)

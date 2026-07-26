@@ -150,7 +150,7 @@ def parse_tzx(data: bytes) -> tuple[list, list[str]]:
     """
     if not data.startswith(TZX_SIGNATURE):
         raise ValueError("not a .tzx file (missing the ZXTape! signature)")
-    notes = [f"TZX version {data[8]}.{data[9]}"]
+    notes = ["TZX version {}.{}".format(data[8], data[9])]
     items: list = []
     seen: dict[int, int] = {}
 
@@ -163,27 +163,27 @@ def parse_tzx(data: bytes) -> tuple[list, list[str]]:
             params, length_at = _DATA_BLOCKS[block_id]
             width = 2 if block_id == 0x10 else 3
             if body + params > len(data):
-                notes.append(f"stopped: truncated ${block_id:02X} block header")
+                notes.append("stopped: truncated ${:02X} block header".format(block_id))
                 break
             length = _int(data, body + length_at, width)
             start = body + params
             if start + length > len(data):
-                notes.append(f"stopped: ${block_id:02X} block claims {length} bytes, file ends first")
+                notes.append("stopped: ${:02X} block claims {} bytes, file ends first".format(block_id, length))
                 break
             timing = _timing_for(block_id, data, body)
             items.append(TapeBlock(data[start:start + length], timing))
             if block_id == 0x11:
-                notes.append(f"Turbo block ({length} bytes) -- {timing.zero_pulse}/"
-                             f"{timing.one_pulse}T bits, replayed at its own speed")
+                notes.append("Turbo block ({} bytes) -- {}/"
+                             "{}T bits, replayed at its own speed".format(length, timing.zero_pulse, timing.one_pulse))
             elif block_id == 0x14:
-                notes.append(f"Pure data block ({length} bytes) -- no pilot tone of its own")
+                notes.append("Pure data block ({} bytes) -- no pilot tone of its own".format(length))
             offset = start + length
             continue
 
         size = _body_size(data, block_id, body)
         if size is None:
-            notes.append(f"stopped at an unknown block ID ${block_id:02X} -- "
-                         "its length is unknown, so the rest of the file can't be walked")
+            notes.append("stopped at an unknown block ID ${:02X} -- "
+                         "its length is unknown, so the rest of the file can't be walked".format(block_id))
             break
         item = _pulse_item(data, block_id, body)
         if item is not None:
@@ -194,7 +194,7 @@ def parse_tzx(data: bytes) -> tuple[list, list[str]]:
         elif block_id == 0x15:
             notes.append("Direct recording block skipped -- it is sampled audio, not data blocks")
         else:
-            notes.append(f"Skipped ${block_id:02X} ({_BLOCK_NAMES.get(block_id, 'unknown')})")
+            notes.append("Skipped ${:02X} ({})".format(block_id, _BLOCK_NAMES.get(block_id, 'unknown')))
         offset = body + size
 
     if not data_blocks(items):
@@ -203,10 +203,10 @@ def parse_tzx(data: bytes) -> tuple[list, list[str]]:
         # blocks to hand over -- as are ZX81 tapes, which use 0x19 throughout -- and
         # "no data blocks" alone leaves you guessing which of those you have.
         contents = ", ".join(
-            f"{_BLOCK_NAMES.get(block_id, f'${block_id:02X}')} x{count}"
+            "{} x{}".format(_BLOCK_NAMES.get(block_id, "${:02X}".format(block_id)), count)
             for block_id, count in sorted(seen.items())
         )
-        raise ValueError(f"no loadable data blocks in this .tzx -- it holds only: {contents}")
+        raise ValueError("no loadable data blocks in this .tzx -- it holds only: {}".format(contents))
     return items, notes
 
 

@@ -126,11 +126,16 @@ def test_convert_asset_tilemap_requires_resolver():
         convert_asset(entry, read_bytes=_sources({"level1.map.json": level}))
 
 
-def test_guess_kind_native_sprite():
-    assert guess_kind("hero.zxspr.json") == AssetKind.SPRITE_SHEET
+@pytest.mark.parametrize(
+    "filename",
+    ["hero.zx8x8", "hero.zx16x16", "hero.zxsprite", "hero.zx8x8pix", "hero.zx16x16pix",
+     "hero.zxspritepix", "hero.zxspr.json"],
+)
+def test_guess_kind_native_sprite(filename):
+    assert guess_kind(filename) == AssetKind.SPRITE_SHEET
 
 
-def test_convert_asset_native_sprite():
+def test_convert_asset_legacy_native_sprite():
     data = blank_sprite_data(8, 8)
     data["frames"][0]["attrs"][0] = {"ink": 2, "paper": 5, "bright": False}
     raw = json.dumps(data).encode()
@@ -139,6 +144,41 @@ def test_convert_asset_native_sprite():
     assert isinstance(result, FrameSequence)
     assert result.has_attrs
     assert result.attr_plane(0)[0] & 0x07 == 2
+
+
+def test_convert_asset_binary_native_sprite():
+    from zxemu_core.assets.native_sprite import attr_byte, blank_sprite
+
+    document = blank_sprite(16, 16, frame_count=2)
+    document.frames[0].attrs[0] = attr_byte(2, 5, False)
+    entry = AssetEntry(id="s", source="hero.zx16x16", kind=AssetKind.SPRITE_SHEET, symbol="hero")
+    result = convert_asset(entry, read_bytes=_sources({"hero.zx16x16": document.encode(with_header=False)}))
+
+    assert isinstance(result, FrameSequence)
+    assert result.frame_count == 2 and result.frame_width == 16
+    assert result.attr_plane(0)[0] & 0x07 == 2
+
+
+def test_convert_asset_pixel_only_native_sprite_has_no_attrs():
+    from zxemu_core.assets.native_sprite import blank_sprite
+
+    document = blank_sprite(8, 8, has_attrs=False)
+    entry = AssetEntry(id="s", source="hero.zx8x8pix", kind=AssetKind.SPRITE_SHEET, symbol="hero")
+    result = convert_asset(entry, read_bytes=_sources({"hero.zx8x8pix": document.encode(with_header=False)}))
+
+    assert result.has_attrs is False
+    assert result.frame_stride == 8
+
+
+def test_convert_asset_arbitrary_size_native_sprite_carries_its_header():
+    from zxemu_core.assets.native_sprite import blank_sprite
+
+    document = blank_sprite(24, 8)
+    entry = AssetEntry(id="s", source="blob.zxsprite", kind=AssetKind.SPRITE_SHEET, symbol="blob")
+    result = convert_asset(entry, read_bytes=_sources({"blob.zxsprite": document.encode(with_header=True)}))
+
+    assert result.header == bytes([24, 8])
+    assert result.frame_width == 24 and result.frame_height == 8
 
 
 def test_convert_asset_sprite_sheet_generate_attrs_and_warnings():

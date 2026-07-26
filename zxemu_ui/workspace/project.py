@@ -39,6 +39,10 @@ TEXT_SUFFIXES = {".asm", ".s", ".z80", ".z80asm", ".inc", ".i", ".txt", ".md", "
 # else, so assembling one directly would be a mistake, not a shortcut.
 SOURCE_SUFFIXES = {".asm", ".s", ".z80asm"}
 
+# Everything that *contains* Z80 assembly, entry point or not -- an include file is still
+# assembly, and the assembly meter should measure it even though you can't build it alone.
+ASM_SUFFIXES = SOURCE_SUFFIXES | {".inc", ".i", ".z80"}
+
 # The starter templates scaffolded into a new project, one per machine model (each a
 # buildable visible demo). The model is chosen at New-Project time and recorded in the
 # manifest, so opening a project later knows which machine to boot.
@@ -107,7 +111,7 @@ def _sanitize_symbol(name: str) -> str:
     """A filename turned into a valid sjasmplus label: letters/digits/underscore, not digit-first."""
     sanitized = re.sub(r"[^A-Za-z0-9_]", "_", name)
     if not sanitized or not (sanitized[0].isalpha() or sanitized[0] == "_"):
-        sanitized = f"asset_{sanitized}"
+        sanitized = "asset_{}".format(sanitized)
     return sanitized
 
 
@@ -190,9 +194,9 @@ class Project:
         if base not in existing:
             return base
         suffix = 2
-        while f"{base}_{suffix}" in existing:
+        while "{}_{}".format(base, suffix) in existing:
             suffix += 1
-        return f"{base}_{suffix}"
+        return "{}_{}".format(base, suffix)
 
     def _update_asset(self, asset_id: str, update) -> None:
         manifest = self.load_manifest()
@@ -202,7 +206,7 @@ class Project:
                 update(data)
                 break
         else:
-            raise ValueError(f"no asset with id {asset_id!r}")
+            raise ValueError("no asset with id {!r}".format(asset_id))
         manifest["assets"] = assets
         self.save_manifest(manifest)
 
@@ -217,7 +221,7 @@ class Project:
         assets = manifest.get("assets", [])
         filtered = [data for data in assets if data["id"] != asset_id]
         if len(filtered) == len(assets):
-            raise ValueError(f"no asset with id {asset_id!r}")
+            raise ValueError("no asset with id {!r}".format(asset_id))
         manifest["assets"] = filtered
         self.save_manifest(manifest)
 

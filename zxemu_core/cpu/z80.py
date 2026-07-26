@@ -165,7 +165,7 @@ class Z80:
         else:
             handler = BASE_TABLE[opcode]
             if handler is None:
-                raise NotImplementedError(f"opcode 0x{opcode:02X} not implemented")
+                raise NotImplementedError("opcode 0x{:02X} not implemented".format(opcode))
             handler(self)
         return self.t_states - start_t_states
 
@@ -207,5 +207,5 @@ class Z80:
             return
         base_handler = BASE_TABLE[opcode]
         if base_handler is None:
-            raise NotImplementedError(f"opcode 0x{prefix:02X} 0x{opcode:02X} not implemented")
+            raise NotImplementedError("opcode 0x{:02X} 0x{:02X} not implemented".format(prefix, opcode))
         base_handler(self)

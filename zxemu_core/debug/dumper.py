@@ -92,7 +92,7 @@ class Region:
     @property
     def label(self) -> str:
         """A stable, sjasmplus-safe name derived from where it lives."""
-        return f"{self.bank}_{self.start:04x}"
+        return "{}_{:04x}".format(self.bank, self.start)
 
 
 @dataclass
@@ -196,14 +196,14 @@ def check_regions_tile(regions: list[Region], start: int, end: int) -> None:
     for region in regions:
         if region.start != cursor:
             raise ValueError(
-                f"regions do not tile: expected the next region at ${cursor:04X}, "
-                f"got ${region.start:04X}"
+                "regions do not tile: expected the next region at ${:04X}, "
+                "got ${:04X}".format(cursor, region.start)
             )
         if region.end <= region.start:
-            raise ValueError(f"empty or reversed region at ${region.start:04X}")
+            raise ValueError("empty or reversed region at ${:04X}".format(region.start))
         cursor = region.end
     if cursor != end:
-        raise ValueError(f"regions stop at ${cursor:04X}, expected ${end:04X}")
+        raise ValueError("regions stop at ${:04X}, expected ${:04X}".format(cursor, end))
 
 
 def render_data(memory, region: Region) -> list[str]:
@@ -213,11 +213,11 @@ def render_data(memory, region: Region) -> list[str]:
     disassembly, the address is the only way to find your place in several hundred lines
     of hex.
     """
-    lines = [f"{region.label}:"]
+    lines = ["{}:".format(region.label)]
     for base in range(region.start, region.end, DB_BYTES_PER_LINE):
         chunk = [memory.read_byte(a) for a in range(base, min(base + DB_BYTES_PER_LINE, region.end))]
-        body = ",".join(f"${byte:02x}" for byte in chunk)
-        lines.append(f"    db {body}    ; ${base:04x}")
+        body = ",".join("${:02x}".format(byte) for byte in chunk)
+        lines.append("    db {}    ; ${:04x}".format(body, base))
     return lines
 
 
@@ -382,7 +382,7 @@ def collect_labels(memory, regions: list[Region], prefix: str = "") -> dict[int,
         if target in boundaries and target not in labels:
             # The prefix exists for paged banks: the same address lives in all eight of
             # them, so an unqualified `Lc123` would be defined eight times over.
-            labels[target] = f"{prefix}L{target:04x}"
+            labels[target] = "{}L{:04x}".format(prefix, target)
     return labels
 
 
@@ -398,12 +398,12 @@ def render_code(memory, region: Region, labels: dict[int, str],
     lines: list[str] = []
     for address, text, _length in walk_code(memory, region):
         if address in labels:
-            lines.append(f"{labels[address]}:")
+            lines.append("{}:".format(labels[address]))
         if text is None:
-            lines.append(f"    db ${memory.read_byte(address):02x}"
-                         f"    ; ${address:04x} (tail of region)")
+            lines.append("    db ${:02x}"
+                         "    ; ${:04x} (tail of region)".format(memory.read_byte(address), address))
             continue
-        lines.append(f"    {_with_names(text, labels, rom_names)}    ; ${address:04x}")
+        lines.append("    {}    ; ${:04x}".format(_with_names(text, labels, rom_names), address))
     return lines
 
 
@@ -529,7 +529,7 @@ def render_snapshot_lua(state: dict, paged: bool, filename: str) -> list[str]:
         "        end",
         "",
     ]
-    lines += [f"        {line}" for line in header]
+    lines += ["        {}".format(line) for line in header]
     lines += [""]
     if paged:
         lines += [
@@ -538,19 +538,19 @@ def render_snapshot_lua(state: dict, paged: bool, filename: str) -> list[str]:
             "        block(0x4000, 0x7fff)",
             "        block(0x8000, 0xbfff)",
             "        sj.set_slot(0xc000)",
-            f"        sj.set_page({state['ram_bank']})",
+            "        sj.set_page({})".format(state['ram_bank']),
             "        block(0xc000, 0xffff)",
-            f"        word(0x{state['pc']:04x})   -- PC lives in the extra header here",
-            f"        byte(0x{state['port_7ffd']:02x})   -- the paging latch",
+            "        word(0x{:04x})   -- PC lives in the extra header here".format(state['pc']),
+            "        byte(0x{:02x})   -- the paging latch".format(state['port_7ffd']),
             "        byte(0)      -- TR-DOS ROM flag",
             "        -- ...then every other bank, ascending.",
-            f"        for page = 0, 7 do",
-            f"            if page ~= 5 and page ~= 2 and page ~= {state['ram_bank']} then",
+            "        for page = 0, 7 do",
+            "            if page ~= 5 and page ~= 2 and page ~= {} then".format(state['ram_bank']),
             "                sj.set_page(page)",
             "                block(0xc000, 0xffff)",
             "            end",
             "        end",
-            f"        sj.set_page({state['ram_bank']})   -- leave the mapping as we found it",
+            "        sj.set_page({})   -- leave the mapping as we found it".format(state['ram_bank']),
         ]
         expected = SNA_128K_SIZE
     else:
@@ -559,18 +559,18 @@ def render_snapshot_lua(state: dict, paged: bool, filename: str) -> list[str]:
             "        -- goes at SP-2 and the header points there. Those two bytes are below",
             "        -- the stack pointer, i.e. memory the program treats as scratch anyway.",
             "        block(0x4000, 0xffff)",
-            f"        local sp_slot = 0x{(state['sp'] - 2) & 0xFFFF:04x} - 0x4000 + 1 + 27",
-            f"        out[sp_slot]     = string.char(0x{state['pc'] & 0xFF:02x})",
-            f"        out[sp_slot + 1] = string.char(0x{(state['pc'] >> 8) & 0xFF:02x})",
+            "        local sp_slot = 0x{:04x} - 0x4000 + 1 + 27".format(state['sp'] - 2 & 65535),
+            "        out[sp_slot]     = string.char(0x{:02x})".format(state['pc'] & 255),
+            "        out[sp_slot + 1] = string.char(0x{:02x})".format(state['pc'] >> 8 & 255),
         ]
         expected = SNA_48K_SIZE
     lines += [
         "",
         "        local blob = table.concat(out)",
-        f"        if #blob ~= {expected} then",
-        f"            sj.error(\"snapshot is \" .. #blob .. \" bytes, expected {expected}\")",
+        "        if #blob ~= {} then".format(expected),
+        "            sj.error(\"snapshot is \" .. #blob .. \" bytes, expected {}\")".format(expected),
         "        end",
-        f"        local f = assert(io.open(\"{filename}\", \"wb\"))",
+        "        local f = assert(io.open(\"{}\", \"wb\"))".format(filename),
         "        f:write(blob)",
         "        f:close()",
         "    ENDLUA",
@@ -586,26 +586,26 @@ def _sna_header_lua(state: dict, paged: bool) -> list[str]:
     """
     stored_sp = state["sp"] if paged else (state["sp"] - 2) & 0xFFFF
     return [
-        f"byte(0x{state['i']:02x})          -- I",
-        f"word(0x{state['hl2']:04x})        -- HL'",
-        f"word(0x{state['de2']:04x})        -- DE'",
-        f"word(0x{state['bc2']:04x})        -- BC'",
-        f"word(0x{state['af2']:04x})        -- AF'",
-        f"word(0x{state['hl']:04x})        -- HL",
-        f"word(0x{state['de']:04x})        -- DE",
-        f"word(0x{state['bc']:04x})        -- BC",
-        f"word(0x{state['iy']:04x})        -- IY",
-        f"word(0x{state['ix']:04x})        -- IX",
-        f"byte(0x{0x04 if state['iff'] else 0x00:02x})          -- IFF2 in bit 2",
-        f"byte(0x{state['r']:02x})          -- R",
-        f"word(0x{state['af']:04x})        -- AF",
-        f"word(0x{stored_sp:04x})        -- SP",
-        f"byte({state['im']})             -- interrupt mode",
-        f"byte({state['border']})             -- border",
+        "byte(0x{:02x})          -- I".format(state['i']),
+        "word(0x{:04x})        -- HL'".format(state['hl2']),
+        "word(0x{:04x})        -- DE'".format(state['de2']),
+        "word(0x{:04x})        -- BC'".format(state['bc2']),
+        "word(0x{:04x})        -- AF'".format(state['af2']),
+        "word(0x{:04x})        -- HL".format(state['hl']),
+        "word(0x{:04x})        -- DE".format(state['de']),
+        "word(0x{:04x})        -- BC".format(state['bc']),
+        "word(0x{:04x})        -- IY".format(state['iy']),
+        "word(0x{:04x})        -- IX".format(state['ix']),
+        "byte(0x{:02x})          -- IFF2 in bit 2".format(0x04 if state["iff"] else 0x00),
+        "byte(0x{:02x})          -- R".format(state['r']),
+        "word(0x{:04x})        -- AF".format(state["af"]),
+        "word(0x{:04x})        -- SP".format(stored_sp),
+        "byte({})             -- interrupt mode".format(state['im']),
+        "byte({})             -- border".format(state['border']),
     ]
 
 
 def _safe_label(name: str) -> str:
     """Make a ROM routine name usable as a label: ``SA/LD-RET`` -> ``SA_LD_RET``."""
     cleaned = "".join(ch if ch.isalnum() else "_" for ch in name)
-    return cleaned if cleaned[:1].isalpha() else f"R_{cleaned}"
+    return cleaned if cleaned[:1].isalpha() else "R_{}".format(cleaned)

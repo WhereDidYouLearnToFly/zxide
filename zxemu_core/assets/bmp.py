@@ -44,18 +44,18 @@ def read_bmp(data: bytes) -> BmpImage:
     pixel_offset = struct.unpack_from("<I", data, 10)[0]
     header_size = struct.unpack_from("<I", data, 14)[0]
     if header_size < 40:
-        raise BmpError(f"unsupported BMP DIB header (size {header_size}); need BITMAPINFOHEADER or newer")
+        raise BmpError("unsupported BMP DIB header (size {}); need BITMAPINFOHEADER or newer".format(header_size))
 
     width, height_raw, _planes, bitcount, compression = struct.unpack_from("<iiHHI", data, 18)
     if compression != 0:
-        raise BmpError(f"unsupported BMP compression mode {compression} (only uncompressed BI_RGB is supported)")
+        raise BmpError("unsupported BMP compression mode {} (only uncompressed BI_RGB is supported)".format(compression))
     if bitcount not in (1, 4, 8, 24):
-        raise BmpError(f"unsupported BMP bit depth {bitcount} (supported: 1, 4, 8, 24)")
+        raise BmpError("unsupported BMP bit depth {} (supported: 1, 4, 8, 24)".format(bitcount))
 
     top_down = height_raw < 0
     height = abs(height_raw)
     if width <= 0 or height <= 0:
-        raise BmpError(f"invalid BMP dimensions {width}x{height}")
+        raise BmpError("invalid BMP dimensions {}x{}".format(width, height))
 
     palette: list[tuple[int, int, int]] = []
     if bitcount <= 8:

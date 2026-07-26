@@ -63,7 +63,7 @@ _VALUE_WIDTH = 4  # fits a 16-bit pair
 
 
 def _cell_text(label: str, value: str) -> str:
-    return f"{label:>{_NAME_WIDTH}} {value:>{_VALUE_WIDTH}}"
+    return "{:>{}} {:>{}}".format(label, _NAME_WIDTH, value, _VALUE_WIDTH)
 
 
 def _mono(scale: float = 1.0):
@@ -118,7 +118,7 @@ class RegistersView(QWidget):
                 cell = _ClickableLabel()
                 cell.setFont(_mono())
                 cell.setText(_cell_text(label, "-" * width))
-                cell.setToolTip(f"Click to set {label}")
+                cell.setToolTip("Click to set {}".format(label))
                 cell.clicked.connect(
                     lambda name=label, a=attr, w=width: self._edit_register(name, a, w)
                 )
@@ -170,7 +170,7 @@ class RegistersView(QWidget):
         for row in _REG_ROWS:
             for label, attr, width in row:
                 self._value_labels[attr].setText(
-                    _cell_text(label, f"{getattr(regs, attr):0{width}X}")
+                    _cell_text(label, "{:0{}X}".format(getattr(regs, attr), width))
                 )
         for name, mask, _description in _FLAGS:
             on = bool(regs.f & mask)
@@ -196,7 +196,7 @@ class RegistersView(QWidget):
         """
         current = getattr(self.machine.cpu.regs, attr)
         text, ok = QInputDialog.getText(
-            self, f"Set {label}", f"{label} (hex):", text=f"{current:0{width}X}"
+            self, "Set {}".format(label), "{} (hex):".format(label), text="{:0{}X}".format(current, width)
         )
         if not ok or not text.strip():
             return
@@ -215,10 +215,10 @@ class RegistersView(QWidget):
         frame = machine.frame_tstates
         percent = 100.0 * within / frame if frame else 0.0
         # Field widths chosen so the two lines' numbers sit in the same columns.
-        self._tstates_frame_label.setText(f"frame {within:5d}/{frame} {percent:4.1f}%")
-        self._tstates_step_label.setText(f"step  +{step:<7d} T {total}")
+        self._tstates_frame_label.setText("frame {:5d}/{} {:4.1f}%".format(within, frame, percent))
+        self._tstates_step_label.setText("step  +{:<7d} T {}".format(step, total))
         self._tstates_frame_label.setToolTip(
-            f"T-states into the current frame (of {frame}), and how far through it that is"
+            "T-states into the current frame (of {}), and how far through it that is".format(frame)
         )
         self._tstates_step_label.setToolTip(
             "T-states since the last refresh — while single-stepping, the instruction's own "

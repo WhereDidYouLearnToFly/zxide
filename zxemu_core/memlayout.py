@@ -47,7 +47,7 @@ def bank_ids_for_model(model: str) -> list[str]:
     sit in *now*.
     """
     if model in PAGED_MODELS:
-        return ["rom0", "rom1"] + [f"ram{n}" for n in range(8)]
+        return ["rom0", "rom1"] + ["ram{}".format(n) for n in range(8)]
     return ["rom", "ram1", "ram2", "ram3"]
 
 
@@ -83,21 +83,21 @@ class FreeSpaceIndex:
 
     def place(self, bank: str, offset: int, length: int) -> None:
         if bank not in self._placed:
-            raise ValueError(f"unknown bank {bank!r} for model {self.model!r}")
+            raise ValueError("unknown bank {!r} for model {!r}".format(bank, self.model))
         if length <= 0:
-            raise ValueError(f"length must be positive, got {length}")
+            raise ValueError("length must be positive, got {}".format(length))
         if offset < 0 or offset + length > BANK_SIZE:
-            raise ValueError(f"{bank}:{offset}+{length} doesn't fit in a {BANK_SIZE}-byte bank")
+            raise ValueError("{}:{}+{} doesn't fit in a {}-byte bank".format(bank, offset, length, BANK_SIZE))
         for start, existing_length in self._placed[bank]:
             if offset < start + existing_length and start < offset + length:
                 raise ValueError(
-                    f"{bank}:{offset}+{length} overlaps an existing range at {bank}:{start}+{existing_length}"
+                    "{}:{}+{} overlaps an existing range at {}:{}+{}".format(bank, offset, length, bank, start, existing_length)
                 )
         self._placed[bank].append((offset, length))
 
     def free_ranges(self, bank: str) -> list[Range]:
         if bank not in self._placed:
-            raise ValueError(f"unknown bank {bank!r} for model {self.model!r}")
+            raise ValueError("unknown bank {!r} for model {!r}".format(bank, self.model))
         occupied = sorted(self._placed[bank])
         free: list[Range] = []
         cursor = 0

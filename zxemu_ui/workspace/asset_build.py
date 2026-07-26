@@ -118,7 +118,7 @@ class AssetBuildError(ValueError):
 
 
 def cache_path(project, symbol: str) -> Path:
-    return project.folder / GENERATED_SUBDIR / f"{symbol}.bin"
+    return project.folder / GENERATED_SUBDIR / "{}.bin".format(symbol)
 
 
 def cached_length(project, entry) -> int | None:
@@ -182,7 +182,7 @@ def auto_locate_one(project, asset_id: str) -> bool:
     assets = project.assets()
     target = next((entry for entry in assets if entry.id == asset_id), None)
     if target is None:
-        raise ValueError(f"no asset with id {asset_id!r}")
+        raise ValueError("no asset with id {!r}".format(asset_id))
 
     index = FreeSpaceIndex(project.model)
     for entry in assets:
@@ -221,7 +221,7 @@ def ensure_assets_include(project) -> None:
         stripped = line.strip().lower()
         if stripped.startswith("include") or stripped.startswith("device"):
             insert_at = i + 1
-    lines.insert(insert_at, f"    {ASSETS_INCLUDE_LINE}")
+    lines.insert(insert_at, "    {}".format(ASSETS_INCLUDE_LINE))
     main_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -238,39 +238,45 @@ def _slot_for_bank(bank_id: str) -> int:
 def _address_lines(model: str, bank: str, offset: int) -> list[str]:
     if model not in PAGED_MODELS:
         slot = bank_ids_for_model("48k").index(bank)
-        return [f"    org ${_SLOT_BASE[slot] + offset:04x}"]
+        return ["    org ${:04x}".format(_SLOT_BASE[slot] + offset)]
     bank_number = int(bank[3:])  # "ram3" -> 3, "rom1" -> 1 -- both prefixes are 3 characters
     return [
-        f"    SLOT {_slot_for_bank(bank)}",
-        f"    PAGE {bank_number}",
-        f"    org ${_SLOT_BASE[_slot_for_bank(bank)] + offset:04x}",
+        "    SLOT {}".format(_slot_for_bank(bank)),
+        "    PAGE {}".format(bank_number),
+        "    org ${:04x}".format(_SLOT_BASE[_slot_for_bank(bank)] + offset),
     ]
 
 
 def _asset_asm_block(project, entry: AssetEntry, raw_bytes: bytes, result, cache_rel_path: str) -> list[str]:
     bank, offset = entry.placement["bank"], entry.placement["offset"]
-    lines = [f"; {entry.symbol} ({entry.kind.value}) -- {bank}:{offset:#06x}, {len(raw_bytes)} bytes"]
+    lines = ["; {} ({}) -- {}:{:#06x}, {} bytes".format(entry.symbol, entry.kind.value, bank, offset, len(raw_bytes))]
     lines += _address_lines(project.model, bank, offset)
-    lines.append(f"{entry.symbol}:")
-    lines.append(f'    incbin "{cache_rel_path}"')
-    lines.append(f"{entry.symbol}_LENGTH: equ {len(raw_bytes)}")
+    lines.append("{}:".format(entry.symbol))
+    lines.append('    incbin "{}"'.format(cache_rel_path))
+    lines.append("{}_LENGTH: equ {}".format(entry.symbol, len(raw_bytes)))
 
     if isinstance(result, FrameSequence):
-        lines.append(f"{entry.symbol}_FRAME_COUNT: equ {result.frame_count}")
-        lines.append(f"{entry.symbol}_FRAME_STRIDE: equ {result.frame_stride}")
+        # Where the frames actually begin: past the size header, for the source formats
+        # that carry one (a .zxsprite). Always emitted, so code that walks frames can use
+        # one name without caring which sprite format it was authored in.
+        lines.append("{}_DATA: equ {} + {}".format(entry.symbol, entry.symbol, len(result.header)))
+        lines.append("{}_WIDTH: equ {}".format(entry.symbol, result.frame_width))
+        lines.append("{}_HEIGHT: equ {}".format(entry.symbol, result.frame_height))
+        lines.append("{}_FRAME_COUNT: equ {}".format(entry.symbol, result.frame_count))
+        lines.append("{}_FRAME_STRIDE: equ {}".format(entry.symbol, result.frame_stride))
         if entry.kind is AssetKind.FONT:
             first_char = entry.params.get("first_char_code", 32)
-            lines.append(f"{entry.symbol}_FIRST_CHAR: equ {first_char}")
+            lines.append("{}_FIRST_CHAR: equ {}".format(entry.symbol, first_char))
         if result.has_attrs:
             # Where the attribute plane starts within each frame's stride -- after the
             # pixel plane, and the mask plane too if this sprite also has one.
             attr_offset = result.plane_bytes * (2 if result.has_mask else 1)
-            lines.append(f"{entry.symbol}_ATTR_OFFSET: equ {attr_offset}")
+            lines.append("{}_ATTR_OFFSET: equ {}".format(entry.symbol, attr_offset))
     elif entry.kind is AssetKind.TILEMAP:
         tilemap = parse_tilemap_json(json.loads((project.folder / entry.source).read_text()))
-        lines.append(f"{entry.symbol}_WIDTH: equ {tilemap.width}")
-        lines.append(f"{entry.symbol}_HEIGHT: equ {tilemap.height}")
-        lines.append(f"; tileset: {tilemap.tileset_symbol}")
+        lines.append("{}_WIDTH: equ {}".format(entry.symbol, tilemap.width))
+        lines.append("{}_HEIGHT: equ {}".format(entry.symbol, tilemap.height))
+        lines.append("; tileset: {}".format(tilemap.tileset_symbol))
 
     lines.append("")
     return lines
@@ -302,34 +308,34 @@ def regenerate_assets_asm(project) -> Path:
             entry_warnings: list[str] = []
             result = convert_asset(entry, read_bytes=read_bytes, warnings=entry_warnings)
         except Exception as exc:
-            raise AssetBuildError(f"asset '{entry.symbol}': {exc}") from exc
-        warnings.extend(f"{entry.symbol}: {w}" for w in entry_warnings)
+            raise AssetBuildError("asset '{}': {}".format(entry.symbol, exc)) from exc
+        warnings.extend("{}: {}".format(entry.symbol, w) for w in entry_warnings)
         converted[entry.id] = result
         if isinstance(result, FrameSequence):
             frame_counts[entry.symbol] = result.frame_count
 
     def tileset_frame_count(symbol: str) -> int:
         if symbol not in frame_counts:
-            raise AssetBuildError(f"tilemap references unknown tileset symbol '{symbol}'")
+            raise AssetBuildError("tilemap references unknown tileset symbol '{}'".format(symbol))
         return frame_counts[symbol]
 
     for entry in tilemaps:
         try:
             result = convert_asset(entry, read_bytes=read_bytes, tileset_frame_count=tileset_frame_count)
         except Exception as exc:
-            raise AssetBuildError(f"asset '{entry.symbol}': {exc}") from exc
+            raise AssetBuildError("asset '{}': {}".format(entry.symbol, exc)) from exc
         converted[entry.id] = result
 
     lines = [
-        f"; {GENERATED_ASM_NAME} -- GENERATED FILE, do not edit by hand.",
+        "; {} -- GENERATED FILE, do not edit by hand.".format(GENERATED_ASM_NAME),
         "; Regenerated on every build from this project's imported assets (see zxide.json).",
         "",
     ]
     for entry in assets:
         if not isinstance(entry.placement, dict):
-            raise AssetBuildError(f"asset '{entry.symbol}' has no placement (auto-locate found no free space)")
+            raise AssetBuildError("asset '{}' has no placement (auto-locate found no free space)".format(entry.symbol))
         result = converted[entry.id]
-        raw_bytes = result.data if isinstance(result, FrameSequence) else result
+        raw_bytes = result.header + result.data if isinstance(result, FrameSequence) else result
 
         cache_file = cache_path(project, entry.symbol)
         cache_file.parent.mkdir(parents=True, exist_ok=True)

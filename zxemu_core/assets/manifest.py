@@ -99,6 +99,13 @@ class FrameSequence:
     plotted in a single colour chosen at draw time. ``has_attrs`` requires
     ``frame_height`` to also be a multiple of 8 (not just ``frame_width``), since an
     attribute cell is 8x8.
+
+    ``header`` is bytes that belong *in front of* the frames in the blob the build
+    writes, but not in ``data`` -- currently only a ``.zxsprite``'s two-byte
+    width/height (see ``native_sprite``). Keeping it out of ``data`` is what lets every
+    consumer keep indexing frames by ``frame_stride`` from byte zero regardless of which
+    source format produced them; the build emits a ``<symbol>_DATA`` label past it so
+    Z80 code has one name for "where the frames start" either way.
     """
 
     frame_width: int
@@ -107,15 +114,16 @@ class FrameSequence:
     has_mask: bool
     data: bytes
     has_attrs: bool = False
+    header: bytes = b""
 
     def __post_init__(self) -> None:
         if self.frame_width % 8 != 0:
-            raise ValueError(f"frame_width must be a multiple of 8, got {self.frame_width}")
+            raise ValueError("frame_width must be a multiple of 8, got {}".format(self.frame_width))
         if self.has_attrs and self.frame_height % 8 != 0:
-            raise ValueError(f"frame_height must be a multiple of 8 for attributes, got {self.frame_height}")
+            raise ValueError("frame_height must be a multiple of 8 for attributes, got {}".format(self.frame_height))
         expected = self.frame_count * self.frame_stride
         if len(self.data) != expected:
-            raise ValueError(f"FrameSequence data is {len(self.data)} bytes, expected {expected}")
+            raise ValueError("FrameSequence data is {} bytes, expected {}".format(len(self.data), expected))
 
     @property
     def bytes_per_row(self) -> int:
@@ -149,7 +157,7 @@ class FrameSequence:
     def frame(self, index: int) -> bytes:
         """The raw bytes of frame ``index`` (pixel plane, then mask, then attributes -- whichever are present)."""
         if not 0 <= index < self.frame_count:
-            raise IndexError(f"frame {index} out of range (0..{self.frame_count - 1})")
+            raise IndexError("frame {} out of range (0..{})".format(index, self.frame_count - 1))
         start = index * self.frame_stride
         return self.data[start : start + self.frame_stride]
 

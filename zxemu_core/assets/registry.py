@@ -35,7 +35,7 @@ def guess_kind(filename: str) -> AssetKind | None:
     lowered = filename.lower()
     if lowered.endswith(".map.json"):
         return AssetKind.TILEMAP
-    if lowered.endswith(native_sprite.NATIVE_SUFFIX):
+    if native_sprite.sprite_suffix(lowered) is not None:
         return AssetKind.SPRITE_SHEET
     for suffix, kind in SUFFIX_KIND_HINTS.items():
         if lowered.endswith(suffix):
@@ -72,10 +72,10 @@ def convert_asset(
         return data
 
     if kind is AssetKind.SPRITE_SHEET:
-        if isinstance(entry.source, str) and entry.source.lower().endswith(native_sprite.NATIVE_SUFFIX):
+        if isinstance(entry.source, str) and native_sprite.sprite_suffix(entry.source) is not None:
             # A sprite drawn in zxide's own pixel editor -- already plain pixels/attrs,
             # no image decoding or layout params involved.
-            return native_sprite.parse_native_sprite(json.loads(read_bytes(entry.source).decode("utf-8")))
+            return native_sprite.convert_sprite_file(entry.source, read_bytes(entry.source))
         image = read_bmp(read_bytes(entry.source))
         sprite_warnings: list = []
         result = bmp_convert.convert_sprite_sheet(
@@ -114,7 +114,7 @@ def convert_asset(
         raw = binary_convert.convert_binary(read_bytes(entry.source))
         stride = (frame_width // 8) * frame_height
         if len(raw) % stride != 0:
-            raise ValueError(f"font binary is {len(raw)} bytes, not a multiple of the {stride}-byte glyph stride")
+            raise ValueError("font binary is {} bytes, not a multiple of the {}-byte glyph stride".format(len(raw), stride))
         return FrameSequence(frame_width, frame_height, len(raw) // stride, False, raw)
 
     if kind is AssetKind.BINARY:
@@ -133,7 +133,7 @@ def convert_asset(
         count = tileset_frame_count(tilemap.tileset_symbol)
         return tilemap_convert.pack_tilemap(tilemap, count, pack_nibble=params.get("pack_nibble", False))
 
-    raise ValueError(f"no converter registered for asset kind {kind!r}")
+    raise ValueError("no converter registered for asset kind {!r}".format(kind))
 
 
 def _mask_color(params: dict) -> tuple[int, int, int] | None:

@@ -206,6 +206,10 @@ class EditorArea(QTabWidget):
     """A tab group of code documents; the window's central editing surface."""
 
     breakpoints_changed = pyqtSignal()  # any tab's breakpoints changed
+    # Any edit, cursor move, or selection change in any tab. One signal rather than three
+    # because everything downstream (currently the assembly meter) wants "the text or what
+    # is selected in it is now different" and would otherwise connect to all three itself.
+    cursor_or_text_changed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -230,8 +234,27 @@ class EditorArea(QTabWidget):
         edit.setTabStopDistance(4 * edit.fontMetrics().horizontalAdvance(" "))
         edit._highlighter = Z80Highlighter(edit.document())  # keep a reference alive
         edit.breakpoints_changed.connect(self.breakpoints_changed)  # bubble up
+        edit.textChanged.connect(self.cursor_or_text_changed)
+        edit.cursorPositionChanged.connect(self.cursor_or_text_changed)
+        edit.selectionChanged.connect(self.cursor_or_text_changed)
         self._apply_special_chars(edit)
         return edit
+
+    def selected_or_all_text(self) -> tuple[str, bool]:
+        """``(text, is_selection)`` -- what the caret has selected, or the whole document.
+
+        "Whole file when nothing is selected" is the behaviour the assembly meter wants,
+        and getting the text is the part that needs to know about Qt: ``selectedText()``
+        joins lines with U+2029 rather than a newline, which any line-based consumer has
+        to undo.
+        """
+        edit = self.currentWidget()
+        if not isinstance(edit, QPlainTextEdit):
+            return "", False
+        cursor = edit.textCursor()
+        if cursor.hasSelection():
+            return cursor.selectedText().replace("\u2029", "\n"), True
+        return edit.toPlainText(), False
 
     # --- breakpoints & navigation ---------------------------------------------
 
@@ -313,6 +336,26 @@ class EditorArea(QTabWidget):
         index = self.addTab(edit, Path(path).name)
         self.setCurrentIndex(index)
 
+    def close_files_under(self, path: str) -> list[str]:
+        """Close every tab whose file is ``path`` or lives inside it. Returns what closed.
+
+        Deleting a file from the project tree has to take its editor tab with it,
+        otherwise the tab lingers over a file that no longer exists and the next Save All
+        quietly recreates it.
+        """
+        target = Path(path).resolve()
+        closed: list[str] = []
+        for i in reversed(range(self.count())):
+            widget = self.widget(i)
+            file_path = widget.property("file_path") if widget else None
+            if not file_path:
+                continue
+            resolved = Path(file_path)
+            if resolved == target or target in resolved.parents:
+                closed.append(file_path)
+                self.removeTab(i)
+        return closed
+
     def current_path(self) -> str | None:
         """The file in the focused tab, or None if the tab is not backed by a file.
 
@@ -344,7 +387,7 @@ class EditorArea(QTabWidget):
         if index < 0:
             return
         name = Path(edit.property("file_path") or "untitled").name
-        self.setTabText(index, f"● {name}" if edit.document().isModified() else name)
+        self.setTabText(index, "● {}".format(name) if edit.document().isModified() else name)
 
     def _index_of_path(self, key: str) -> int | None:
         for i in range(self.count()):

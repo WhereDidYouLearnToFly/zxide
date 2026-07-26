@@ -36,10 +36,10 @@ def parse_tilemap_json(data: dict) -> TilemapData:
     width, height = data["width"], data["height"]
     tiles = data["tiles"]
     if len(tiles) != height:
-        raise ValueError(f"tilemap declares height {height} but has {len(tiles)} rows")
+        raise ValueError("tilemap declares height {} but has {} rows".format(height, len(tiles)))
     for y, row in enumerate(tiles):
         if len(row) != width:
-            raise ValueError(f"tilemap declares width {width} but row {y} has {len(row)} tiles")
+            raise ValueError("tilemap declares width {} but row {} has {} tiles".format(width, y, len(row)))
     return TilemapData(tileset_symbol=tileset_symbol, width=width, height=height, tiles=tiles)
 
 
@@ -52,13 +52,13 @@ def pack_tilemap(tilemap: TilemapData, tileset_frame_count: int, pack_nibble: bo
     of what the previous row contained.
     """
     if pack_nibble and tileset_frame_count > 16:
-        raise ValueError(f"pack_nibble needs a tileset of 16 or fewer frames, got {tileset_frame_count}")
+        raise ValueError("pack_nibble needs a tileset of 16 or fewer frames, got {}".format(tileset_frame_count))
 
     for y, row in enumerate(tilemap.tiles):
         for x, index in enumerate(row):
             if not 0 <= index < tileset_frame_count:
                 raise ValueError(
-                    f"tile ({x},{y}) = {index} is out of range for a {tileset_frame_count}-frame tileset"
+                    "tile ({},{}) = {} is out of range for a {}-frame tileset".format(x, y, index, tileset_frame_count)
                 )
 
     out = bytearray()

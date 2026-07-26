@@ -396,7 +396,7 @@ class Machine128(Machine):
         rom_index = (self.port_7ffd >> 4) & 1
         ram_bank = self.port_7ffd & 0x07
         screen_bank = 7 if self.port_7ffd & 0x08 else 5
-        labels = (f"ROM{rom_index}", "RAM5", "RAM2", f"RAM{ram_bank}")
+        labels = ("ROM{}".format(rom_index), "RAM5", "RAM2", "RAM{}".format(ram_bank))
         return Paging128(self.port_7ffd, rom_index, ram_bank, screen_bank, self._locked, labels)
 
 

@@ -104,12 +104,12 @@ def _default_entry(regions) -> int:
 
 
 def _write_region(memory, folder: Path, region, labels, rom_names) -> None:
-    path = folder / "regions" / f"{region.label}.asm"
+    path = folder / "regions" / "{}.asm".format(region.label)
     header = [
-        f"; {region.label} -- ${region.start:04x}-${region.end - 1:04x} "
-        f"({region.size} bytes, {region.kind})",
+        "; {} -- ${:04x}-${:04x} "
+        "({} bytes, {})".format(region.label, region.start, region.end - 1, region.size, region.kind),
         "",
-        f"    org ${region.start:04x}",
+        "    org ${:04x}".format(region.start),
         "",
     ]
     if region.kind == dumper.CODE:
@@ -117,9 +117,9 @@ def _write_region(memory, folder: Path, region, labels, rom_names) -> None:
     elif region.size >= dumper.INCBIN_THRESHOLD:
         # Big blobs go out as binary and come back by reference: 40K of `db` is unreadable
         # and slow to assemble, and nobody annotates it anyway.
-        blob = folder / "data" / f"{region.label}.bin"
+        blob = folder / "data" / "{}.bin".format(region.label)
         blob.write_bytes(dumper.region_bytes(memory, region))
-        body = [f"{region.label}:", f'    incbin "data/{region.label}.bin"']
+        body = ["{}:".format(region.label), '    incbin "data/{}.bin"'.format(region.label)]
     else:
         body = dumper.render_data(memory, region)
     path.write_text("\n".join(header + body) + "\n", encoding="utf-8")
@@ -171,55 +171,55 @@ def _write_one_bank(folder: Path, number: int, bank, coverage) -> None:
     """
     flags = coverage.executed_in_bank(number) if coverage is not None else None
     header = [
-        f"; RAM bank {number} -- paged out at the moment of the dump, so read straight",
+        "; RAM bank {} -- paged out at the moment of the dump, so read straight".format(number),
         "; from the bank rather than through the address space.",
     ]
     if flags is None or not any(flags):
         # Never ran with this bank mapped. "Not yet", not "never" -- run the part of the
         # program that uses it and dump again.
-        (folder / "data" / f"bank{number}.bin").write_bytes(bytes(bank.data))
+        (folder / "data" / "bank{}.bin".format(number)).write_bytes(bytes(bank.data))
         body = [
             "; Nothing was recorded executing while it was mapped, so it is kept as data.",
             "",
             "    SLOT 3",
-            f"    PAGE {number}",
-            f"    org ${_PAGED_SLOT_BASE:04x}",
+            "    PAGE {}".format(number),
+            "    org ${:04x}".format(_PAGED_SLOT_BASE),
             "",
-            f"bank{number}:",
-            f'    incbin "data/bank{number}.bin"',
+            "bank{}:".format(number),
+            '    incbin "data/bank{}.bin"'.format(number),
         ]
-        (folder / "regions" / f"bank{number}.asm").write_text(
+        (folder / "regions" / "bank{}.asm".format(number)).write_text(
             "\n".join(header + body) + "\n", encoding="utf-8")
         return
 
     window = dumper.BankWindow(bank.data, _PAGED_SLOT_BASE)
     regions = dumper.plan_regions(
         dumper.flags_for_bank(flags, _PAGED_SLOT_BASE),
-        start=_PAGED_SLOT_BASE, end=dumper.ADDRESS_SPACE, bank=f"bank{number}",
+        start=_PAGED_SLOT_BASE, end=dumper.ADDRESS_SPACE, bank="bank{}".format(number),
         memory=window,
     )
     dumper.check_regions_tile(regions, _PAGED_SLOT_BASE, dumper.ADDRESS_SPACE)
-    labels = dumper.collect_labels(window, regions, prefix=f"b{number}_")
+    labels = dumper.collect_labels(window, regions, prefix="b{}_".format(number))
     rom_names = dumper.rom_symbols_used(window, regions)
 
     body = [
         "; Disassembled where the CPU was observed to run with this bank mapped in.",
         "",
         "    SLOT 3",
-        f"    PAGE {number}",
-        f"    org ${_PAGED_SLOT_BASE:04x}",
+        "    PAGE {}".format(number),
+        "    org ${:04x}".format(_PAGED_SLOT_BASE),
         "",
     ]
     for region in regions:
         if region.kind == dumper.CODE:
             body += dumper.render_code(window, region, labels, rom_names)
         elif region.size >= dumper.INCBIN_THRESHOLD:
-            blob = folder / "data" / f"{region.label}.bin"
+            blob = folder / "data" / "{}.bin".format(region.label)
             blob.write_bytes(dumper.region_bytes(window, region))
-            body += [f"{region.label}:", f'    incbin "data/{region.label}.bin"']
+            body += ["{}:".format(region.label), '    incbin "data/{}.bin"'.format(region.label)]
         else:
             body += dumper.render_data(window, region)
-    (folder / "regions" / f"bank{number}.asm").write_text(
+    (folder / "regions" / "bank{}.asm".format(number)).write_text(
         "\n".join(header + body) + "\n", encoding="utf-8")
 
 
@@ -236,7 +236,7 @@ def _render_main(regions, rom_names, model: str, entry: int, hidden=(),
         "; observed to execute is disassembled; everything else is kept as bytes, which",
         "; assembles to exactly the same program either way.",
         ";",
-        f"; {code_bytes} bytes of code, {data_bytes} bytes of data.",
+        "; {} bytes of code, {} bytes of data.".format(code_bytes, data_bytes),
         ";",
         "; Two things worth knowing before you trust it:",
         ";   * a region left as data is not necessarily data -- it may simply be code you",
@@ -250,7 +250,7 @@ def _render_main(regions, rom_names, model: str, entry: int, hidden=(),
         lines += [
             "; This machine has eight RAM banks, and all of them are here. The ones mapped",
             "; into the address space at the moment of the dump are above; the ones paged",
-            f"; out ({banks}) follow, read straight from the bank.",
+            "; out ({}) follow, read straight from the bank.".format(banks),
             ";",
             "; Every bank is disassembled wherever the CPU was seen to run with that bank",
             "; mapped in -- coverage records which bank was selected at the time, because",
@@ -259,14 +259,14 @@ def _render_main(regions, rom_names, model: str, entry: int, hidden=(),
             "",
         ]
     lines += [
-        f"    device {device}",
+        "    device {}".format(device),
         "",
     ]
     if rom_names:
         lines += ["; ROM routines this code calls. The ROM itself is not dumped -- it is",
                   "; the same 16K on every machine -- so these are named, not defined.",
                   ""]
-        lines += [f"{name:<24} equ ${address:04x}"
+        lines += ["{:<24} equ ${:04x}".format(name, address)
                   for address, name in sorted(rom_names.items(), key=lambda kv: kv[0])]
         lines.append("")
     if live_bank is not None:
@@ -276,11 +276,11 @@ def _render_main(regions, rom_names, model: str, entry: int, hidden=(),
             "; mapped there, so without this the top 16K would be assembled into the wrong",
             "; bank -- and the bank that was actually mapped would come out empty.",
             "    SLOT 3",
-            f"    PAGE {live_bank}",
+            "    PAGE {}".format(live_bank),
             "",
         ]
-    lines += [f'    include "regions/{region.label}.asm"' for region in regions]
-    lines += [f'    include "regions/bank{number}.asm"' for number in hidden]
+    lines += ['    include "regions/{}.asm"'.format(region.label) for region in regions]
+    lines += ['    include "regions/bank{}.asm"'.format(number) for number in hidden]
 
     if live_bank is not None:
         lines += [
@@ -291,7 +291,7 @@ def _render_main(regions, rom_names, model: str, entry: int, hidden=(),
             "; the output is whichever bank happened to be included last, and the",
             "; byte-for-byte check silently compares against the wrong memory.",
             "    SLOT 3",
-            f"    PAGE {live_bank}",
+            "    PAGE {}".format(live_bank),
         ]
     lines += [
         "",
@@ -304,13 +304,13 @@ def _render_main(regions, rom_names, model: str, entry: int, hidden=(),
         "; loader RETs to an address pushed on the stack, so saving one necessarily",
         "; overwrites two bytes of the program at SP-2. Fine for running it, useless as a",
         "; reference for comparison.",
-        f"    savebin \"{IMAGE_NAME}\", ${dumper.RAM_BASE:04x}, "
-        f"{dumper.ADDRESS_SPACE - dumper.RAM_BASE}",
+        "    savebin \"{}\", ${:04x}, "
+        "{}".format(IMAGE_NAME, dumper.RAM_BASE, dumper.ADDRESS_SPACE - dumper.RAM_BASE),
         "",
     ]
     if state is not None:
         lines += dumper.render_snapshot_lua(state, model in PAGED_MODELS, SNAPSHOT_NAME)
     else:
-        lines += [f"    savesna \"{SNAPSHOT_NAME}\", ${entry:04x}"]
+        lines += ["    savesna \"{}\", ${:04x}".format(SNAPSHOT_NAME, entry)]
     lines.append("")
     return "\n".join(lines)

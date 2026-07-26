@@ -48,7 +48,7 @@ def build(project, settings, main: str | None = None) -> BuildResult:
     try:
         regenerate_assets_asm(project)
     except AssetBuildError as exc:
-        return BuildResult([], 1, f"Asset build failed: {exc}\n", None, None)
+        return BuildResult([], 1, "Asset build failed: {}\n".format(exc), None, None)
 
     manifest = project.load_manifest()
     main = main or manifest.get("main", "main.asm")
@@ -56,8 +56,8 @@ def build(project, settings, main: str | None = None) -> BuildResult:
     if not main_path.is_file():
         return BuildResult(
             [], 1,
-            f"No source to build: {main} does not exist in {project.folder}.\n"
-            "Open the file you want to assemble in the editor, or set \"main\" in zxide.json.\n",
+            "No source to build: {} does not exist in {}.\n"
+            "Open the file you want to assemble in the editor, or set \"main\" in zxide.json.\n".format(main, project.folder),
             None, None,
         )
 
@@ -71,7 +71,7 @@ def build(project, settings, main: str | None = None) -> BuildResult:
     arg_templates = build_config.get("args") or DEFAULT_BUILD_ARGS
     assembler = settings.get("assembler_path") or "sjasmplus"
     args = [arg.format(main=main, output=str(output)) for arg in arg_templates]
-    command = [assembler, *args, f"--sld={sld_path}"]
+    command = [assembler, *args, "--sld={}".format(sld_path)]
 
     output.parent.mkdir(parents=True, exist_ok=True)  # in case output is in a subfolder
     try:
@@ -79,16 +79,16 @@ def build(project, settings, main: str | None = None) -> BuildResult:
             command, cwd=str(project.folder), capture_output=True, text=True
         )
     except FileNotFoundError:
-        return BuildResult(command, 127, f"Assembler not found: {assembler}\n"
-                           "Set its path in Settings.", None, None)
+        return BuildResult(command, 127, "Assembler not found: {}\n"
+                           "Set its path in Settings.".format(assembler), None, None)
 
     combined = (proc.stdout or "") + (proc.stderr or "")
     ok = proc.returncode == 0
     if ok and not output.exists():
         combined += (
-            f"\nAssembled cleanly, but no snapshot at {output_name}. "
-            f"Add a `savesna \"{output_name}\", entry` directive to {main} "
-            "(or point the manifest's build.output at the one it writes).\n"
+            "\nAssembled cleanly, but no snapshot at {}. "
+            "Add a `savesna \"{}\", entry` directive to {} "
+            "(or point the manifest's build.output at the one it writes).\n".format(output_name, output_name, main)
         )
     snapshot = output if ok and output.exists() else None
     sld = sld_path if ok and sld_path.exists() else None

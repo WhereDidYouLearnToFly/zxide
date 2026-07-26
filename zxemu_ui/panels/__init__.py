@@ -38,13 +38,21 @@ Working on your own material:
 
     inspector_view.py   What a selected asset is and what it will look like: rendered
                         previews per kind, plus playback for beeper SFX.
-    sprite_editor_view.py  Draw a sprite in the IDE, in real ZX colours, where every
-                        paint action reclaims its 8x8 cell's attribute -- so the
-                        two-colours-per-cell hardware limit is a consequence of the
-                        tool rather than a rule you could break.
-    beeper_sfx_editor_view.py  Build a beeper effect as rows of Hz + frames, with a
-                        Play button, because a raw T-state period is not a format
-                        anyone can hand-author.
+    sprite_editor_view.py  Draw a sprite in the IDE, in real ZX colours. One tool, no
+                        modes: drawing a pixel also claims its 8x8 cell for the selected
+                        ink/paper, so the two-colours-per-cell limit is a consequence of
+                        drawing rather than a rule to remember. The left button toggles,
+                        which is what makes erasing free of colour-switching. Pixel-only
+                        sprite formats have no attributes, so it drops to black and white
+                        for those.
+    beeper_sfx_editor_view.py  Build a beeper effect as a bar chart of frequency over
+                        time -- each bar's height is its tone, its width is how long
+                        that tone lasts -- because an effect is a shape, and nobody
+                        hears a shape by reading a column of periods and frame counts.
+                        Drag up for higher, sideways for longer; there are no settings,
+                        because length is what the drag is for. The frequency axis is
+                        logarithmic, or the whole low end where thuds and rumbles live
+                        would be a sliver.
     output_console.py   The Output panel: build log and search results, where result
                         lines are clickable links to a file and line.
 

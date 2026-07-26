@@ -53,11 +53,11 @@ class _Reader:
 
 
 def _n(value: int) -> str:
-    return f"${value & 0xFF:02X}"
+    return "${:02X}".format(value & 255)
 
 
 def _nn(value: int) -> str:
-    return f"${value & 0xFFFF:04X}"
+    return "${:04X}".format(value & 65535)
 
 
 def _rel(r: _Reader, disp: int) -> str:
@@ -67,7 +67,7 @@ def _rel(r: _Reader, disp: int) -> str:
 
 def _indexed(r: _Reader, idx: str) -> str:
     disp = r.signed()
-    return f"({idx}{'+' if disp >= 0 else '-'}${abs(disp):02X})"
+    return "({}{}${:02X})".format(idx, '+' if disp >= 0 else '-', abs(disp))
 
 
 def _reg(r: _Reader, index: int, idx: str | None) -> str:
@@ -98,10 +98,10 @@ def _ld_pair(r: _Reader, y: int, z: int, idx: str | None) -> str:
         mem = _indexed(r, idx)
         dst = mem if y == 6 else _R[y]
         src = mem if z == 6 else _R[z]
-        return f"{dst},{src}"
+        return "{},{}".format(dst, src)
     if idx is not None:
-        return f"{_reg_hl(y, idx)},{_reg_hl(z, idx)}"
-    return f"{_R[y]},{_R[z]}"
+        return "{},{}".format(_reg_hl(y, idx), _reg_hl(z, idx))
+    return "{},{}".format(_R[y], _R[z])
 
 
 def _reg_hl(index: int, idx: str) -> str:
@@ -153,14 +153,14 @@ def _decode_base(r: _Reader, op: int, idx: str | None) -> str:
             if y == 1:
                 return "ex af,af'"
             if y == 2:
-                return f"djnz {_rel(r, r.signed())}"
+                return "djnz {}".format(_rel(r, r.signed()))
             if y == 3:
-                return f"jr {_rel(r, r.signed())}"
-            return f"jr {_CC[y - 4]},{_rel(r, r.signed())}"
+                return "jr {}".format(_rel(r, r.signed()))
+            return "jr {},{}".format(_CC[y - 4], _rel(r, r.signed()))
         if z == 1:
             if q == 0:
-                return f"ld {_rp(p, idx)},{_nn(r.word())}"
-            return f"add {hl},{_rp(p, idx)}"
+                return "ld {},{}".format(_rp(p, idx), _nn(r.word()))
+            return "add {},{}".format(hl, _rp(p, idx))
         if z == 2:
             if q == 0:
                 if p == 0:
@@ -168,58 +168,58 @@ def _decode_base(r: _Reader, op: int, idx: str | None) -> str:
                 if p == 1:
                     return "ld (de),a"
                 if p == 2:
-                    return f"ld ({_nn(r.word())}),{hl}"
-                return f"ld ({_nn(r.word())}),a"
+                    return "ld ({}),{}".format(_nn(r.word()), hl)
+                return "ld ({}),a".format(_nn(r.word()))
             if p == 0:
                 return "ld a,(bc)"
             if p == 1:
                 return "ld a,(de)"
             if p == 2:
-                return f"ld {hl},({_nn(r.word())})"
-            return f"ld a,({_nn(r.word())})"
+                return "ld {},({})".format(hl, _nn(r.word()))
+            return "ld a,({})".format(_nn(r.word()))
         if z == 3:
-            return f"{'inc' if q == 0 else 'dec'} {_rp(p, idx)}"
+            return "{} {}".format('inc' if q == 0 else 'dec', _rp(p, idx))
         if z == 4:
-            return f"inc {_reg(r, y, idx)}"
+            return "inc {}".format(_reg(r, y, idx))
         if z == 5:
-            return f"dec {_reg(r, y, idx)}"
+            return "dec {}".format(_reg(r, y, idx))
         if z == 6:
             dest = _reg(r, y, idx)
-            return f"ld {dest},{_n(r.byte())}"
+            return "ld {},{}".format(dest, _n(r.byte()))
         return _X0Z7[y]
 
     if x == 1:
         if y == 6 and z == 6:
             return "halt"
-        return f"ld {_ld_pair(r, y, z, idx)}"
+        return "ld {}".format(_ld_pair(r, y, z, idx))
 
     if x == 2:
         return _ALU[y].format(_reg(r, z, idx))
 
     # x == 3
     if z == 0:
-        return f"ret {_CC[y]}"
+        return "ret {}".format(_CC[y])
     if z == 1:
         if q == 0:
-            return f"pop {_rp2(p, idx)}"
+            return "pop {}".format(_rp2(p, idx))
         if p == 0:
             return "ret"
         if p == 1:
             return "exx"
         if p == 2:
-            return f"jp ({hl})"
-        return f"ld sp,{hl}"
+            return "jp ({})".format(hl)
+        return "ld sp,{}".format(hl)
     if z == 2:
-        return f"jp {_CC[y]},{_nn(r.word())}"
+        return "jp {},{}".format(_CC[y], _nn(r.word()))
     if z == 3:
         if y == 0:
-            return f"jp {_nn(r.word())}"
+            return "jp {}".format(_nn(r.word()))
         if y == 2:
-            return f"out ({_n(r.byte())}),a"
+            return "out ({}),a".format(_n(r.byte()))
         if y == 3:
-            return f"in a,({_n(r.byte())})"
+            return "in a,({})".format(_n(r.byte()))
         if y == 4:
-            return f"ex (sp),{hl}"
+            return "ex (sp),{}".format(hl)
         if y == 5:
             return "ex de,hl"
         if y == 6:
@@ -228,16 +228,16 @@ def _decode_base(r: _Reader, op: int, idx: str | None) -> str:
             return "ei"
         return "?"  # y == 1 is the CB prefix, handled before we reach here
     if z == 4:
-        return f"call {_CC[y]},{_nn(r.word())}"
+        return "call {},{}".format(_CC[y], _nn(r.word()))
     if z == 5:
         if q == 0:
-            return f"push {_rp2(p, idx)}"
+            return "push {}".format(_rp2(p, idx))
         if p == 0:
-            return f"call {_nn(r.word())}"
+            return "call {}".format(_nn(r.word()))
         return "?"  # DD/ED/FD prefixes, handled before we reach here
     if z == 6:
         return _ALU[y].format(_n(r.byte()))
-    return f"rst ${y * 8:02X}"
+    return "rst ${:02X}".format(y * 8)
 
 
 def _decode_cb(r: _Reader) -> str:
@@ -245,8 +245,8 @@ def _decode_cb(r: _Reader) -> str:
     x, y, z = op >> 6, (op >> 3) & 7, op & 7
     target = _R[z]
     if x == 0:
-        return f"{_ROT[y]} {target}"
-    return f"{('bit', 'res', 'set')[x - 1]} {y},{target}"
+        return "{} {}".format(_ROT[y], target)
+    return "{} {},{}".format(('bit', 'res', 'set')[x - 1], y, target)
 
 
 def _decode_ed(r: _Reader) -> str:
@@ -255,21 +255,21 @@ def _decode_ed(r: _Reader) -> str:
     p, q = y >> 1, y & 1
     if x == 1:
         if z == 0:
-            return "in (c)" if y == 6 else f"in {_R[y]},(c)"
+            return "in (c)" if y == 6 else "in {},(c)".format(_R[y])
         if z == 1:
-            return "out (c),0" if y == 6 else f"out (c),{_R[y]}"
+            return "out (c),0" if y == 6 else "out (c),{}".format(_R[y])
         if z == 2:
-            return f"{'sbc' if q == 0 else 'adc'} hl,{_RP[p]}"
+            return "{} hl,{}".format('sbc' if q == 0 else 'adc', _RP[p])
         if z == 3:
             if q == 0:
-                return f"ld ({_nn(r.word())}),{_RP[p]}"
-            return f"ld {_RP[p]},({_nn(r.word())})"
+                return "ld ({}),{}".format(_nn(r.word()), _RP[p])
+            return "ld {},({})".format(_RP[p], _nn(r.word()))
         if z == 4:
             return "neg"
         if z == 5:
             return "reti" if y == 1 else "retn"
         if z == 6:
-            return f"im {_IM[y]}"
+            return "im {}".format(_IM[y])
         return _ED_X1Z7[y]
     if x == 2 and z <= 3 and y >= 4:
         return _BLOCK[y - 4][z]
@@ -283,12 +283,12 @@ def _decode_indexed(r: _Reader, idx: str) -> str:
         cb = r.byte()
         x, y, z = cb >> 6, (cb >> 3) & 7, cb & 7
         if x == 0:
-            base = f"{_ROT[y]} {mem}"
-            return base if z == 6 else f"{base},{_R[z]}"  # undocumented register store
+            base = "{} {}".format(_ROT[y], mem)
+            return base if z == 6 else "{},{}".format(base, _R[z])  # undocumented register store
         if x == 1:
-            return f"bit {y},{mem}"
-        base = f"{('res', 'set')[x - 2]} {y},{mem}"
-        return base if z == 6 else f"{base},{_R[z]}"
+            return "bit {},{}".format(y, mem)
+        base = "{} {},{}".format(('res', 'set')[x - 2], y, mem)
+        return base if z == 6 else "{},{}".format(base, _R[z])
     if op == 0xED:
         return _decode_ed(r)  # DD/FD before ED: the index prefix is ignored
     if op in (0xDD, 0xFD):

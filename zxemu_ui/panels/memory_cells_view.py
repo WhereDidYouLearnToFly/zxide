@@ -47,7 +47,7 @@ class MemoryCellsView(QWidget):
 
         bar = QHBoxLayout()
         bar.addWidget(QLabel("Addr"))
-        self._addr_edit = QLineEdit(f"{self._base:04X}")
+        self._addr_edit = QLineEdit("{:04X}".format(self._base))
         self._addr_edit.setMaximumWidth(70)
         self._addr_edit.setValidator(QRegExpValidator(QRegExp("[0-9A-Fa-f]{1,4}")))
         self._addr_edit.editingFinished.connect(self._on_addr_edited)
@@ -125,16 +125,16 @@ class MemoryCellsView(QWidget):
         sp = self.machine.cpu.regs.sp
         base = (pc & 0xFFF0) if self._follow_pc.isChecked() else self._base
         if self._follow_pc.isChecked():
-            self._addr_edit.setText(f"{base:04X}")
+            self._addr_edit.setText("{:04X}".format(base))
 
         lines = []
         for row in range(ROWS):
             addr = (base + row * BYTES_PER_ROW) & 0xFFFF
             marker = ">" if addr <= pc < addr + BYTES_PER_ROW else ("S" if addr <= sp < addr + BYTES_PER_ROW else " ")
             values = [memory.read_byte((addr + i) & 0xFFFF) for i in range(BYTES_PER_ROW)]
-            hex_part = " ".join(f"{b:02X}" for b in values)
+            hex_part = " ".join("{:02X}".format(b) for b in values)
             ascii_part = "".join(chr(b) if 32 <= b < 127 else "." for b in values)
-            lines.append(f"{marker}{addr:04X}  {hex_part}  {ascii_part}")
+            lines.append("{}{:04X}  {}  {}".format(marker, addr, hex_part, ascii_part))
         self._dump.setPlainText("\n".join(lines))
 
     def set_mono_scale(self, scale: float) -> None:

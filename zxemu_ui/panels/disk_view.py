@@ -64,7 +64,7 @@ class DiskView(QWidget):
 
         controls = QHBoxLayout()
         self._drive_box = QComboBox()
-        self._drive_box.addItems([f"Drive {letter}" for letter in DRIVE_LETTERS[:2]])
+        self._drive_box.addItems(["Drive {}".format(letter) for letter in DRIVE_LETTERS[:2]])
         self._drive_box.currentIndexChanged.connect(self._on_drive_changed)
         controls.addWidget(self._drive_box)
 
@@ -125,11 +125,11 @@ class DiskView(QWidget):
         info = image.info()
         files = image.catalogue()
         parts = [
-            f"<b>{image.name or 'disk'}</b>",
-            f"label {info.label or '(none)'}",
-            f"{len(files)} file(s)",
-            f"{info.free_sectors} free sector(s)",
-            f"{image.tracks}×{image.sides}",
+            "<b>{}</b>".format(image.name or 'disk'),
+            "label {}".format(info.label or '(none)'),
+            "{} file(s)".format(len(files)),
+            "{} free sector(s)".format(info.free_sectors),
+            "{}×{}".format(image.tracks, image.sides),
         ]
         if not info.valid:
             parts.append("<i>no TR-DOS identifier — unformatted?</i>")
@@ -168,7 +168,7 @@ class DiskView(QWidget):
                 entry.display_name,
                 entry.extension,
                 str(entry.length),
-                f"T{entry.start_track}/S{entry.start_sector}",
+                "T{}/S{}".format(entry.start_track, entry.start_sector),
             )
             for column, text in enumerate(cells):
                 self._table.setItem(row, column, QTableWidgetItem(text))

@@ -21,6 +21,11 @@ tools that build it, and the settings that say where those tools live.
                         include -- the bridge between the asset workflow and sjasmplus.
     sld.py              Parses that SLD (Source Level Debug) file into the map the
                         debugger needs -- source line <-> address, and your labels.
+    project_files.py    Removing a file or folder from a project, which is three things
+                        at once (the file, the manifest assets sourced from it, their
+                        cached bytes) -- plus the path comparison that decides which
+                        assets those are, shared with the project tree's badges so
+                        "is this the same file" has one answer.
     search.py           Find-in-project: every editable text file searched for a
                         string, skipping assets, build output and generated files.
     dump_project.py     The reverse of everything above: takes a machine's RAM and

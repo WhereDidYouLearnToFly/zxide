@@ -78,12 +78,12 @@ def _call_site(memory, return_address: int):
             memory.read_byte((three_back + 2) & 0xFFFF) << 8
         )
         mnemonic = "call" if opcode == 0xCD else "call cc"
-        return three_back, f"{mnemonic} ${target:04X}"
+        return three_back, "{} ${:04X}".format(mnemonic, target)
 
     one_back = (return_address - 1) & 0xFFFF
     opcode = memory.read_byte(one_back)
     if opcode in _RST_OPCODES:
-        return one_back, f"rst ${opcode - 0xC7:02X}"
+        return one_back, "rst ${:02X}".format(opcode - 199)
     return None
 
 
@@ -128,14 +128,14 @@ class CallStackView(QWidget):
         # Not name_for: while stepping, PC is usually *inside* a routine rather than at
         # its entry point, and "which routine am I in" is the question being asked.
         inside = rom_symbols.enclosing(pc) if label_roms else None
-        here = f"  in {inside[0]}+${inside[1]:02X}" if inside else ""
-        lines = [f"  PC ${pc:04X}   (current){here}"]
+        here = "  in {}+${:02X}".format(inside[0], inside[1]) if inside else ""
+        lines = ["  PC ${:04X}   (current){}".format(pc, here)]
         for stack_addr, return_addr, call_addr, description in call_frames(
             self.machine.memory, sp, pc
         ):
             described = rom_symbols.annotate(description, label_roms)
             lines.append(
-                f"  ${return_addr:04X} <- ${call_addr:04X}  {described:<14} [sp+${stack_addr - sp:02X}]"
+                "  ${:04X} <- ${:04X}  {:<14} [sp+${:02X}]".format(return_addr, call_addr, described, stack_addr - sp)
             )
         if len(lines) == 1:
             lines.append("  (no plausible return addresses on the stack)")
