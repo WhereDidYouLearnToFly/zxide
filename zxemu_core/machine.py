@@ -29,7 +29,7 @@ from .sound.mixer import SoundMixer
 from .storage import pulse, tape
 from .storage.disk.beta import DRIVE_COUNT, Beta128
 from .storage.disk.wd1793 import WD1793
-from .ula import FRAME_TSTATES, FRAME_TSTATES_128K, FRAME_TSTATES_PENTAGON, Ula
+from .ula import FRAME_TSTATES, FRAME_TSTATES_128K, FRAME_TSTATES_PENTAGON, LINE_TSTATES, SCREEN_START_TSTATE, Ula
 
 # The trap replaces the whole (real-time) LD-BYTES routine, so its exact T-state cost is
 # fictional; we bill a token amount just to advance the frame clock past the "instruction".
@@ -61,6 +61,12 @@ class Machine:
         self.audio.add_source(self.beeper)
         self._speaker_level = 0  # last speaker bit we handed to the beeper
         self.frame_tstates = FRAME_TSTATES  # per-model frame length (128K overrides)
+        # Where a frame T-state falls on the screen, for drawing mid-frame border
+        # changes. One line's worth of T-states, and the T-state the first pixel row
+        # begins at -- everything before that is top border, everything after the last
+        # pixel row is bottom border. 128K restates both; see LINE_TSTATES there.
+        self.line_tstates = LINE_TSTATES
+        self.screen_start_tstate = SCREEN_START_TSTATE
         self.frame_t_state = 0
         # T-states elapsed in whole frames so far. frame_t_state restarts every frame,
         # but a tape doesn't: a pulse can straddle a frame boundary, and a pause runs
@@ -198,7 +204,14 @@ class Machine:
         return self.ula.read_port(port)
 
     def _io_write(self, port: int, value: int) -> None:
+        previous_border = self.ula.border_color
         self.ula.write_port(port, value)
+        # Log border changes with the clock, so the renderer can draw the bands a real
+        # ULA would paint. Only *changes* are recorded, which keeps this off the hot
+        # path that matters: a PWM beeper engine hammering 0xFE writes the same border
+        # bits every time and appends nothing, paying one compare per OUT.
+        if self.ula.border_color != previous_border:
+            self.ula.border_changes.append((self.frame_t_state, self.ula.border_color))
         if self.beeper.enabled:
             self._refresh_speaker()
 
@@ -260,6 +273,7 @@ class Machine:
         # audio timestamps stay in-frame.
         self.frame_t_state -= self.frame_tstates
         self._frame_base += self.frame_tstates  # keep tape_tstate continuous across the seam
+        self.ula.end_frame()  # hand the finished border log to whoever draws the picture
         if self.tape_player is not None:
             # The player decides once per frame whether the machine is actually
             # listening to the tape, and runs the motor if so -- see pulse.py.
@@ -303,6 +317,14 @@ class Machine128(Machine):
     #: MachinePentagon can state its own without re-implementing the constructor.
     FRAME_TSTATES = FRAME_TSTATES_128K
 
+    #: The 128K's line is four T-states longer than the 48K's, and its screen therefore
+    #: starts a little later -- both matter only for placing mid-frame border changes.
+    #: MachinePentagon inherits these: its line length is 224 like the 48K's, but where
+    #: its screen begins is not something this codebase has verified, so it is left
+    #: stated here rather than guessed at separately.
+    LINE_TSTATES = 228
+    SCREEN_START_TSTATE = 63 * 228  # 14364
+
     #: Whether the odd RAM banks share the memory bus with the ULA. True on a Sinclair
     #: 128K; MachinePentagon sets it False, because the clone's ULA contends with nothing.
     contended_ram = True
@@ -319,6 +341,8 @@ class Machine128(Machine):
         self.paging_listener = None
         self._wire()  # cpu/ula/keyboard/beeper/mixer + reset (see base Machine)
         self.frame_tstates = self.FRAME_TSTATES
+        self.line_tstates = self.LINE_TSTATES
+        self.screen_start_tstate = self.SCREEN_START_TSTATE
         # The AY joins the beeper in the mixer, so both play through one stream.
         self.ay = AY8912(sample_rate=self.beeper.sample_rate)
         self.audio.add_source(self.ay)

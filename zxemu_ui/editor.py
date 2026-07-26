@@ -15,10 +15,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt5.QtCore import QPoint, QSize, Qt, pyqtSignal
+from PyQt5.QtCore import QEvent, QPoint, QSize, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QPolygon, QTextCursor, QTextFormat, QTextOption
-from PyQt5.QtWidgets import QPlainTextEdit, QTabWidget, QTextEdit, QWidget
+from PyQt5.QtWidgets import QPlainTextEdit, QTabWidget, QTextEdit, QToolTip, QWidget
 
+from zxemu_core.debug import asm_help
 from zxemu_ui.theme import monospace_font
 from zxemu_ui.z80_highlighter import Z80Highlighter
 
@@ -66,6 +67,7 @@ class CodeEdit(QPlainTextEdit):
         super().__init__(parent)
         self._breakpoints: set[int] = set()  # 0-based block numbers
         self._exec_block: int | None = None  # 0-based line where execution is paused
+        self._instruction_help = True  # hover tooltips; switched off in Settings
         self._gutter = _Gutter(self)
         self.blockCountChanged.connect(lambda _n: self._update_gutter_width())
         self.updateRequest.connect(self._on_update_request)
@@ -73,17 +75,100 @@ class CodeEdit(QPlainTextEdit):
         self._update_gutter_width()
         self._refresh_selections()
 
+    # --- instruction help ------------------------------------------------------
+
+    def event(self, event):  # noqa: N802
+        """Hover an instruction to see what it does and what it costs.
+
+        Handled here rather than through ``setToolTip`` because the text depends on where
+        the pointer is, not on the widget: every line has a different answer, and most
+        lines have none.
+
+        The whole line is looked up, not the word under the pointer, so hovering the
+        ``(hl)`` in ``ld a,(hl)`` answers the same question as hovering the ``ld`` --
+        being precise about which token you touched would only feel broken.
+        """
+        if event.type() == QEvent.ToolTip:
+            if not self._instruction_help:
+                QToolTip.hideText()
+                return True
+            cursor = self.cursorForPosition(self.viewport().mapFrom(self, event.pos()))
+            help_text = asm_help.describe(cursor.block().text(), cursor.positionInBlock())
+            if help_text is None:
+                QToolTip.hideText()
+            else:
+                QToolTip.showText(event.globalPos(), help_text.as_text(), self)
+            return True
+        return super().event(event)
+
+    def set_instruction_help(self, on: bool) -> None:
+        self._instruction_help = on
+
     # --- indentation (spaces, not tabs) ---------------------------------------
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         if event.key() == Qt.Key_Tab and event.modifiers() == Qt.NoModifier:
+            if self._shift_selected_lines(+1):
+                return
             column = self.textCursor().positionInBlock()
             self.insertPlainText(" " * (self.INDENT_WIDTH - column % self.INDENT_WIDTH))
             return
         if event.key() == Qt.Key_Backtab:
+            if self._shift_selected_lines(-1):
+                return
             self._dedent()
             return
         super().keyPressEvent(event)
+
+    def _shift_selected_lines(self, direction: int) -> bool:
+        """Indent (+1) or outdent (-1) every line of a multi-line selection.
+
+        Returns False when the selection isn't a block of lines, so the caller falls back
+        to the single-caret behaviour: with one line marked, Tab means "replace what I
+        selected", which is what every editor does and what you want when retyping a
+        token. It only becomes "move this code across" once more than one line is in play.
+
+        The selection is re-made over the whole of those lines afterwards, so Tab can be
+        pressed repeatedly to keep shifting the same block -- a selection that shrank to
+        the changed text would be a one-shot.
+        """
+        cursor = self.textCursor()
+        if not cursor.hasSelection():
+            return False
+        document = self.document()
+        first = document.findBlock(cursor.selectionStart()).blockNumber()
+        end_block = document.findBlock(cursor.selectionEnd())
+        last = end_block.blockNumber()
+        # A drag that ends exactly at the start of a line took none of its text, so that
+        # line is not part of what you selected and must not move with it.
+        if last > first and end_block.position() == cursor.selectionEnd():
+            last -= 1
+        if first == last:
+            return False
+
+        editor = QTextCursor(document)
+        editor.beginEditBlock()
+        for number in range(first, last + 1):
+            block = document.findBlockByNumber(number)
+            text = block.text()
+            editor.setPosition(block.position())
+            if direction > 0:
+                if text.strip():  # indenting a blank line would only leave trailing spaces
+                    editor.insertText(" " * self.INDENT_WIDTH)
+            elif text.startswith("\t"):  # a file written elsewhere may well use real tabs
+                editor.deleteChar()
+            else:
+                for _ in range(min(self.INDENT_WIDTH, len(text) - len(text.lstrip(" ")))):
+                    editor.deleteChar()
+        editor.endEditBlock()
+
+        start = document.findBlockByNumber(first)
+        end = document.findBlockByNumber(last)
+        reselected = QTextCursor(document)
+        reselected.setPosition(start.position())
+        reselected.setPosition(end.position() + end.length() - 1, QTextCursor.KeepAnchor)
+        self.setTextCursor(reselected)
+        return True
 
     def _dedent(self) -> None:
         cursor = self.textCursor()
@@ -219,6 +304,7 @@ class EditorArea(QTabWidget):
         self.tabCloseRequested.connect(self.removeTab)
         self._scale = 1.0
         self._show_special = False
+        self._instruction_help = True
         self._add_welcome()
 
     def _add_welcome(self) -> None:
@@ -237,6 +323,7 @@ class EditorArea(QTabWidget):
         edit.textChanged.connect(self.cursor_or_text_changed)
         edit.cursorPositionChanged.connect(self.cursor_or_text_changed)
         edit.selectionChanged.connect(self.cursor_or_text_changed)
+        edit.set_instruction_help(self._instruction_help)
         self._apply_special_chars(edit)
         return edit
 
@@ -411,6 +498,14 @@ class EditorArea(QTabWidget):
             widget = self.widget(i)
             if isinstance(widget, QPlainTextEdit):
                 self._apply_special_chars(widget)
+
+    def set_instruction_help(self, on: bool) -> None:
+        """Turn hover help on or off for every tab, open or not yet created."""
+        self._instruction_help = on
+        for i in range(self.count()):
+            widget = self.widget(i)
+            if isinstance(widget, CodeEdit):
+                widget.set_instruction_help(on)
 
     def _apply_special_chars(self, edit: QPlainTextEdit) -> None:
         option = edit.document().defaultTextOption()

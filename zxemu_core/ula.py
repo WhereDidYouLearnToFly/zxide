@@ -65,10 +65,33 @@ class Ula:
         self.speaker = 0    # port 0xFE bit 4: the 1-bit beeper output
         self.ear_level = 1  # port 0xFE bit 6: what the tape input is doing right now
 
+        # Where the border changed *during* this frame, as (frame T-state, colour). The
+        # border is painted by the beam as it sweeps, so a program that writes 0xFE
+        # part-way down the frame gets a horizontal band -- which is how border timing
+        # is taught, how loading stripes happen, and what a single per-frame colour can
+        # never show. The Machine appends here, for the same reason it timestamps
+        # speaker flips: it owns the clock.
+        self.border_changes: list[tuple[int, int]] = []
+        self.frame_border_changes: list[tuple[int, int]] = []  # the last *completed* frame
+        self.border_start_color = 0        # colour in force when the current frame began
+        self.frame_border_start = 0        # ...and when the completed one did
+
     def write_port(self, port: int, value: int) -> None:
         if port & 0x01 == 0:
             self.border_color = value & 0x07
             self.speaker = (value >> 4) & 0x01
+
+    def end_frame(self) -> None:
+        """Close the frame's border log, so the renderer reads a complete frame.
+
+        Kept separate from the live list because rendering happens *after* the frame is
+        over: hand the renderer the list still being appended to and it would race the
+        next frame's first few writes into the picture.
+        """
+        self.frame_border_changes = self.border_changes
+        self.frame_border_start = self.border_start_color
+        self.border_changes = []
+        self.border_start_color = self.border_color
 
     def read_port(self, port: int) -> int:
         if port & 0x01 == 0:

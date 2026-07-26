@@ -12,6 +12,10 @@ testable on its own, and the UI panels in ``zxemu_ui`` are thin presentation ove
                      *source* rather than memory: how many bytes and T-states a run
                      of assembly costs, so "does this fit" and "does this finish
                      inside a frame" are answerable by selecting the code.
+    asm_help.py      What an instruction is *for*, in one line, plus the flags it
+                     disturbs -- the editor's hover help. Prices the exact operand
+                     form under the cursor through ``asm_meter``'s tables rather
+                     than repeating them.
     rom_symbols.py   Traditional names for 48K ROM entry points, so ``call $15E6``
                      reads as ``; INPUT-AD`` and stepping through the ROM tells you
                      which routine you are in.
@@ -42,6 +46,6 @@ tells you nothing.
 
 from __future__ import annotations
 
-from zxemu_core.debug import analysis, asm_meter, debug_expr, disassembler, dumper, rom_symbols
+from zxemu_core.debug import analysis, asm_help, asm_meter, debug_expr, disassembler, dumper, rom_symbols
 
-__all__ = ["analysis", "asm_meter", "debug_expr", "disassembler", "dumper", "rom_symbols"]
+__all__ = ["analysis", "asm_help", "asm_meter", "debug_expr", "disassembler", "dumper", "rom_symbols"]

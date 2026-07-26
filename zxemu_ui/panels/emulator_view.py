@@ -161,9 +161,41 @@ def _build_screen_index_tables():
 _BITMAP_INDEX, _ATTR_INDEX = _build_screen_index_tables()
 
 
-def render_frame_fast(screen_bank: np.ndarray, border_color: int, flash_on: bool = False) -> np.ndarray:
+def border_rows(changes, start_color: int, line_tstates: int, screen_start_tstate: int) -> np.ndarray:
+    """The border colour of each visible row, from a frame's ``(T-state, colour)`` log.
+
+    The border is not a property of a frame -- it is whatever the ULA was told to emit
+    at the moment the beam passed each line. So a row's colour is the last value written
+    at or before the T-state that row begins at, which is what makes a mid-frame ``OUT``
+    to port 0xFE draw a band instead of recolouring everything.
+
+    Row zero of the picture is ``BORDER_MARGIN`` lines above the first pixel row, so it
+    starts that many lines' worth of T-states before ``screen_start_tstate``; the rows
+    below the screen run on past its end. Only whole lines are modelled -- a change
+    part-way along a line takes effect at the next one. That is the difference between
+    horizontal bands (which is what border timing is about, and what this draws) and the
+    8-pixel-granularity multicolour tricks, which need a finer model than one colour per
+    row can express.
+    """
+    rows = np.arange(FULL_HEIGHT)
+    row_tstates = screen_start_tstate + (rows - BORDER_MARGIN) * line_tstates
+    if not changes:
+        return np.full(FULL_HEIGHT, start_color & 0x07, dtype=np.uint8)
+    times = np.fromiter((change[0] for change in changes), dtype=np.int64, count=len(changes))
+    colors = np.fromiter((change[1] for change in changes), dtype=np.uint8, count=len(changes))
+    # searchsorted gives, for each row, how many changes had already happened by then;
+    # 0 means none had, so the row keeps the colour the frame started with.
+    index = np.searchsorted(times, row_tstates, side="right")
+    return np.where(index == 0, start_color & 0x07, colors[np.clip(index - 1, 0, None)]).astype(np.uint8)
+
+
+def render_frame_fast(screen_bank: np.ndarray, border_color: int, flash_on: bool = False, rows: np.ndarray | None = None) -> np.ndarray:
     """Vectorized equivalent of render_bordered_frame, operating on the raw 16K screen
-    bank as a uint8 array. Returns a (FULL_HEIGHT, FULL_WIDTH) uint32 image array."""
+    bank as a uint8 array. Returns a (FULL_HEIGHT, FULL_WIDTH) uint32 image array.
+
+    ``rows`` is an optional per-row border colour array from :func:`border_rows`; without
+    it the whole border is ``border_color``, which is what a still picture wants and what
+    every caller did before mid-frame changes were drawn at all."""
     bitmap = screen_bank[_BITMAP_INDEX]  # (192, 32) bitmap bytes
     attr = screen_bank[_ATTR_INDEX]  # (192, 32) attribute bytes
 
@@ -181,7 +213,7 @@ def render_frame_fast(screen_bank: np.ndarray, border_color: int, flash_on: bool
     screen_rgb = _PALETTE_U32[color_index]  # (192, 256) uint32
 
     frame = np.empty((FULL_HEIGHT, FULL_WIDTH), dtype="<u4")
-    frame[:] = _PALETTE_U32[border_color & 0x07]
+    frame[:] = _PALETTE_U32[border_color & 0x07] if rows is None else _PALETTE_U32[rows][:, None]
     frame[BORDER_MARGIN : BORDER_MARGIN + SCREEN_HEIGHT, BORDER_MARGIN : BORDER_MARGIN + SCREEN_WIDTH] = screen_rgb
     return frame
 
@@ -332,7 +364,14 @@ class EmulatorView(QWidget):
         # Ask the machine which 16K bank the ULA displays: slot 1 on 48K, but RAM5 or
         # (shadow) RAM7 on 128K depending on port 0x7FFD -- even if RAM7 isn't slotted in.
         screen_bank = np.frombuffer(self.machine.display_memory(), dtype=np.uint8)
-        frame = render_frame_fast(screen_bank, self.machine.ula.border_color, flash_on=flash_on)
+        ula = self.machine.ula
+        # The border of the frame just finished, band by band -- but only when it
+        # actually changed during that frame. An empty log means one colour throughout,
+        # and then the *live* value is the one to trust: a snapshot loaded a moment ago
+        # has its border set and no frame run yet, and drawing a remembered
+        # start-of-frame colour would show black until it happened to execute one.
+        rows = border_rows(ula.frame_border_changes, ula.frame_border_start, self.machine.line_tstates, self.machine.screen_start_tstate) if ula.frame_border_changes else None
+        frame = render_frame_fast(screen_bank, ula.border_color, flash_on=flash_on, rows=rows)
         # tobytes() gives an immutable copy the QImage can safely reference for its lifetime.
         self._buffer = frame.tobytes()
         self._image = QImage(self._buffer, FULL_WIDTH, FULL_HEIGHT, FULL_WIDTH * BYTES_PER_PIXEL, QImage.Format_RGB32)

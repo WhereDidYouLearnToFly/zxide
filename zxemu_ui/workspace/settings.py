@@ -30,6 +30,10 @@ def default_settings() -> dict:
         "assembler_path": detect_assembler(),
         "last_project": "",
         "show_special": False,  # editor: render whitespace markers
+        # Editor: hover an instruction for what it does, its cost and the flags it
+        # disturbs. On by default -- it costs nothing until you point at something --
+        # but it is the kind of help you stop needing, so it can be switched off.
+        "instruction_help": True,
         "recent_projects": [],  # project folders, most-recent first (Open Recent menu)
         "recent_files": [],     # loaded .sna/.tap files, most-recent first (Load Recent menu)
         # Where the last tape/disk/snapshot came from. Media lives in a collection folder,

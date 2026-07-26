@@ -54,12 +54,18 @@ class FakeMemory:
 class FakeUla:
     def __init__(self, border_color: int = 0):
         self.border_color = border_color
+        # The completed frame's mid-frame border changes; empty means "never changed",
+        # which is what a machine that has not run a frame reports.
+        self.frame_border_changes = []
+        self.frame_border_start = border_color
 
 
 class FakeMachine:
     def __init__(self, memory=None, border_color: int = 0):
         self.memory = memory or FakeMemory()
         self.ula = FakeUla(border_color)
+        self.line_tstates = 224
+        self.screen_start_tstate = 14336
 
     def display_memory(self):
         # Mirrors Machine.display_memory: the 16K bank the ULA rasterises (slot 1).

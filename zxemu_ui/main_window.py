@@ -205,6 +205,7 @@ class MainWindow(QMainWindow):
         self._saved_layout = layout_store.load(self._layout_path)
 
         self._build_menu()
+        self._apply_editor_preferences()
         self.statusBar().showMessage("ready")
 
         # Controller signals -> views. frame_ready carries the emulated-frame count,
@@ -1354,6 +1355,11 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self) -> None:
         SettingsDialog(self.settings, self.project, self).exec_()
+        self._apply_editor_preferences()  # a preference you just changed should be live
+
+    def _apply_editor_preferences(self) -> None:
+        """Push the saved editor preferences onto the editor. Called at startup too."""
+        self.editor.set_instruction_help(bool(self.settings.get("instruction_help", True)))
 
     def _reopen_last_project(self) -> None:
         last = self.settings.get("last_project", "")

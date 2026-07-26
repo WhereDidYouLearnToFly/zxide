@@ -19,6 +19,7 @@ when the project was created), so this dialog is only for overriding.
 from __future__ import annotations
 
 from PyQt5.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -81,6 +82,14 @@ class SettingsDialog(QDialog):
         row.addWidget(detect_button)
         row.addWidget(browse_button)
         form.addRow("Assembler (sjasmplus)", row)
+
+        self._help_check = QCheckBox("Show instruction help when hovering code")
+        self._help_check.setChecked(bool(self.settings.get("instruction_help", True)))
+        self._help_check.setToolTip(
+            "Hovering an instruction shows what it does, what that exact operand form "
+            "costs in bytes and T-states, and which flags it disturbs."
+        )
+        form.addRow("Editor", self._help_check)
         return group
 
     # --- per-project -----------------------------------------------------------
@@ -135,6 +144,7 @@ class SettingsDialog(QDialog):
 
     def _accept(self) -> None:
         self.settings.set("assembler_path", self._assembler_edit.text().strip())
+        self.settings.set("instruction_help", self._help_check.isChecked())
         if self.project is not None and self._args_edit is not None:
             manifest = self.project.load_manifest()
             manifest["model"] = self._model_combo.currentData()
