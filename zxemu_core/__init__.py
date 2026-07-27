@@ -27,6 +27,10 @@ The machine itself sits at the top level -- these four files *are* the Spectrum:
     ula.py       The ULA chip: video/frame timing, the border colour, the 1-bit
                  speaker, and the I/O port (0xFE) the keyboard and border share.
     keyboard.py  The Spectrum's 8x5 key matrix, which the ULA reads.
+    mouse.py     The Kempston Mouse interface: ports 0xFADF/0xFBDF/0xFFDF for
+                 buttons and the free-running X/Y counters. Off by default --
+                 see ``Machine.mouse.enabled`` -- so it stays invisible to
+                 software that probes for one and finds none fitted.
 
 One more file sits alongside them, about the address space rather than the hardware:
 

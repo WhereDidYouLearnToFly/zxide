@@ -177,6 +177,24 @@ def test_machine128_ay_register_read_write_through_ports():
     assert m._io_read(0xFFFD) == 0x1F
 
 
+def test_kempston_mouse_silent_until_enabled():
+    m = make_machine()
+    assert m._io_read(0xFBDF) == 0xFF  # floating bus, not the mouse, while disabled
+    m.mouse.enabled = True
+    m.mouse.move_by(dx=7, dy=0)
+    assert m._io_read(0xFBDF) == 7
+
+
+def test_kempston_mouse_ports_reachable_through_machine128_decode():
+    """0xFFDF must reach the mouse, not be swallowed by the 0xFFFD AY-read decode --
+    they differ only in bit 5 (0xDF vs 0xFD), easy to confuse when eyeballing hex."""
+    m = make_machine128()
+    m.mouse.enabled = True
+    m.mouse.move_by(dx=0, dy=-9)
+    assert m._io_read(0xFFDF) == 9
+    assert m.paging_state().ram_bank == 0  # untouched: not mistaken for 0x7FFD either
+
+
 def test_block_instruction_stays_within_the_frame_loop():
     """A large repeated block op (LDIR clearing a big buffer) must run one iteration
     per step() so the frame loop reclaims control -- it must NOT swallow the whole

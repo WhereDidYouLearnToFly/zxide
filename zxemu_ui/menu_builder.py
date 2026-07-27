@@ -331,6 +331,14 @@ def _build_view_menu(window, bar, scale_choices) -> None:
     window.emulator_panel.fullscreen_changed.connect(fullscreen.setChecked)
     view_menu.addAction(fullscreen)
 
+    # Kempston Mouse: off by default (see settings.py), so it stays invisible to
+    # software that probes for one and finds none fitted until you opt in here.
+    mouse = QAction("Kempston Mouse", window, checkable=True)
+    mouse.setChecked(bool(window.settings.get("kempston_mouse_enabled", False)))
+    mouse.setToolTip("Click the emulator screen to capture the pointer; Esc releases it")
+    mouse.toggled.connect(window._set_kempston_mouse)
+    view_menu.addAction(mouse)
+
     view_menu.addSeparator()
     for dock in window._all_docks:
         view_menu.addAction(dock.toggleViewAction())  # show/hide each panel

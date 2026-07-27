@@ -139,6 +139,11 @@ class MainWindow(QMainWindow):
         # builds a *new* machine: kept here, your choice survives the swap (see set_machine).
         self._fast_load = True
         self._tape_audible = True
+        # Kempston Mouse, unlike the deck prefs above, is a persisted setting (see
+        # settings.py) -- so it survives a relaunch, not just a model swap -- and it
+        # must be applied to *this* first machine too, not just future ones (see
+        # set_machine), since nothing else will if the user turned it on last time.
+        machine.mouse.enabled = bool(self.settings.get("kempston_mouse_enabled", False))
         # Disks mount **write-protected by default**, and the tab on a real 3.5" disk is
         # the right analogy: you slide it open deliberately, for the one disk you meant to
         # write to. The asymmetry is what decides it -- a game refusing to save its high
@@ -482,6 +487,7 @@ class MainWindow(QMainWindow):
         # them, or turning Fast Load off and then switching model silently turns it back on.
         machine.fast_load_enabled = self._fast_load
         machine.tape_audible = self._tape_audible
+        machine.mouse.enabled = bool(self.settings.get("kempston_mouse_enabled", False))
         self.controller.set_machine(machine)
         # Keep the Model menu's tick on the machine that's actually running, however the
         # switch was triggered (menu, or opening a project that targets the other model).
@@ -1683,6 +1689,15 @@ class MainWindow(QMainWindow):
         """Toggle whitespace markers and remember the choice (auto-saved)."""
         self.editor.set_show_special(on)
         self.settings.set("show_special", on)
+
+    def _set_kempston_mouse(self, on: bool) -> None:
+        """Toggle the Kempston Mouse interface and remember the choice (auto-saved)."""
+        self.machine.mouse.enabled = on
+        self.settings.set("kempston_mouse_enabled", on)
+        if not on:
+            # Switching it off mid-capture would otherwise strand the pointer hidden
+            # and grabbed with no interface left listening to it.
+            self.view.release_mouse_capture()
 
     def _set_interface_scale(self, scale: float) -> None:
         """Scale all UI text, then restore the (now scaled) monospace code surfaces.

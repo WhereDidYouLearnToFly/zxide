@@ -30,6 +30,12 @@ def default_settings() -> dict:
         "assembler_path": detect_assembler(),
         "last_project": "",
         "show_special": False,  # editor: render whitespace markers
+        # Kempston Mouse interface: off by default, same reasoning as the tape/disk
+        # write-protect default -- software that probes for a mouse and finds one
+        # unexpectedly present can behave differently than it would on real bare
+        # hardware, so this stays an opt-in rather than something every project
+        # silently gets.
+        "kempston_mouse_enabled": False,
         # Editor: hover an instruction for what it does, its cost and the flags it
         # disturbs. On by default -- it costs nothing until you point at something --
         # but it is the kind of help you stop needing, so it can be switched off.

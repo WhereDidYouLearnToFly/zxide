@@ -23,6 +23,7 @@ from typing import NamedTuple
 from .cpu.z80 import Z80
 from .keyboard import Keyboard
 from .memory import Bank, Memory, create_48k_memory, create_128k_memory
+from .mouse import KempstonMouse
 from .sound.ay import AY8912
 from .sound.beeper import Beeper
 from .sound.mixer import SoundMixer
@@ -52,6 +53,7 @@ class Machine:
         """
         self.cpu = Z80(self.memory)
         self.keyboard = Keyboard()
+        self.mouse = KempstonMouse()
         self.ula = Ula(keyboard=self.keyboard)
         # Audio pipeline: a mixer fed by one or more sound sources. The 48K has just
         # the beeper; Machine128 adds the AY. It stays dormant (no samples, no cost)
@@ -194,6 +196,13 @@ class Machine:
     # --- IO + frame loop ------------------------------------------------------
 
     def _io_read(self, port: int) -> int:
+        # Kempston Mouse: a handful of exact 16-bit addresses, decoded before anything
+        # else so they can never be mistaken for the ULA's partial (low-byte-only)
+        # decode of port 0xFE -- their low byte (0xDF) has bit 0 set, so they'd fall
+        # through to the ULA/tape path below anyway, but checking first keeps the
+        # mouse self-contained and costs one dict-free tuple compare when disabled.
+        if self.mouse.enabled and KempstonMouse.handles(port):
+            return self.mouse.read_port(port)
         # Tape input. Only the machine knows the continuous clock the player measures
         # against, exactly as it is the machine that timestamps the speaker on the way
         # out. The check costs one attribute compare per IN when no tape is inserted.

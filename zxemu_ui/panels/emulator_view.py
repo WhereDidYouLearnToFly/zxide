@@ -13,8 +13,18 @@ import sys
 
 import numpy as np
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QImage, QPainter
+from PyQt5.QtGui import QColor, QCursor, QImage, QPainter
 from PyQt5.QtWidgets import QWidget
+
+from zxemu_core.mouse import BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT
+
+# Which Kempston Mouse button a Qt mouse button corresponds to. Only the three the
+# interface actually has; anything else (back/forward buttons) is simply ignored.
+_QT_BUTTON_TO_KEMPSTON = {
+    Qt.LeftButton: BUTTON_LEFT,
+    Qt.RightButton: BUTTON_RIGHT,
+    Qt.MiddleButton: BUTTON_MIDDLE,
+}
 
 # A 1px frame signalling keyboard focus: green when the view has focus (typing reaches
 # the Spectrum), a faint gray otherwise -- so it's always obvious whether the machine
@@ -352,6 +362,8 @@ class EmulatorView(QWidget):
         # don't pin the native 320x256 -- that would stop the view scaling down.
         self.setMinimumSize(FULL_WIDTH // 2, FULL_HEIGHT // 2)
         self.setFocusPolicy(Qt.StrongFocus)
+        self._mouse_captured = False  # Kempston Mouse: pointer hidden/grabbed and relative-tracked
+        self.setMouseTracking(True)  # so captured movement is seen with no button held, like a real mouse
 
     def refresh(self, frame_count: int | None = None) -> None:
         # frame_count, when given, is the count of emulated frames elapsed (real
@@ -403,7 +415,64 @@ class EmulatorView(QWidget):
         super().focusOutEvent(event)
         self._held_keys.clear()
         self._rebuild_matrix()
+        self.release_mouse_capture()
         self.update()
+
+    # --- Kempston Mouse ---------------------------------------------------------
+
+    def release_mouse_capture(self) -> None:
+        """Give the pointer back: show the cursor, ungrab, stop relative tracking.
+
+        Called whenever capture should end for a reason other than the user's own
+        Esc -- losing focus, or the feature being switched off in the menu -- so a
+        hidden, grabbed pointer can never outlive the state that justified it.
+        """
+        if not self._mouse_captured:
+            return
+        self._mouse_captured = False
+        self.releaseMouse()
+        self.unsetCursor()
+
+    def _capture_mouse(self) -> None:
+        self._mouse_captured = True
+        self.grabMouse()
+        self.setCursor(Qt.BlankCursor)
+        QCursor.setPos(self.mapToGlobal(self.rect().center()))
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override name)
+        if self.machine.mouse.enabled and not self._mouse_captured:
+            # The click that captures doesn't also register as a button press --
+            # otherwise the click a user makes *to* start using the mouse would
+            # itself be seen by whatever's running as a click.
+            self._capture_mouse()
+            event.accept()
+            return
+        if self._mouse_captured:
+            button = _QT_BUTTON_TO_KEMPSTON.get(event.button())
+            if button is not None:
+                self.machine.mouse.set_button(button, True)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt override name)
+        if self._mouse_captured:
+            button = _QT_BUTTON_TO_KEMPSTON.get(event.button())
+            if button is not None:
+                self.machine.mouse.set_button(button, False)
+        super().mouseReleaseEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt override name)
+        if self._mouse_captured:
+            # Relative motion via recentring: read how far the pointer drifted from
+            # the widget's centre, feed that delta to the interface, then snap it
+            # back -- the same technique any relative-mouse capture uses, since a
+            # real Kempston Mouse reports movement, never an absolute position.
+            center = self.mapToGlobal(self.rect().center())
+            pos = event.globalPos()
+            dx, dy = pos.x() - center.x(), pos.y() - center.y()
+            if dx or dy:
+                self.machine.mouse.move_by(dx, dy)
+                QCursor.setPos(center)
+        super().mouseMoveEvent(event)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -428,6 +497,11 @@ class EmulatorView(QWidget):
 
     def keyPressEvent(self, event) -> None:
         if event.isAutoRepeat():
+            return
+        if self._mouse_captured and event.key() == Qt.Key_Escape:
+            # Esc means nothing to a Spectrum keyboard, so stealing it here to give
+            # the pointer back costs no key the emulated machine would otherwise see.
+            self.release_mouse_capture()
             return
         # Both the logical key and the physical position are kept: the position is only
         # consulted when the logical key means nothing to a Spectrum (see _resolve_key).
