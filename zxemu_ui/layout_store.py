@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PyQt5.QtCore import QByteArray, QRect, Qt
+from PyQt5.QtCore import QByteArray, QRect, Qt, QTimer
 
 _AREA_TO_NAME = {
     Qt.LeftDockWidgetArea: "left",
@@ -84,7 +84,12 @@ def apply(window, docks_by_name: dict, data: dict) -> None:
         window.restoreState(QByteArray.fromBase64(state.encode("ascii")))
     else:
         _apply_summary_arrangement(window, docks_by_name, summary)
-    _reinforce_sizes(window, docks_by_name, summary)
+    # restoreState()/setFloating() queue the actual splitter re-layout for the next event
+    # loop pass -- calling resizeDocks() in the same tick still sees the *old* splitter
+    # tree, so the sizes silently don't stick. Deferring one tick lets the arrangement
+    # land first, which is what was leaving panels (Registers, most visibly) at the
+    # wrong size even though the saved layout was being applied.
+    QTimer.singleShot(0, lambda: _reinforce_sizes(window, docks_by_name, summary))
 
 
 def _apply_summary_arrangement(window, docks_by_name: dict, summary: dict) -> None:

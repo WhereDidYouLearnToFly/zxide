@@ -282,18 +282,32 @@ class MainWindow(QMainWindow):
         self._reopen_last_project()  # reopen whatever project was last used
 
     def showEvent(self, event) -> None:  # noqa: N802 (Qt override name)
-        """Apply the layout once, a tick after the first show.
+        """Apply the layout once, after the window reaches its real (maximised) size.
 
-        Deferring lets the window reach its real (maximised) size first, so per-dock
-        sizes -- whether the saved ones or the default proportions -- are placed
-        correctly. splitDockWidget otherwise splits evenly, letting the compact
-        Registers panel claim as much height as the emulator.
+        Deferring lets per-dock sizes -- whether the saved ones or the default
+        proportions -- be placed correctly; splitDockWidget otherwise splits evenly,
+        letting the compact Registers panel claim as much height as the emulator.
         """
         super().showEvent(event)
         if self._laid_out:
             return
         self._laid_out = True
-        QTimer.singleShot(0, self._finish_layout)
+        QTimer.singleShot(0, self._await_maximized_then_finish_layout)
+
+    def _await_maximized_then_finish_layout(self, attempts_left: int = 40) -> None:
+        """Poll briefly for the window manager to actually finish maximising.
+
+        ``showMaximized()`` resizes synchronously on Windows, so a single deferred
+        tick is enough there. On X11/Wayland the resize is negotiated with the window
+        manager asynchronously, so that one tick can still see the pre-maximise size --
+        which is what was throwing off the saved dock sizes (most visibly the
+        Registers panel) on Linux. Poll a few times instead of trusting the first tick;
+        give up and lay out anyway after ~1s if the window manager never reports it.
+        """
+        if self.isMaximized() or attempts_left <= 0:
+            self._finish_layout()
+            return
+        QTimer.singleShot(25, lambda: self._await_maximized_then_finish_layout(attempts_left - 1))
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt override name)
         """Leave fullscreen before the IDE goes away.
@@ -568,7 +582,10 @@ class MainWindow(QMainWindow):
         if not ok:
             return
         model = dict((label, m) for label, m in MACHINE_MODEL_CHOICES)[model_label]
-        folder = QFileDialog.getExistingDirectory(self, "Choose a folder for the new project")
+        folder = QFileDialog.getExistingDirectory(
+            self, "Choose a folder for the new project",
+            options=QFileDialog.DontUseNativeDialog,
+        )
         if not folder:
             return
         name, ok = QInputDialog.getText(self, "New Project", "Project name:", text=Path(folder).name)
@@ -581,7 +598,9 @@ class MainWindow(QMainWindow):
             self.editor.open_file(str(main))
 
     def _open_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Open Folder")
+        folder = QFileDialog.getExistingDirectory(
+            self, "Open Folder", options=QFileDialog.DontUseNativeDialog,
+        )
         if folder:
             self._open_project(folder)
 
@@ -942,7 +961,8 @@ class MainWindow(QMainWindow):
         has no single filename to derive a symbol from, so it asks for one up front.
         """
         paths, _filter = QFileDialog.getOpenFileNames(
-            self, "Import Animation Sequence", str(self._target_dir()), "Bitmap images (*.bmp)"
+            self, "Import Animation Sequence", str(self._target_dir()), "Bitmap images (*.bmp)",
+            options=QFileDialog.DontUseNativeDialog,
         )
         if not paths:
             return
@@ -1095,7 +1115,8 @@ class MainWindow(QMainWindow):
         tapes but behave differently enough to be worth choosing between deliberately.
         """
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load {}".format(fmt.label), self._media_dir(), fmt.file_filter
+            self, "Load {}".format(fmt.label), self._media_dir(), fmt.file_filter,
+            options=QFileDialog.DontUseNativeDialog,
         )
         if path:
             self._load_media(path)
@@ -1242,7 +1263,8 @@ class MainWindow(QMainWindow):
                         action.setChecked(True)
                 return
         folder = QFileDialog.getExistingDirectory(self, "Dump to a new project folder",
-                                                  self._media_dir())
+                                                  self._media_dir(),
+                                                  options=QFileDialog.DontUseNativeDialog)
         if not folder:
             return
         if any(Path(folder).iterdir()):
@@ -1349,6 +1371,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self, "Mount in drive {}".format('AB'[drive]), self._media_dir(),
             "TR-DOS disk image (*.trd *.scl)",
+            options=QFileDialog.DontUseNativeDialog,
         )
         if path:
             self._load_disk(path, drive)
@@ -1383,6 +1406,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(
             self, "Save disk image", str(Path(start) / suggested) if start else suggested,
             "TR-DOS disk image (*.trd)",
+            options=QFileDialog.DontUseNativeDialog,
         )
         if not path:
             return False
