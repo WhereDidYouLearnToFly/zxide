@@ -177,3 +177,116 @@ def test_delete_of_a_plain_file_reports_no_assets(project):
 def test_delete_raises_when_the_file_is_not_there(project):
     with pytest.raises(OSError):
         project_files.delete(project, project.folder / "nope.txt")
+
+
+# --- renaming ----------------------------------------------------------------------
+#
+# The failure this guards against is not "the rename did not happen" -- it is a rename that
+# happens and leaves the manifest pointing at the old name, so the next build fails on a
+# file that is right there under a different name. Every test below is really about the
+# manifest keeping up with the disk.
+
+
+def test_a_plain_file_is_renamed(project):
+    project_files.rename(project, project.folder / "notes.txt", "readme.txt")
+    assert (project.folder / "readme.txt").read_text() == "hello"
+    assert not (project.folder / "notes.txt").exists()
+
+
+def test_an_assets_source_follows_its_file(project):
+    entry = _add_sprite(project, "hero.zx8x8", "hero")
+
+    affected = project_files.rename(project, project.folder / "hero.zx8x8", "player.zx8x8")
+
+    assert [e.id for e in affected] == [entry.id]
+    moved = next(e for e in project.assets() if e.id == entry.id)
+    assert project_files.normalise(moved.source) == project_files.normalise("player.zx8x8")
+
+
+def test_the_symbol_is_left_alone(project):
+    """The symbol is what the assembler sees. Renaming a file must not silently rename a
+    label that somebody's source already refers to."""
+    entry = _add_sprite(project, "hero.zx8x8", "hero")
+
+    project_files.rename(project, project.folder / "hero.zx8x8", "player.zx8x8")
+
+    assert next(e for e in project.assets() if e.id == entry.id).symbol == "hero"
+
+
+def test_renaming_a_folder_repoints_everything_inside_it(project):
+    """A folder rename moves a whole subtree, so every asset sourced from inside has to
+    move with it -- not just the folder being mentioned once."""
+    _add_sprite(project, "art/hero.zx8x8", "hero")
+    _add_sprite(project, "art/deep/boss.zx8x8", "boss")
+
+    project_files.rename(project, project.folder / "art", "graphics")
+
+    sources = sorted(project_files.normalise(e.source) for e in project.assets())
+    assert sources == sorted([
+        project_files.normalise("graphics/hero.zx8x8"),
+        project_files.normalise("graphics/deep/boss.zx8x8"),
+    ])
+
+
+def test_every_frame_of_a_sequence_is_repointed(project):
+    """A sprite_sequence names several files. Repointing the first and forgetting the rest
+    leaves an asset that cannot be converted."""
+    for name in ("a.zx8x8", "b.zx8x8"):
+        path = project.folder / "frames" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(blank_sprite(8, 8).encode(with_header=False))
+    entry = project.add_asset(["frames/a.zx8x8", "frames/b.zx8x8"], AssetKind.SPRITE_SHEET, symbol="walk")
+
+    project_files.rename(project, project.folder / "frames", "anim")
+
+    moved = next(e for e in project.assets() if e.id == entry.id)
+    assert [project_files.normalise(s) for s in moved.source] == [
+        project_files.normalise("anim/a.zx8x8"),
+        project_files.normalise("anim/b.zx8x8"),
+    ]
+
+
+def test_the_build_cache_survives_a_rename(project):
+    """It is keyed by symbol, and the bytes did not change -- only where they came from.
+    Invalidating it here would mean a needless rebuild after every tidy-up."""
+    entry = _add_sprite(project, "hero.zx8x8", "hero")
+    cache = asset_build.cache_path(project, entry.symbol)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_bytes(b"converted")
+
+    project_files.rename(project, project.folder / "hero.zx8x8", "player.zx8x8")
+
+    assert cache.read_bytes() == b"converted"
+
+
+def test_an_empty_name_is_refused(project):
+    with pytest.raises(project_files.RenameProblem):
+        project_files.rename(project, project.folder / "notes.txt", "   ")
+
+
+def test_a_name_with_a_separator_is_refused(project):
+    """Renaming is not moving. Accepting a path here would quietly turn one into the
+    other, and "../elsewhere/x" would leave the project entirely."""
+    with pytest.raises(project_files.RenameProblem):
+        project_files.rename(project, project.folder / "notes.txt", os.path.join("sub", "notes.txt"))
+    assert (project.folder / "notes.txt").exists()
+
+
+def test_an_existing_name_is_refused(project):
+    with pytest.raises(project_files.RenameProblem):
+        project_files.rename(project, project.folder / "levels" / "one.asm", "two.asm")
+    assert (project.folder / "levels" / "one.asm").exists()
+    assert (project.folder / "levels" / "two.asm").read_text() == "nop\n"
+
+
+def test_renaming_to_the_same_name_is_refused_rather_than_a_no_op(project):
+    """Silently succeeding would report "renamed" in the log for something that did not
+    happen, which is worse than saying so."""
+    with pytest.raises(project_files.RenameProblem):
+        project_files.rename(project, project.folder / "notes.txt", "notes.txt")
+
+
+def test_a_case_only_rename_is_allowed(project):
+    """It looks like a collision on Windows, where the destination "exists" because it is
+    the source -- but changing hero.asm to Hero.asm is a legitimate thing to want."""
+    project_files.check_rename(project.folder / "notes.txt", "Notes.txt")  # must not raise

@@ -31,7 +31,7 @@ where = ["."]
 include = ["zxemu_core*", "zxemu_ui*"]
 
 [tool.setuptools.package-data]
-zxemu_core = ["roms/*.rom", "roms/*.txt"]
+zxemu_core = ["roms/*.rom", "roms/*.txt", "players/*.bin", "players/*.txt"]
 zxemu_ui = ["templates/*/*", "addons/*/*"]
 
 [project.scripts]

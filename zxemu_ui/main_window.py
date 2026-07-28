@@ -62,11 +62,14 @@ from zxemu_core.debug import asm_meter, debug_expr
 from zxemu_core.assets.manifest import AssetKind
 from zxemu_core.assets.native_sprite import blank_sprite, sprite_format, sprite_suffix, suffix_for
 from zxemu_core.assets.beeper_sfx import SUFFIX as BEEPER_SFX_SUFFIX
+from zxemu_core.sound import music_file
 from zxemu_ui.workspace import builder, project_files
+from zxemu_ui.workspace.settings import detect_tracker_players
 from zxemu_ui.controller import EmulatorController
 from zxemu_ui.editor import EditorArea
 from zxemu_ui.gamepad import GamepadSource
 from zxemu_ui.panels.emulator_panel import EmulatorPanel
+from zxemu_ui.panels.ay_player_view import AyPlayerView
 from zxemu_ui.panels.emulator_view import EmulatorView
 from zxemu_ui import layout_store, media, menu_builder
 from zxemu_ui.debug_session import DebugSession
@@ -109,6 +112,22 @@ MACHINE_MODEL_CHOICES = (
     ("ZX Spectrum 128K", "128k"),
     ("Pentagon 128 (TR-DOS)", "pentagon"),
 )
+
+
+def _music_audio_sink():
+    """An audio sink for the music player, or None where there is no sound device.
+
+    Its own, not the emulator's: the two are independent streams, and a preview that fell
+    silent because the machine was paused -- or fought it for the device -- would be worse
+    than no preview. None is a normal outcome (headless test runs, a machine with no audio),
+    and the player simply renders without playing.
+    """
+    try:
+        from zxemu_ui.audio_output import AudioOutput
+
+        return AudioOutput()
+    except Exception:
+        return None
 
 
 class MainWindow(QMainWindow):
@@ -203,6 +222,12 @@ class MainWindow(QMainWindow):
         self.inspector = InspectorView()
         self.sprite_editor = SpriteEditorView()
         self.beeper_sfx_editor = BeeperSfxEditorView()
+        # The music player gets its own audio sink rather than sharing the emulator's: the
+        # two are independent streams, and previewing a tune must not fight the machine you
+        # are debugging for the sound device -- or fall silent whenever it is paused.
+        self._tracker_players = []  # found per project, see _refresh_tracker_players
+        self.music_player = AyPlayerView(_music_audio_sink())
+        self.music_player.on_locate_player = self._adopt_tracker_player
         self.output_console = OutputConsole()
         self.output_console.link_activated.connect(self._open_search_hit)
 
@@ -249,6 +274,10 @@ class MainWindow(QMainWindow):
         # is already ticked and nothing will toggle it to trigger the search.
         if machine.joystick.enabled:
             self._start_gamepad()
+
+        # A player folder chosen in a previous session should work before any project is
+        # opened -- otherwise picking one, restarting, and playing a .pt3 asks again.
+        self._refresh_tracker_players()
 
         self._reopen_last_project()  # reopen whatever project was last used
 
@@ -352,6 +381,13 @@ class MainWindow(QMainWindow):
         delete_action.setShortcutContext(Qt.WidgetShortcut)
         delete_action.triggered.connect(self._delete_selected)
         tree.addAction(delete_action)
+        # F2 is the rename key everywhere in Windows and in every IDE, and like Delete it
+        # is scoped to the tree -- so it can never fire while you are typing in the editor.
+        rename_action = QAction("Rename", tree)
+        rename_action.setShortcut(QKeySequence("F2"))
+        rename_action.setShortcutContext(Qt.WidgetShortcut)
+        rename_action.triggered.connect(self._rename_selected)
+        tree.addAction(rename_action)
         self.project_tree = tree
         return tree
 
@@ -361,6 +397,10 @@ class MainWindow(QMainWindow):
             return
         path = self._fs_model.filePath(current)
         if not path:
+            return
+        # Music is described from the file on disk, so it needs the absolute path and the
+        # detected players (whether a raw module is playable is not a property of the file).
+        if self.inspector.show_music(path, self._tracker_players):
             return
         self.inspector.show_path(self.project, self.project.relative(path) or path)
 
@@ -472,6 +512,7 @@ class MainWindow(QMainWindow):
         self.settings.push_recent("recent_projects", str(folder))
         self._log("Opened project: {}".format(folder))
         # Boot the machine the project targets; swap only if it differs from the current one.
+        self._refresh_tracker_players()  # they live beside the project, so they change with it
         model = self.project.model
         if model != machine_model(self.machine):
             self.set_machine(build_machine(model))
@@ -551,8 +592,52 @@ class MainWindow(QMainWindow):
             return
         if self._open_asset_editor_for_path(path):
             return
+        if self._open_music_for_path(path):
+            return
         if is_text_file(path):
             self.editor.open_file(path)
+
+    def _open_music_for_path(self, path: str) -> bool:
+        """Open a music file in the player. False if this file isn't music.
+
+        Content decides, not the extension, and that matters for exactly one suffix: a
+        compiled module is conventionally ``.c``, which is also C source. Sniffing the bytes
+        means a real ``.c`` file still opens in the editor, as it must.
+        """
+        if Path(path).suffix.lower() not in music_file.MUSIC_SUFFIXES:
+            return False
+        try:
+            data = Path(path).read_bytes()
+        except OSError as problem:
+            self._log("Could not read {}: {}".format(path, problem))
+            return False
+        info = music_file.describe(path, data, self._tracker_players)
+        if info["kind"] in ("unknown", "C source"):
+            return False  # a genuine .c source file, or something else entirely
+        self.music_player.load(path, data)
+        self._reveal_dock(self._music_dock)
+        return True
+
+    def _adopt_tracker_player(self, chosen: str) -> list:
+        """Take a player binary the user picked, remember its folder, and re-scan.
+
+        The *folder* is remembered rather than the file: player binaries come in pairs (one
+        per format) and live together, so recording where they are answers the PT2 question
+        as well as the PT3 one -- asked once, not once per format.
+        """
+        folder = str(Path(chosen).parent)
+        self.settings.set("tracker_player_dir", folder)
+        self._refresh_tracker_players()
+        return self._tracker_players
+
+    def _refresh_tracker_players(self) -> None:
+        """Re-hunt for player binaries, which live with the project rather than with zxide."""
+        folder = str(self.project.folder) if self.project is not None else ""
+        self._tracker_players = detect_tracker_players(folder, self.settings.get("tracker_player_dir", ""))
+        self.music_player.set_player_binaries(self._tracker_players)
+        if self._tracker_players:
+            names = ", ".join(sorted({Path(p.path).name for p in self._tracker_players}))
+            self._log("Tracker player(s) found for raw .pt2/.pt3 modules: {}".format(names))
 
     def _asset_editor_for(self, path: str):
         """``(panel, dock, kind)`` for the editor that handles this file type, or None.
@@ -627,6 +712,7 @@ class MainWindow(QMainWindow):
         menu.addAction("Import Animation Sequence…", self._import_animation_sequence)
         if clicked:
             menu.addSeparator()
+            menu.addAction("Rename…\tF2", lambda: self.rename_path(clicked))
             label = "Delete Folder…" if Path(clicked).is_dir() else "Delete…"
             menu.addAction(label, lambda: self.delete_path(clicked))
         menu.addSeparator()
@@ -638,6 +724,95 @@ class MainWindow(QMainWindow):
         index = self.project_tree.currentIndex()
         if index.isValid():
             self.delete_path(self._fs_model.filePath(index))
+
+    def _rename_selected(self) -> None:
+        """What F2 does: rename whatever the tree has selected."""
+        index = self.project_tree.currentIndex()
+        if index.isValid():
+            self.rename_path(self._fs_model.filePath(index))
+
+    def rename_path(self, path: str) -> bool:
+        """Rename a file or folder in the project. Returns whether it happened.
+
+        Same split as ``delete_path``: what needs a window stays here -- asking for the
+        name, reopening the editor tab, logging -- and the part with consequences
+        (``workspace.project_files.rename``, which also repoints the manifest) is Qt-free
+        and tested without one.
+        """
+        if self.project is None or not path:
+            return False
+        target = Path(path)
+        if not target.exists():
+            return False
+        if target.resolve() == self.project.folder.resolve():
+            QMessageBox.information(self, "Rename", "That's the project folder itself — rename it from outside zxide.")
+            return False
+
+        new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=target.name)
+        if not ok:
+            return False
+
+        # Warned about rather than refused: a native sprite's extension *is* its format
+        # (see native_sprite), so changing it changes how the bytes are read back -- which
+        # is occasionally exactly what somebody means to do.
+        if not self._confirm_suffix_change(target, new_name.strip()):
+            return False
+
+        # Which tabs were open on this, so they can be reopened at the new name. Saved
+        # first: the file is about to move out from under them, and an unsaved buffer over
+        # a path that no longer exists would recreate the old file on the next Save All.
+        reopen = self.editor.close_files_under(str(target))
+        try:
+            affected = project_files.rename(self.project, target, new_name)
+        except project_files.RenameProblem as problem:
+            QMessageBox.information(self, "Rename", str(problem))
+            self._reopen(reopen)
+            return False
+        except OSError as exc:
+            QMessageBox.critical(self, "Rename", "Could not rename {}:\n{}".format(target.name, exc))
+            self._reopen(reopen)
+            return False
+
+        destination = target.with_name(new_name.strip())
+        self._log(
+            "Renamed {} to {}".format(target.name, destination.name)
+            + (" ({} asset(s) repointed)".format(len(affected)) if affected else "")
+        )
+        self._reopen_moved(reopen, target, destination)
+        self._assets_changed()
+        return True
+
+    def _confirm_suffix_change(self, target: Path, new_name: str) -> bool:
+        """If a rename changes an asset file's extension, say what that means first."""
+        if target.is_dir() or Path(new_name).suffix.lower() == target.suffix.lower():
+            return True
+        if not project_files.assets_under(self.project, target):
+            return True
+        answer = QMessageBox.warning(
+            self,
+            "Rename",
+            "“{}” is an asset and you are changing its extension.\n\nFor sprites the extension *is* "
+            "the format — its size and whether it has colour — so the same bytes will be read back "
+            "differently.\n\nRename anyway?".format(target.name),
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        return answer == QMessageBox.Yes
+
+    def _reopen(self, paths) -> None:
+        """Put back tabs closed for a rename that then did not happen.
+
+        A refused or failed rename must not cost somebody the tabs they had open -- they
+        were closed in preparation, and the preparation turned out to be unnecessary.
+        """
+        for path in paths or ():
+            self.editor.open_file(path)
+
+    def _reopen_moved(self, paths, target: Path, destination: Path) -> None:
+        """Put back tabs at where their files are *now*, after a rename succeeded."""
+        for path in paths or ():
+            was = Path(path)
+            self.editor.open_file(str(destination if was == target else destination / was.relative_to(target)))
 
     def delete_path(self, path: str) -> bool:
         """Delete a file or folder from the project, after confirming. Returns whether it went.
@@ -1455,6 +1630,19 @@ class MainWindow(QMainWindow):
         self._beeper_sfx_editor_dock.resize(420, 360)
         self._beeper_sfx_editor_dock.hide()
 
+        # Music player: on-demand like the editors above, and floating from the start --
+        # it is something you pop out beside the IDE while a tune plays, not a panel you
+        # dock permanently into a layout you use for code.
+        self._music_dock = self._make_dock("Music Player", self.music_player, "musicPlayerDock")
+        # Belt and braces on "closing the popup stops the music". The panel stops itself on
+        # hide, which covers the dock closing -- but this is the dock saying so directly,
+        # and it costs one connection to not depend on how Qt propagates hides to children.
+        self._music_dock.visibilityChanged.connect(lambda visible: None if visible else self.music_player.stop())
+        self.addDockWidget(Qt.RightDockWidgetArea, self._music_dock)
+        self._music_dock.setFloating(True)
+        self._music_dock.resize(420, 260)
+        self._music_dock.hide()
+
         # Disk drives: on-demand like the other tools, since only a Pentagon has any.
         self._disk_dock = self._make_dock("Disk Drives", self.disk, "diskDock")
         self.addDockWidget(Qt.RightDockWidgetArea, self._disk_dock)
@@ -1470,8 +1658,8 @@ class MainWindow(QMainWindow):
             self._project_dock, self._inspector_dock, self._emulator_dock,
             self._memory_dock, self._registers_dock, self._memmap_dock,
             self._disasm_dock, self._callstack_dock, self._analysis_dock,
-            self._sprite_editor_dock, self._beeper_sfx_editor_dock, self._disk_dock,
-            self._output_dock,
+            self._sprite_editor_dock, self._beeper_sfx_editor_dock, self._music_dock,
+            self._disk_dock, self._output_dock,
         ]
 
     # --- menu -----------------------------------------------------------------

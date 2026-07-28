@@ -410,7 +410,30 @@ this backlog line is kept only as an index pointer.
 ### 4. Sound & hardware completeness
 - AY **stereo** (ACB/ABC), and an **AY register/scope panel** to watch the chip live. ★
 - **128K RAM disk**.
-- **PT3 / beeper-SFX playback** for imported audio assets.
+- **AY music playback** ✅ *done* -- `.ay`, `.c` compiled modules and raw `.pt3`/`.pt2`, all
+  through one engine (`zxemu_core/sound/ay_module_player.py`) that runs the music on a
+  **private emulated 128K** rather than parsing it. The insight that shrank this: most
+  Spectrum music is Z80 code, not notes, so a tracker interpreter per format (~1000 lines
+  each, and subtly wrong when wrong) was replaced by "load the blob, call init, call play
+  once a frame". A planned PT3 interpreter was deleted unwritten as a result.
+  Load addresses are *derived and cross-checked*, never assumed: a compiled module's ORG
+  comes from its opening `LD HL` minus the file offset of its tracker signature, and a
+  player binary is accepted only if its header agrees with its own length. Both refuse
+  loudly instead of running a stranger's bytes. UI: a floating Music Player panel with
+  three channel meters (no pattern/row -- with a compiled player there is nothing to read),
+  plus Inspector details, Play/Stop, and playback that stops the instant the panel closes.
+  Raw modules need a player binary: two are **bundled** (`zxemu_core/players/`, third-party,
+  see `LICENSE-players.txt`) so they work with no setup, while a player found beside the
+  project takes precedence -- it may be the version that project's music needs. Failing
+  both, "Find player…" asks and remembers the folder.
+  Pacing is by elapsed time, not one frame per timer tick: a `QTimer` asked for 20ms fires
+  at Windows' ~15.6ms granularity, and "a frame per tick" was audibly wrong. The emulator's
+  own loop had already solved this (`controller._tick`); the player had to learn it too.
+- **PT2/PT3 as native parsers** -- *deliberately not done*; see above.
+- **Interrupt-driven `.ay` songs** (interrupt address 0, meaning the tune installs its own
+  IM 2 handler) -- refused rather than mis-played. Needs a driver that leaves the machine
+  running with interrupts enabled instead of calling a routine per frame.
+- **beeper-SFX playback** for imported audio assets.
 - **Kempston Mouse** ✅ *done* -- `zxemu_core/mouse.py`: a buttons byte and two
   free-running X/Y counters, with the interface's real four-line address decode rather
   than the three addresses the manuals quote (so aliased reads reach it, as on hardware).
@@ -461,6 +484,14 @@ this backlog line is kept only as an index pointer.
   within-file because a Z80 project is a dozen small includes, so "where is this label used"
   is nearly always a question about the project.
 - **Go to Line (Ctrl+G)** ✅ -- bounded by the open file's own length.
+- **Rename in the project tree** ✅ *done* -- `F2` or the context menu. The half with
+  consequences is Qt-free (`workspace/project_files.py: rename`): an asset's **source**
+  follows its file and a renamed folder carries its whole subtree, including every frame of
+  a sprite sequence. Two things deliberately do not move -- the **symbol**, because that is
+  what assembly source refers to, and the **build cache**, which is keyed by symbol and
+  still valid since only the file's name changed. Changing an asset's extension asks first
+  (for native sprites the extension *is* the format). Editor tabs are closed and reopened at
+  the new path, and put back unchanged if the rename is refused.
 - **Show in Explorer** ✅ -- project-tree context menu; `zxemu_ui/system_open.py` builds the
   argv per platform (Windows selects the file, macOS reveals it, Linux opens its folder).
 - **Output panel Clear** ✅ -- on the console's **right-click menu**, beside Copy/Select All,

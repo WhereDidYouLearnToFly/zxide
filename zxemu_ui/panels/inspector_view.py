@@ -140,9 +140,47 @@ class InspectorView(QWidget):
         """Show the asset whose source matches ``path``, or clear if it isn't one."""
         entry = next((e for e in project.assets() if e.source == path), None)
         if entry is None:
-            self.clear()
+            self.show_music(path) or self.clear()
             return
         self.show_asset(project, entry)
+
+    def show_music(self, path: str, players=()) -> bool:
+        """Describe a music file, for files the manifest knows nothing about.
+
+        Music sits outside the asset system: a tune is played, not built into a bank, so it
+        never acquires a manifest entry and the Inspector would otherwise go blank on it.
+        What it shows is only what can be read without playing -- title, author, size, the
+        songs inside a container -- because the transport lives in the Music Player panel
+        and two Play buttons in two places is one too many.
+
+        Returns whether the file turned out to be music, so the caller can fall through.
+        """
+        from pathlib import Path
+
+        from zxemu_core.sound import music_file
+
+        if Path(path).suffix.lower() not in music_file.MUSIC_SUFFIXES:
+            return False
+        try:
+            data = Path(path).read_bytes()
+        except OSError:
+            return False
+        info = music_file.describe(path, data, players)
+        if info["kind"] in ("unknown", "C source"):
+            return False  # a real .c source file, which is the editor's business
+
+        self.clear()
+        self._message_label.setVisible(False)
+        self._title_label.setText(info["title"] or Path(path).name)
+        fields = ["Kind: {}".format(info["kind"]), "Size: {} bytes".format(info["size"])]
+        if info.get("author"):
+            fields.append("Author: {}".format(info["author"]))
+        for index, name in enumerate(info.get("songs") or []):
+            fields.append("Song {}: {}".format(index + 1, name))
+        if info["detail"]:
+            fields.append(info["detail"])
+        self._fields_label.setText("\n".join(fields))
+        return True
 
     def show_asset_id(self, project, asset_id: str) -> None:
         entry = next((e for e in project.assets() if e.id == asset_id), None)

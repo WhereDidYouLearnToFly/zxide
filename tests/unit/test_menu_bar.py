@@ -209,7 +209,7 @@ def test_extended_mode_reaches_the_live_machine_and_is_remembered(qapp, window):
 
 def test_the_view_menu_lists_every_dock(window):
     labels = _labels(_menu(window, "&View"))
-    assert len(window._all_docks) == 13
+    assert len(window._all_docks) == 14
     for dock in window._all_docks:
         assert dock.toggleViewAction().text() in labels
 

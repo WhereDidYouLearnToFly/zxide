@@ -68,6 +68,91 @@ def count_contents(folder: Path) -> int:
     return sum(1 for _ in folder.rglob("*"))
 
 
+class RenameProblem(ValueError):
+    """Why a rename cannot go ahead, in a sentence for the user.
+
+    Ordinary refusals, not bugs: a name with a slash in it, a name already taken, an empty
+    one. The caller shows the text and the user tries again.
+    """
+
+
+def check_rename(target: Path, new_name: str) -> Path:
+    """Validate a new name and return the path it would become. Raises ``RenameProblem``.
+
+    Separate from ``rename`` so a dialog can check before committing, and so every refusal
+    reads the same whether it came from typing or from a script. A *name* is wanted here,
+    not a path: renaming is not moving, and accepting ``../elsewhere/x`` would quietly turn
+    one into the other.
+    """
+    cleaned = (new_name or "").strip()
+    if not cleaned:
+        raise RenameProblem("A name is required.")
+    if cleaned in (".", ".."):
+        raise RenameProblem("That is not a name.")
+    if os.sep in cleaned or (os.altsep and os.altsep in cleaned):
+        raise RenameProblem("A name cannot contain a path separator -- renaming does not move a file.")
+    if cleaned == target.name:
+        raise RenameProblem("That is already its name.")
+
+    destination = target.with_name(cleaned)
+    # Case-only renames are a legitimate thing to want and look like a collision on
+    # Windows, where the filesystem says the destination exists because it *is* the source.
+    if destination.exists() and normalise(destination) != normalise(target):
+        raise RenameProblem("“{}” already exists here.".format(cleaned))
+    return destination
+
+
+def rename(project, target: Path, new_name: str) -> list[AssetEntry]:
+    """Rename a file or folder and repoint any manifest assets at it. Returns those assets.
+
+    The manifest stores each asset's *source path*, so renaming the file underneath one and
+    stopping there leaves a project whose next build fails on a file it can no longer find.
+    Folders carry their whole subtree with them, so every asset sourced from inside one has
+    to move too.
+
+    Two things deliberately do not change. The asset's **symbol** is what the assembler
+    sees, so renaming a file is not allowed to silently rename a label somebody's source
+    already refers to. The **build cache** is keyed by that symbol, so it stays valid --
+    the bytes did not change, only where they came from.
+
+    The disk rename happens first: if it fails there is nothing to undo, whereas a manifest
+    updated ahead of a failed rename would point at a file that was never created.
+    """
+    destination = check_rename(target, new_name)
+    affected = assets_under(project, target)
+
+    target.rename(destination)
+
+    for entry in affected:
+        was_list = isinstance(entry.source, list)
+        sources = entry.source if was_list else [entry.source]
+        moved = [_moved_source(project, source, target, destination) for source in sources]
+        project.set_asset_source(entry.id, moved if was_list else moved[0])
+    return affected
+
+
+def _moved_source(project, source: str, target: Path, destination: Path) -> str:
+    """Where one manifest source ends up after ``target`` became ``destination``.
+
+    Handles both cases in one place because a folder rename moves things *inside* it: the
+    renamed thing itself becomes the destination, while anything beneath keeps its position
+    within the subtree. A sprite sequence naming five frames in a renamed folder needs all
+    five repointed, not the folder mentioned once.
+    """
+    absolute = Path(project.folder) / source
+    if normalise(absolute) == normalise(target):
+        return _project_relative(project, destination)
+    return _project_relative(project, destination / absolute.relative_to(target))
+
+
+def _project_relative(project, path: Path) -> str:
+    """A path as the manifest stores it: relative to the project folder where possible."""
+    try:
+        return str(path.relative_to(Path(project.folder)))
+    except ValueError:
+        return str(path)
+
+
 def delete(project, target: Path) -> list[AssetEntry]:
     """Remove ``target`` from the project entirely. Returns the assets that went with it.
 

@@ -22,6 +22,70 @@ def detect_assembler() -> str:
     return shutil.which("sjasmplus") or ""
 
 
+#: Where to look for a tracker player binary near the open project, before falling back to
+#: the ones zxide ships (``zxemu_core/players``). Project first, deliberately: a project
+#: that carries its own player wants *that* one, which may be a version its music needs.
+PLAYER_SEARCH_DIRS = (".", "music", "players", "tools", "lib")
+
+
+def bundled_player_dir():
+    """The players shipped with zxide, so raw .pt2/.pt3 modules play with no setup at all.
+
+    Third-party binaries under their own terms, exactly like the ROM images beside them --
+    see ``zxemu_core/players/LICENSE-players.txt``. Kept last in the search order so a
+    player sitting next to the project always wins.
+    """
+    from pathlib import Path as _Path
+
+    import zxemu_core
+
+    return _Path(zxemu_core.__file__).resolve().parent / "players"
+
+
+def detect_tracker_players(project_dir, extra_dir="") -> list:
+    """Player binaries for raw tracker data, identified by *shape* rather than by name.
+
+    A candidate is accepted only if it is laid out as a player and its own header agrees
+    with its length (see ``zxemu_core.sound.tracker_player.identify_player``) -- which is a
+    strong enough check to scan folders of arbitrary ``.bin`` files safely. Name matching
+    would be both looser and more brittle: these things are called ``pt3_c000.bin``,
+    ``PT3.BIN``, ``player.bin`` and worse.
+
+    Search order is chosen-folder, then project, then bundled: the more specific the
+    location, the more likely it is the one somebody meant.
+    """
+    from zxemu_core.sound.tracker_player import identify_player
+
+    found = []
+    seen = set()
+    for directory in _player_dirs(project_dir, extra_dir):
+        if not directory.is_dir():
+            continue
+        for candidate in sorted(directory.glob("*.bin")):
+            resolved = str(candidate.resolve())
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            try:
+                data = candidate.read_bytes()
+            except OSError:
+                continue  # unreadable is simply "not a player we can use"
+            player = identify_player(data, path=resolved)
+            if player is not None:
+                found.append(player)
+    return found
+
+
+def _player_dirs(project_dir, extra_dir):
+    if extra_dir:
+        yield Path(extra_dir)
+    if project_dir:
+        base = Path(project_dir)
+        for name in PLAYER_SEARCH_DIRS:
+            yield base / name
+    yield bundled_player_dir()  # last: whatever the project has takes precedence
+
+
 RECENT_LIMIT = 10  # how many entries the Open Recent / Load Recent menus remember
 
 
@@ -46,6 +110,10 @@ def default_settings() -> dict:
         # being masked off. Off by default because software written for a one-button stick
         # can read those bits as something else entirely.
         "kempston_joystick_extended": False,
+        # Where to find a PT2/PT3 player binary for raw tracker modules, when the ones near
+        # the project aren't the ones you meant. Empty = search the project only. zxide
+        # bundles no player: see detect_tracker_players above for why.
+        "tracker_player_dir": "",
         # Editor: hover an instruction for what it does, its cost and the flags it
         # disturbs. On by default -- it costs nothing until you point at something --
         # but it is the kind of help you stop needing, so it can be switched off.

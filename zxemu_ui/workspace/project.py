@@ -213,6 +213,15 @@ class Project:
     def set_asset_placement(self, asset_id: str, bank: str, offset: int) -> None:
         self._update_asset(asset_id, lambda data: data.__setitem__("placement", {"bank": bank, "offset": offset}))
 
+    def set_asset_source(self, asset_id: str, source) -> None:
+        """Repoint an asset at a different file (or list of files), keeping everything else.
+
+        Used when a file is renamed underneath an asset. Only the *source* moves: the
+        symbol is what the assembler sees, and renaming a file must not silently rename a
+        label that somebody's source already refers to.
+        """
+        self._update_asset(asset_id, lambda data: data.__setitem__("source", source))
+
     def set_asset_auto(self, asset_id: str) -> None:
         self._update_asset(asset_id, lambda data: data.__setitem__("placement", "auto"))
 

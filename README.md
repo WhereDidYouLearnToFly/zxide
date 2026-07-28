@@ -90,7 +90,14 @@ Menus are grouped by what you're doing rather than by which code implements them
 | `Ctrl+F` | Find in Project — results in Output, click one to jump to it |
 | `Ctrl+G` | Go to Line |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / Save All |
+| `F2` / `Delete` | Rename / delete the selected file — project tree only |
 | `Alt+Enter` | Emulator fullscreen — `Esc` returns to the IDE |
+
+**Renaming repoints the manifest.** An asset's source path follows its file, and a renamed
+folder takes every asset inside it along — otherwise the next build fails on a file that is
+sitting right there under a different name. The asset's *symbol* deliberately does not
+change: that is what your assembly source refers to. Changing an asset's extension asks
+first, because for sprites the extension **is** the format.
 
 The emulator's keys work by **physical position**, so a non-Latin keyboard layout (Cyrillic,
 Greek…) still types on the Spectrum: `LOAD ""` is the J key, then Ctrl+P twice, then Enter,
@@ -140,6 +147,44 @@ long since concluded there's no mouse. The Output console says so when you fit o
 
 While the joystick is fitted the arrow keys and `Ctrl` stop reaching the Spectrum keyboard.
 Feeding both would have a game see every nudge twice, the arrows being CAPS SHIFT + 5/6/7/8.
+
+### AY music
+
+Double-click a music file in the project tree and it opens in the **Music Player** — a
+floating panel with play/stop and three channel meters. Selecting the file shows its details
+in the Inspector.
+
+| format | what it is | needs |
+|---|---|---|
+| `.ay` | a container of Z80 code plus the addresses to call; often several tunes in one file | nothing |
+| `.c` | a *compiled module* — a tracker's output with its player welded on | nothing |
+| `.pt3` / `.pt2` | raw tracker data, which carries no player | a player binary (see below) |
+
+**Playback runs a real emulated machine underneath**, on its own private 128K — never the
+emulator on screen, so auditioning a tune can't disturb what you were debugging. That's not
+a shortcut: most Spectrum music *is* Z80 code rather than a note list, so running the
+author's own player is the only faithful way to hear it.
+
+The meters show what the chip is doing: bar height is volume, and each channel says whether
+it is playing a tone (its period), `noise`, `env` when the envelope generator drives it, or
+`off` when it is mixed out entirely. A drum channel typically reads `noise env` with no
+tone. There is no pattern or row display — with a compiled player there is genuinely no such
+thing to read.
+
+Closing the panel stops playback immediately.
+
+**Raw `.pt3`/`.pt2` need a player program**, because the file is only note data. Two are
+bundled (`zxemu_core/players/`, third-party — see `LICENSE-players.txt`), so this works with
+no setup. A player next to your project takes precedence over them: put one in the project
+root, or `music/`, `players/`, `tools/`, `lib/`. Failing both, **Find player…** in the panel
+asks for one and remembers where it lives.
+
+Candidates are identified by *shape*, not filename — a player's header states where it
+expects its module, and that must equal its own length — so pointing zxide at a folder of
+assorted `.bin` files is safe.
+
+`.c` is also the C source extension, so content decides: a real C file still opens in the
+editor.
 
 ### Debugging
 

@@ -53,6 +53,14 @@ Working on your own material:
                         because length is what the drag is for. The frequency axis is
                         logarithmic, or the whole low end where thuds and rumbles live
                         would be a sliver.
+    ay_player_view.py   Play a music file and watch the chip while it does. Floating by
+                        default, because it is something you pop out beside the IDE for
+                        as long as a tune lasts. The display is three channel meters and
+                        nothing else -- not from modesty but because these formats are
+                        Z80 programs rather than note lists (see zxemu_core/sound), so
+                        pattern and row genuinely are not knowable; the chip's own state
+                        is. Playback runs on its own private machine, so auditioning a
+                        tune never disturbs the emulator you are debugging with.
     output_console.py   The Output panel: build log and search results, where result
                         lines are clickable links to a file and line.
 

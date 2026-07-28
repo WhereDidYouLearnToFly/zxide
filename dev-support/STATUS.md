@@ -2,9 +2,77 @@
 
 _Last updated: 2026-07-27._ A snapshot to make it easy to pick the project back up.
 
-## Latest session (2026-07-27) — the Kempston Mouse, a review of it, then the Joystick
+## Latest session (2026-07-27, later) — AY music preview
 
-**1307 tests pass** (1278 unit + 29 integration; the zexall harness is separate and runs
+Six music files in a real project (`E:\github\rehq\music`) all play now: an `.ay` container,
+a `.c` compiled module, and raw `.pt3`/`.pt2`. Double-click opens a floating Music Player;
+selecting shows details in the Inspector.
+
+**The decision that shrank this by an order of magnitude.** The first plan was a PT3
+interpreter in Python — ~1000 lines, then the same again for PT2. Then two things landed:
+`.c` and `.ay` files are *Z80 programs*, not note lists, so they cannot be parsed as music
+at all; and this project already owns a Z80 and an AY. So the engine became "load the blob,
+call init, call play once a frame, drain the chip", and when pre-assembled player binaries
+turned up in `E:\github\ZiFi`, raw `.pt3`/`.pt2` went through the *same* engine. The PT3
+interpreter was deleted unwritten.
+
+**Everything headerless is derived and cross-checked, never assumed.** A compiled module has
+no load address; it is computed as `LD HL operand − file offset of the tracker signature`,
+and the two facts check each other. A player binary is accepted only if its header's module
+pointer equals `ORG + its own length`. Both refuse loudly rather than run a stranger's bytes
+— which matters, because the failure mode of guessing is not an error but an emulated CPU
+executing whatever the bytes happen to mean. Verified on the real files: `SH_promise.c` is
+Bulba's player at `$C000` with a PT3 3.5 module at `$C851`.
+
+**Three `.ay` details that fail silently**, all now tested:
+- The block list terminates on a zero **address alone**. Requiring length 0 too walked off
+  into 130 nonsense blocks that all looked almost real.
+- **HiReg/LoReg select the song.** The Hero Quest file is three tunes sharing one 8976-byte
+  block, differing *only* in that preload (2, 1, 3). Ignore it and all three play as one —
+  proven by rendering all three and comparing hashes.
+- Pointers are signed and relative to **their own position**, not the file start.
+
+**Playback never touches the emulator on screen** — its own private `Machine128`, thrown
+away on stop, same reasoning as `beeper_preview.py`. It also has its own audio sink, so a
+preview does not fall silent when the machine is paused.
+
+**No player binary is bundled**, deliberately: Bulba's players are third-party work whose
+terms are not stated in either copy on this machine. They are autodetected near the project
+instead, identified by shape rather than filename, which is what makes scanning arbitrary
+`.bin` files safe. Same pattern as the assembler.
+
+**Two bugs found by actually listening**, which is why it was worth testing before writing
+any of this down:
+
+- **The music lagged.** Not CPU — a frame renders in 5.2ms of its 20ms budget. It was
+  `QTimer(20ms)` plus *one frame per tick*: Windows' timer granularity is ~15.6ms, so the
+  tick rate was never 50Hz and the tune played at whatever rate the OS delivered events.
+  `controller.py` documents this exact trap for the emulator loop and paces by elapsed time;
+  the player now does the same, plus six frames pre-rendered so the device is not fed from a
+  standing start. Confirmed better by the user.
+- **"It says it needs some library."** It did not — that was the wording of "no PT3 player
+  binary found", which reads like a broken install when the truth is that a `.pt3` file
+  contains notes and no way to play them. Message rewritten, and a **Find player…** button
+  added, because an explanation beside a dead button is still a dead end.
+
+**The players are bundled now** (`zxemu_core/players/`, with `LICENSE-players.txt`), at the
+project owner's decision after the licence gap was flagged: both are builds of Bulba's
+universal PT2/PT3 player with no licence text in the copies on this machine. Search order is
+chosen-folder → project → bundled, so a project carrying its own player still wins.
+
+Also not done: interrupt-driven `.ay` songs (interrupt address 0) are refused rather than
+mis-played, and an incidental find — an untouched AY emits a −0.25 DC step that its blocker
+decays over the first frame, so every playback starts with a faint click.
+
+**Rename in the project tree** went in alongside (`F2`, or the context menu). Same split as
+delete: `workspace/project_files.py` owns the part with consequences and is Qt-free. The
+manifest is the whole point — an asset's source follows its file, a renamed folder carries
+its subtree including every frame of a sequence, while the *symbol* stays put (assembly
+source refers to it) and the build cache stays valid (keyed by symbol; only the name moved).
+
+## Earlier session (2026-07-27) — the Kempston Mouse, a review of it, then the Joystick
+
+**1361 tests pass** (1332 unit + 29 integration; the zexall harness is separate and runs
 for minutes by design — it is why `pytest tests` looks like it has hung, and why the two
 suites above are worth running on their own).
 
