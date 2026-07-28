@@ -9,7 +9,9 @@ from PyQt5.QtWidgets import QApplication  # noqa: E402
 
 from zxemu_ui.panels import emulator_view  # noqa: E402
 from zxemu_ui.panels.emulator_view import EmulatorView  # noqa: E402
+from zxemu_core.joystick import KempstonJoystick  # noqa: E402
 from zxemu_core.keyboard import Keyboard  # noqa: E402
+from zxemu_core.mouse import KempstonMouse  # noqa: E402
 
 
 class FakeMemory:
@@ -26,6 +28,8 @@ class FakeMachine:
         self.memory = FakeMemory()
         self.ula = FakeUla()
         self.keyboard = Keyboard()
+        self.mouse = KempstonMouse()
+        self.joystick = KempstonJoystick()
 
 
 @pytest.fixture(scope="module")

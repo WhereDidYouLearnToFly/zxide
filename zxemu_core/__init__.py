@@ -11,7 +11,7 @@ Soviet-era **Pentagon 128** clone -- in pure Python with no GUI dependency (the 
 interface lives separately in ``zxemu_ui``), so the emulator can be read, tested, and
 reused entirely on its own.
 
-The machine itself sits at the top level -- these four files *are* the Spectrum:
+The machine itself sits at the top level -- these six files *are* the Spectrum:
 
 
     machine.py   Wires everything below into a whole "Spectrum" and runs it one
@@ -27,10 +27,20 @@ The machine itself sits at the top level -- these four files *are* the Spectrum:
     ula.py       The ULA chip: video/frame timing, the border colour, the 1-bit
                  speaker, and the I/O port (0xFE) the keyboard and border share.
     keyboard.py  The Spectrum's 8x5 key matrix, which the ULA reads.
-    mouse.py     The Kempston Mouse interface: ports 0xFADF/0xFBDF/0xFFDF for
-                 buttons and the free-running X/Y counters. Off by default --
-                 see ``Machine.mouse.enabled`` -- so it stays invisible to
-                 software that probes for one and finds none fitted.
+    mouse.py     The Kempston Mouse: a buttons byte and two free-running X/Y
+                 counters, at 0xFADF/0xFBDF/0xFFDF and, because the interface
+                 decodes only four address lines, at every other port with A0
+                 set and A5 clear. Off by default -- see ``Machine.mouse.enabled``
+                 -- so it stays invisible both to software probing for a mouse
+                 that isn't fitted and to the neighbours it would sit on top of.
+    joystick.py  The Kempston Joystick: switches in one byte at port 0x1F,
+                 **active high**, so an absent interface reads as everything
+                 pressed rather than as nothing. Eight bits, following the ZX
+                 Spectrum Next: directions and two fires always, A and START
+                 only in its MD 3-button mode (that masking is the whole
+                 difference between the Next's two modes). Off by default and
+                 mutually exclusive with the mouse -- both answer 0x1F, and on
+                 real hardware the two fight over the data bus.
 
 One more file sits alongside them, about the address space rather than the hardware:
 

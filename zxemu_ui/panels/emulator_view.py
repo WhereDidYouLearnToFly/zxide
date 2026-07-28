@@ -16,6 +16,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QCursor, QImage, QPainter
 from PyQt5.QtWidgets import QWidget
 
+from zxemu_core.joystick import BUTTON_A, DOWN, FIRE, FIRE2, LEFT, RIGHT, START, UP
 from zxemu_core.mouse import BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT
 
 # Which Kempston Mouse button a Qt mouse button corresponds to. Only the three the
@@ -24,6 +25,24 @@ _QT_BUTTON_TO_KEMPSTON = {
     Qt.LeftButton: BUTTON_LEFT,
     Qt.RightButton: BUTTON_RIGHT,
     Qt.MiddleButton: BUTTON_MIDDLE,
+}
+
+# The PC keys that stand in for a Kempston Joystick, consulted only while one is fitted
+# (see ``EmulatorView._apply_joystick_key``). Arrows because that is what a stick is; the
+# rest are chosen from the keys a Spectrum does not have, so nothing typeable is displaced.
+#
+# The three extra buttons only reach software in extended mode, and a keyboard is a poor
+# imitation of a pad anyway -- these exist so the feature is testable and usable without
+# hardware, not because anyone will prefer End to a START button.
+_QT_KEY_TO_KEMPSTON_SWITCH = {
+    Qt.Key_Left: LEFT,
+    Qt.Key_Right: RIGHT,
+    Qt.Key_Up: UP,
+    Qt.Key_Down: DOWN,
+    Qt.Key_Control: FIRE,       # B, the button every Kempston game means
+    Qt.Key_Insert: FIRE2,       # C
+    Qt.Key_Home: BUTTON_A,      # A
+    Qt.Key_End: START,
 }
 
 # A 1px frame signalling keyboard focus: green when the view has focus (typing reaches
@@ -416,6 +435,9 @@ class EmulatorView(QWidget):
         self._held_keys.clear()
         self._rebuild_matrix()
         self.release_mouse_capture()
+        # The stick, for the same reason the key matrix is cleared: a direction held when
+        # focus left never gets its key-up, and the game keeps walking into the wall.
+        self.machine.joystick.release_all()
         self.update()
 
     # --- Kempston Mouse ---------------------------------------------------------
@@ -423,13 +445,20 @@ class EmulatorView(QWidget):
     def release_mouse_capture(self) -> None:
         """Give the pointer back: show the cursor, ungrab, stop relative tracking.
 
-        Called whenever capture should end for a reason other than the user's own
-        Esc -- losing focus, or the feature being switched off in the menu -- so a
-        hidden, grabbed pointer can never outlive the state that justified it.
+        Called from every route out of capture -- the user's Esc, losing focus, the
+        feature being switched off in the menu -- so a hidden, grabbed pointer can never
+        outlive the state that justified it.
+
+        Held buttons are let go on the way out, and that is not tidiness. Capture can end
+        mid-click, and the matching release then goes to whatever owns the pointer now,
+        never here; since ``mouseReleaseEvent`` below only speaks to the interface while
+        captured, the bit would stay low forever -- a phantom held button surviving even
+        re-capture (see ``KempstonMouse.release_all_buttons``).
         """
         if not self._mouse_captured:
             return
         self._mouse_captured = False
+        self.machine.mouse.release_all_buttons()
         self.releaseMouse()
         self.unsetCursor()
 
@@ -498,10 +527,22 @@ class EmulatorView(QWidget):
     def keyPressEvent(self, event) -> None:
         if event.isAutoRepeat():
             return
-        if self._mouse_captured and event.key() == Qt.Key_Escape:
-            # Esc means nothing to a Spectrum keyboard, so stealing it here to give
-            # the pointer back costs no key the emulated machine would otherwise see.
-            self.release_mouse_capture()
+        if event.key() == Qt.Key_Escape:
+            # Esc is not a Spectrum key, so it is always somebody else's. While the
+            # pointer is captured it means "give it back" and stops here; otherwise it
+            # belongs to whoever is above us -- the fullscreen stage closes on it.
+            #
+            # Passing it up needs the explicit ignore(): Qt only walks the parent chain
+            # for key events a widget *declined*, and an override that quietly returns
+            # counts as having handled the key. The two uses layer rather than fight --
+            # captured and fullscreen, the first Esc frees the pointer and the second
+            # leaves fullscreen, which is the order you want them in.
+            if self._mouse_captured:
+                self.release_mouse_capture()
+                return
+            event.ignore()
+            return
+        if self._apply_joystick_key(event, pressed=True):
             return
         # Both the logical key and the physical position are kept: the position is only
         # consulted when the logical key means nothing to a Spectrum (see _resolve_key).
@@ -511,8 +552,30 @@ class EmulatorView(QWidget):
     def keyReleaseEvent(self, event) -> None:
         if event.isAutoRepeat():
             return
+        if self._apply_joystick_key(event, pressed=False):
+            return
         self._held_keys.pop(self._key_identity(event), None)
         self._rebuild_matrix()
+
+    def _apply_joystick_key(self, event, pressed: bool) -> bool:
+        """Route a key to the Kempston Joystick, reporting whether it was consumed.
+
+        The keys are taken *away* from the Spectrum keyboard while an interface is fitted,
+        rather than driving both. Sending them to both looks generous and plays badly: the
+        arrows are CAPS SHIFT + 5/6/7/8, which plenty of games also read directly, so a
+        game offering "keyboard or joystick" would receive each nudge twice and often
+        interpret the pair as a third thing. One stick, one meaning.
+
+        Ctrl is fire because the Spectrum has no such key, so nothing is displaced by it --
+        the same reasoning that lets Esc release the mouse.
+        """
+        if not self.machine.joystick.enabled:
+            return False
+        switch = _QT_KEY_TO_KEMPSTON_SWITCH.get(event.key())
+        if switch is None:
+            return False
+        self.machine.joystick.set_switch(switch, pressed)
+        return True
 
     @staticmethod
     def _resolve_key(held) -> int:

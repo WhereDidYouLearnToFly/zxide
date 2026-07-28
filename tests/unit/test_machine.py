@@ -1,3 +1,4 @@
+from zxemu_core.joystick import FIRE as JOY_FIRE
 from zxemu_core.machine import Machine, Machine128
 from zxemu_core.ula import FRAME_TSTATES, FRAME_TSTATES_128K
 
@@ -183,6 +184,30 @@ def test_kempston_mouse_silent_until_enabled():
     m.mouse.enabled = True
     m.mouse.move_by(dx=7, dy=0)
     assert m._io_read(0xFBDF) == 7
+
+
+def test_kempston_joystick_is_silent_until_fitted():
+    """Unfitted, 0x1F must reach the undriven bus and read 0xFF -- which, the switches
+    being active high, is "everything pressed". That is what a real Spectrum with no
+    interface gives a game, and games are written knowing it."""
+    m = make_machine()
+    assert m._io_read(0x001F) == 0xFF
+
+    m.joystick.enabled = True
+    assert m._io_read(0x001F) == 0x00  # fitted and centred
+
+    m.joystick.set_switch(JOY_FIRE, True)
+    assert m._io_read(0x001F) == JOY_FIRE
+
+
+def test_kempston_mouse_answers_the_aliases_a_real_interface_would():
+    """Routing has to go through the interface's own decode rather than the three
+    addresses the manuals quote: only four address lines are wired, so 0x01DF *is*
+    0xFBDF as far as the hardware can tell, and software using it must reach the mouse."""
+    m = make_machine()
+    m.mouse.enabled = True
+    m.mouse.move_by(dx=3, dy=0)
+    assert m._io_read(0x01DF) == 3
 
 
 def test_kempston_mouse_ports_reachable_through_machine128_decode():

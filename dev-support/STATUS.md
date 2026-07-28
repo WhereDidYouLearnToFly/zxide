@@ -1,8 +1,116 @@
 # zxide — project status & handoff
 
-_Last updated: 2026-07-25._ A snapshot to make it easy to pick the project back up.
+_Last updated: 2026-07-27._ A snapshot to make it easy to pick the project back up.
 
-## Latest session (2026-07-25, last) — a polish pass over the asset editors and the project tree
+## Latest session (2026-07-27) — the Kempston Mouse, a review of it, then the Joystick
+
+**1307 tests pass** (1278 unit + 29 integration; the zexall harness is separate and runs
+for minutes by design — it is why `pytest tests` looks like it has hung, and why the two
+suites above are worth running on their own).
+
+The interface itself is small (`zxemu_core/mouse.py`: two counters, a buttons byte) and
+went in cleanly. The interesting half of the session was reviewing it against
+`E:/github/fuse` afterwards, which turned up three things worth recording — one bug in
+the new code, one fidelity gap, and one pre-existing bug the new code walked into.
+
+**Address decoding is by *line*, not by address, and that changes the picture.** The
+first implementation matched the three addresses the manuals quote — 0xFADF buttons,
+0xFBDF X, 0xFFDF Y. Real hardware decodes four address lines and ignores twelve: A0 must
+be set, A5 must be clear, then A8 picks buttons-or-counter and A10 picks which counter.
+Matching the literal addresses leaves software that arrives with different high bits
+talking to nothing. Fixed, and the consequence is worth internalising: because A8 and
+A10 between them cover every remaining case, the interface claims **every** port with A0
+set and A5 clear. It is a greedy device that sits on its neighbours — 0x1F, the Kempston
+*joystick* port, among them, which is exactly why the two were mutually exclusive on real
+machines. Two design points follow from that and should not be quietly undone:
+
+- **Off by default is not timidity.** Beyond software probing for a mouse that isn't
+  there, enabling it puts this device on top of a swathe of the port map.
+- **The Beta 128 is decoded first** (`MachinePentagon._io_read`, before delegating up),
+  so ports 0x1F and 0x5F belong to the disk controller while TR-DOS is paged. Reverse
+  that precedence and enabling a mouse silently stops disks working.
+
+**A held button could latch forever.** Capture can end mid-click — Esc, lost focus, the
+menu toggle — and the matching physical release then lands wherever the pointer went, not
+on the view; since `mouseReleaseEvent` only talks to the interface while captured, the bit
+stayed low for the rest of the session, surviving even re-capture. `release_mouse_capture`
+now calls `KempstonMouse.release_all_buttons` on the way out. The general shape is worth
+remembering for anything else that grabs input: **every path that stops you receiving
+events needs to also let go of whatever you were holding**, because you will never be told.
+
+**Then the Kempston Joystick, and both moved to the Model menu.** Five active-high switches
+at 0x1F (`zxemu_core/joystick.py`), arrows plus Ctrl for fire, and those keys are *taken
+away* from the Spectrum keyboard while it is fitted — feeding both would have a game see
+each nudge twice, the arrows being CAPS SHIFT + 5/6/7/8. Active high is the thing to
+remember: an unfitted port reads 0xFF off the undriven bus, which is every direction and
+fire held at once, so "no joystick" and "no interface" look nothing alike to a game.
+
+The menu move was the right shelf, not decoration. View is about how the IDE looks and
+Settings is about *your* PC (its first group is literally "Global (this machine)" meaning
+the developer's); what is plugged into the emulated Spectrum is the same question as which
+Spectrum it is. The two items are check items rather than a `QActionGroup`, because an
+exclusive group insists something be chosen and the normal state is neither — but they do
+untick each other, since both interfaces answer 0x1F and on hardware they fight over the
+bus. Fitting either now logs "software checks at startup, so reset or reload", which was
+the actual cause of the first "it doesn't work" report.
+
+**Gamepad support went in, and pygame is now a third shipped dependency.** The obvious
+cheaper routes are closed and it is worth writing down why, so nobody re-litigates it:
+PyQt5 ships no QtGamepad (ImportError here), and XInput — the zero-dependency Windows route
+— speaks only the Xbox protocol, so it cannot see the plain-HID USB NES clones people
+actually use. SDL2 via pygame handles them, and the call was made to ship it rather than
+make it an extra.
+
+`zxemu_ui/gamepad.py` polls the pad from a new `EmulatorController.input_poll` hook at the
+top of each tick, *before* the frames that tick will run — the switches a frame reads should
+be the ones held when it began. Two details worth keeping:
+
+- **The joystick holds two masks, keyboard and pad, OR-ed at the port.** One shared field
+  cannot work: the keyboard arrives as edges while a pad is polled wholesale fifty times a
+  second, so each poll would wipe whatever key was being held.
+- **`event.get()`, not `event.pump()`.** Both refresh SDL's cached device state, but nothing
+  else in this application ever reads the event queue, and a queue nobody drains fills up
+  and stops accepting updates.
+
+Probed against a real device rather than guessed: a "usb gamepad" NES clone, two axes (rest
+-0.01, directions snapping to ±1.0), no hat, ten reported buttons of which only 0, 1, 8 and
+9 exist. Hence the loose 0.5 deadzone, and a button map keyed on those indices: 0/1 are the
+two fires (the pair under your thumb), 8/9 become A and START (where such pads put Select and
+Start), and anything unrecognised falls back to fire so an unfamiliar pad is never mute.
+SDL exposes buttons by index only, so there is nothing more semantic to key on.
+
+**Then extended (8-bit) Kempston, to the Next's layout.** ZX Evolution's is redefinable in
+software, so there is no fixed thing to be faithful to there; the Next's is the Mega Drive
+pad's — bit 7 START, 6 A, 5 C, 4 B, 3-0 U/D/L/R.
+
+Worth reading the source rather than trusting a memory of it, because the substance is not
+the bit order. **The Next's Kempston and MD 3-button modes differ in exactly one thing: a
+mask.** Kempston passes bits 5:0 and forces 7:6 to zero, MD 3-button passes all eight
+(`zxnext.vhd:3478-3479`). Two consequences an "all eight bits, always" implementation would
+get wrong: a *second fire button works in plain Kempston mode* (bit 5 is in the low lane),
+and A/START must not reach software that never heard of them. So `KempstonJoystick.extended`
+masks at the port rather than at the switches — a pad's buttons close either way, and
+switching modes reveals what was already held instead of needing it pressed again.
+
+Sourced locally, not from memory: `E:\github\zxnext-ref` section 9.4 pointed at
+`jnext/src/input/joystick.h:14-33`, which documents the layout from the VHDL, and
+`joystick.cpp`'s `compose_1f_lane` shows the two lanes and their `0xC0` / `0x3F` masks. Both
+checkouts are on this machine.
+
+Original five-switch hardware never closes the upper switches, so it reads identically in
+either mode — no third mode needed, and none added.
+
+**Esc never actually left fullscreen** — a pre-existing bug the mouse work surfaced.
+`FullScreenStage.keyPressEvent` closes on Esc, but fullscreen gives the *view* focus, and
+`EmulatorView.keyPressEvent` neither called `super()` nor ignored the event; Qt only walks
+the parent chain for keys a widget declined, so the window never saw it. `test_fullscreen`
+passed throughout because it posted Esc straight to the window. The view now calls
+`event.ignore()` for Esc, and the two uses layer correctly: captured, the first Esc frees
+the pointer and a second leaves fullscreen. The new test drives it the way Qt does
+(`QTest.keyClick` at the focused view) rather than calling the handler directly — the
+distinction is the whole reason the bug survived.
+
+## Earlier session (2026-07-25, last) — a polish pass over the asset editors and the project tree
 
 **1194 tests pass** (1165 unit + 29 integration). All of this came from actually *using* the
 IDE for a while rather than from the plan — which is why two of it reverses decisions that
@@ -662,6 +770,13 @@ zxemu_core/        emulator core, no Qt dependency
                    variant memory watchpoints switch on
   ula.py           port 0xFE (border/keyboard), frame timing, contention table
   keyboard.py      8x5 matrix
+  mouse.py         Kempston Mouse: buttons byte + two free-running X/Y counters,
+                   found at 0xFADF/0xFBDF/0xFFDF and every alias of them (only four
+                   address lines are decoded). Unfitted by default
+  joystick.py      Kempston Joystick: active-high switches at 0x1F, 8-bit to the ZX
+                   Spectrum Next's layout (A and START only in its MD 3-button mode).
+                   Unfitted by default, and exclusive with the mouse -- they share
+                   the port
   memlayout.py     free space per bank, reserved ranges, and the auto-locate search
                    that places an asset where it won't collide
   sound/           beeper.py + ay.py, summed by mixer.py (the resistor network's

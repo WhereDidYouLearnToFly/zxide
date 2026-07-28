@@ -35,6 +35,10 @@ The shell, at the top level:
                       choice is made.
     audio_output.py   Plays the core's PCM through the system sound device (a thin
                       QtMultimedia sink that fails quiet when there isn't one).
+    gamepad.py        A USB pad driving the Kempston Joystick, polled once per frame.
+                      SDL2 via pygame -- shipped, because neither PyQt5 nor XInput can
+                      see a plain-HID pad. Every failure is survivable and silent (no
+                      pad, no SDL backend): the arrow keys play every game regardless.
     layout_store.py   Saves and restores the dock layout as readable JSON.
     theme.py          The dark Fusion palette and the fonts used throughout.
     asset_icons.py    A colour and a glyph per asset kind, drawn as a small icon. One

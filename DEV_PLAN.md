@@ -411,6 +411,47 @@ this backlog line is kept only as an index pointer.
 - AY **stereo** (ACB/ABC), and an **AY register/scope panel** to watch the chip live. ★
 - **128K RAM disk**.
 - **PT3 / beeper-SFX playback** for imported audio assets.
+- **Kempston Mouse** ✅ *done* -- `zxemu_core/mouse.py`: a buttons byte and two
+  free-running X/Y counters, with the interface's real four-line address decode rather
+  than the three addresses the manuals quote (so aliased reads reach it, as on hardware).
+  Model ▸ Kempston Mouse fits it, off by default and persisted; clicking the emulator
+  grabs the pointer and Esc gives it back. **Off by default is load-bearing**, twice
+  over: software probes these ports to decide whether a mouse exists, and the decode is
+  greedy enough (any port with A0 set and A5 clear) to sit on top of its neighbours --
+  0x1F, the Kempston *joystick* port, included. That collision is authentic; the Beta
+  128's ports are decoded ahead of it so a fitted mouse can never break disks.
+- **Kempston Joystick** ✅ *done* -- `zxemu_core/joystick.py`: five **active-high** switches
+  in one byte at port 0x1F (bits 0-4 = right/left/down/up/fire), decoded on A5/A6/A7 clear.
+  Active high is the trap: an *unfitted* port reads 0xFF from the undriven bus, which to a
+  game is every direction and fire held at once. Driven from the arrow keys with Ctrl as
+  fire, and those keys stop reaching the Spectrum keyboard while it is fitted (feeding both
+  would have a game see each nudge twice, since the arrows are CAPS SHIFT + 5/6/7/8).
+  **Mutually exclusive with the mouse**, in the menu and on the machine — they share 0x1F.
+- Both Kempston items now live under **Model**, not View: what is plugged into the emulated
+  Spectrum is the same question as which Spectrum it is, whereas View is about how the IDE
+  looks and Settings is about *your* PC. Fitting one logs a line saying software checks at
+  startup, so a running game needs a reset before it notices.
+- **Gamepad input** for the joystick ✅ *done* -- `zxemu_ui/gamepad.py`. A USB pad polled
+  once per controller tick, before the frames that tick will run, so the switches a frame
+  reads are the ones held when it began. SDL reports buttons only by index, so indices 0/1
+  become the two fires and 8/9 (where NES-style pads put Select/Start) become A and START,
+  with anything unrecognised falling back to fire so an unfamiliar pad is never mute. D-pads
+  are accepted as either axes or a hat, since pads disagree about which they are.
+  **pygame/SDL2 is a shipped dependency** — PyQt5 has no QtGamepad and XInput sees only
+  Xbox-protocol devices, not the plain-HID USB NES clones. Every failure is survivable and
+  silent: no pad, no SDL backend, and the arrow keys still play the game.
+- **Extended (8-bit) Kempston** ✅ *done*, following the **ZX Spectrum Next** — chosen over
+  ZX Evolution's because the latter is redefinable in software, so there is no fixed layout
+  to be faithful to. The Next's is the Mega Drive pad's: bit 7 START, 6 A, 5 C, 4 B, 3-0
+  U/D/L/R. Traced to the Next's own VHDL through the local jnext checkout
+  (`zxnext.vhd:3441-3442` for the layout, `:3478-3479` for the masking; the reference pack
+  is `E:\github\zxnext-ref`, section 9.4).
+  The decisive detail, and the thing that would be wrong in a from-memory implementation:
+  **the Next's two modes differ only in a mask.** Kempston mode passes bits 5:0 and forces
+  7:6 to zero; MD 3-button mode passes the whole byte. So a second fire button works in
+  plain Kempston mode while A and START need the wider one, and `Model ▸ 8-bit extended
+  (MD 3-button)` is that mask, not a separate device or port. Original five-switch hardware
+  reads identically in either mode, which is why no third mode exists.
 - *(Skipping +2/+3 machine variants -- little used today.)*
 
 ### 5. Editor & project

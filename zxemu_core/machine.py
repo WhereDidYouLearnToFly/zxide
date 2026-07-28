@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import NamedTuple
 
 from .cpu.z80 import Z80
+from .joystick import KempstonJoystick
 from .keyboard import Keyboard
 from .memory import Bank, Memory, create_48k_memory, create_128k_memory
 from .mouse import KempstonMouse
@@ -54,6 +55,7 @@ class Machine:
         self.cpu = Z80(self.memory)
         self.keyboard = Keyboard()
         self.mouse = KempstonMouse()
+        self.joystick = KempstonJoystick()
         self.ula = Ula(keyboard=self.keyboard)
         # Audio pipeline: a mixer fed by one or more sound sources. The 48K has just
         # the beeper; Machine128 adds the AY. It stays dormant (no samples, no cost)
@@ -196,13 +198,25 @@ class Machine:
     # --- IO + frame loop ------------------------------------------------------
 
     def _io_read(self, port: int) -> int:
-        # Kempston Mouse: a handful of exact 16-bit addresses, decoded before anything
-        # else so they can never be mistaken for the ULA's partial (low-byte-only)
-        # decode of port 0xFE -- their low byte (0xDF) has bit 0 set, so they'd fall
-        # through to the ULA/tape path below anyway, but checking first keeps the
-        # mouse self-contained and costs one dict-free tuple compare when disabled.
+        # The Kempston pair first, because the ULA at the bottom of this method answers
+        # *every* port that reaches it (0xFF for anything that is not its own 0xFE), so
+        # either device decoded after it would never be heard at all. ``enabled`` is
+        # tested before each decode, so the usual case -- neither fitted -- costs two
+        # attribute compares per IN and no decoding whatsoever.
+        #
+        # The two can never both be fitted (they collide on port 0x1F; see joystick.py),
+        # which is what makes the order between them a non-question rather than a policy.
+        #
+        # Subclasses decode their own hardware before delegating here, and *that*
+        # precedence is deliberate. The AY (0xFFFD/0xBFFD) could not collide either way,
+        # having A5 set where both Kempston devices need it clear; the Beta 128's 0x1F
+        # and 0x5F genuinely do fall inside their range, and while TR-DOS is paged in the
+        # disk controller has to win -- the alternative is disks quietly breaking the
+        # moment somebody plugs in a joystick.
         if self.mouse.enabled and KempstonMouse.handles(port):
             return self.mouse.read_port(port)
+        if self.joystick.enabled and KempstonJoystick.handles(port):
+            return self.joystick.read_port(port)
         # Tape input. Only the machine knows the continuous clock the player measures
         # against, exactly as it is the machine that timestamps the speaker on the way
         # out. The check costs one attribute compare per IN when no tape is inserted.

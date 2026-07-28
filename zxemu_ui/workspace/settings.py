@@ -34,8 +34,18 @@ def default_settings() -> dict:
         # write-protect default -- software that probes for a mouse and finds one
         # unexpectedly present can behave differently than it would on real bare
         # hardware, so this stays an opt-in rather than something every project
-        # silently gets.
+        # silently gets. Fitting one also has a cost beyond the probe: the interface
+        # decodes only four address lines, so it answers every port with A0 set and
+        # A5 clear (see zxemu_core/mouse.py) -- a real expansion-bus device sitting
+        # on its neighbours, and not something to hand out by default.
         "kempston_mouse_enabled": False,
+        # The Kempston Joystick, off for the same reasons and additionally exclusive with
+        # the mouse above -- both interfaces answer port 0x1F, so only one can be fitted.
+        "kempston_joystick_enabled": False,
+        # The Next's MD 3-button mode: bits 7:6 (A and START) reach the port instead of
+        # being masked off. Off by default because software written for a one-button stick
+        # can read those bits as something else entirely.
+        "kempston_joystick_extended": False,
         # Editor: hover an instruction for what it does, its cost and the flags it
         # disturbs. On by default -- it costs nothing until you point at something --
         # but it is the kind of help you stop needing, so it can be switched off.

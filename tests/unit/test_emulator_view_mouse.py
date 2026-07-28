@@ -4,9 +4,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest  # noqa: E402
 from PyQt5.QtCore import QEvent, QPointF, Qt  # noqa: E402
-from PyQt5.QtGui import QFocusEvent, QMouseEvent  # noqa: E402
+from PyQt5.QtGui import QFocusEvent, QKeyEvent, QMouseEvent  # noqa: E402
 from PyQt5.QtWidgets import QApplication  # noqa: E402
 
+from zxemu_core.joystick import KempstonJoystick  # noqa: E402
 from zxemu_core.keyboard import Keyboard  # noqa: E402
 from zxemu_core.mouse import KempstonMouse  # noqa: E402
 from zxemu_ui.panels.emulator_view import EmulatorView  # noqa: E402
@@ -27,6 +28,7 @@ class FakeMachine:
         self.ula = FakeUla()
         self.keyboard = Keyboard()
         self.mouse = KempstonMouse()
+        self.joystick = KempstonJoystick()
 
 
 @pytest.fixture(scope="module")
@@ -44,6 +46,10 @@ def _release(button, pos=QPointF(10, 10)) -> QMouseEvent:
 
 def _move(pos: QPointF) -> QMouseEvent:
     return QMouseEvent(QEvent.MouseMove, pos, pos, Qt.NoButton, Qt.NoButton, Qt.NoModifier)
+
+
+def _escape() -> QKeyEvent:
+    return QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier)
 
 
 def test_disabled_mouse_never_captures(qapp):
@@ -116,10 +122,35 @@ def test_escape_releases_capture(qapp):
     view.mousePressEvent(_press(Qt.LeftButton))  # capture
     assert view._mouse_captured
 
-    from PyQt5.QtGui import QKeyEvent
-    view.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+    view.keyPressEvent(_escape())
 
     assert not view._mouse_captured
+
+
+def test_escape_with_nothing_captured_is_passed_up_the_parent_chain(qapp):
+    """Fullscreen closes on Esc, and only ever sees the key if this view declines it --
+    Qt propagates a key event to the parent exactly when the child ignored it."""
+    machine = FakeMachine()
+    view = EmulatorView(machine)
+
+    event = _escape()
+    view.keyPressEvent(event)
+
+    assert not event.isAccepted()
+
+
+def test_escape_that_ends_capture_is_not_also_passed_up(qapp):
+    """Captured and fullscreen at once, the two uses of Esc have to layer: the first
+    press frees the pointer, and only a second one leaves fullscreen."""
+    machine = FakeMachine()
+    machine.mouse.enabled = True
+    view = EmulatorView(machine)
+    view.mousePressEvent(_press(Qt.LeftButton))  # capture
+
+    event = _escape()
+    view.keyPressEvent(event)
+
+    assert event.isAccepted()
 
 
 def test_losing_focus_releases_capture(qapp):
@@ -132,6 +163,37 @@ def test_losing_focus_releases_capture(qapp):
     view.focusOutEvent(QFocusEvent(QEvent.FocusOut))
 
     assert not view._mouse_captured
+
+
+def test_capture_ending_mid_click_does_not_leave_a_button_held(qapp):
+    """The physical release lands wherever the pointer went, never back here, so the
+    bit has to be cleared on the way out or it stays low for the rest of the session --
+    surviving re-capture too, since a press this widget never saw it cannot release."""
+    machine = FakeMachine()
+    machine.mouse.enabled = True
+    view = EmulatorView(machine)
+    view.mousePressEvent(_press(Qt.LeftButton))  # capture
+    view.mousePressEvent(_press(Qt.LeftButton))  # a real press, held
+    assert machine.mouse.read_port(0xFADF) == 0b11111101
+
+    view.keyPressEvent(_escape())  # Esc while still holding the button
+    view.mouseReleaseEvent(_release(Qt.LeftButton))  # arrives with capture already gone
+
+    assert machine.mouse.read_port(0xFADF) == 0xFF
+    view.mousePressEvent(_press(Qt.LeftButton))  # re-capture: still nothing held
+    assert machine.mouse.read_port(0xFADF) == 0xFF
+
+
+def test_losing_focus_mid_click_does_not_leave_a_button_held(qapp):
+    machine = FakeMachine()
+    machine.mouse.enabled = True
+    view = EmulatorView(machine)
+    view.mousePressEvent(_press(Qt.LeftButton))  # capture
+    view.mousePressEvent(_press(Qt.RightButton))  # held
+
+    view.focusOutEvent(QFocusEvent(QEvent.FocusOut))
+
+    assert machine.mouse.read_port(0xFADF) == 0xFF
 
 
 def test_release_mouse_capture_is_a_no_op_when_not_captured(qapp):

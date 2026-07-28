@@ -65,6 +65,7 @@ from zxemu_core.assets.beeper_sfx import SUFFIX as BEEPER_SFX_SUFFIX
 from zxemu_ui.workspace import builder, project_files
 from zxemu_ui.controller import EmulatorController
 from zxemu_ui.editor import EditorArea
+from zxemu_ui.gamepad import GamepadSource
 from zxemu_ui.panels.emulator_panel import EmulatorPanel
 from zxemu_ui.panels.emulator_view import EmulatorView
 from zxemu_ui import layout_store, media, menu_builder
@@ -118,6 +119,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("zxide")
         self.machine = machine
         self.controller = controller
+        # Constructed unconditionally, opened only when a joystick is fitted: the object
+        # is inert (and pygame is not even imported) until something asks it for a pad.
+        self.gamepad = GamepadSource()
         self.setDockNestingEnabled(True)
         self._laid_out = False  # guard so the layout is applied once, on first show
         # Saved layout lives in a plain JSON file next to the app (repo root) -- no
@@ -139,11 +143,13 @@ class MainWindow(QMainWindow):
         # builds a *new* machine: kept here, your choice survives the swap (see set_machine).
         self._fast_load = True
         self._tape_audible = True
-        # Kempston Mouse, unlike the deck prefs above, is a persisted setting (see
-        # settings.py) -- so it survives a relaunch, not just a model swap -- and it
-        # must be applied to *this* first machine too, not just future ones (see
-        # set_machine), since nothing else will if the user turned it on last time.
+        # The Kempston peripherals, unlike the deck prefs above, are persisted settings
+        # (see settings.py) -- so they survive a relaunch, not just a model swap -- and
+        # they must be applied to *this* first machine too, not only to future ones (see
+        # set_machine), since nothing else will if the user fitted one last session.
         machine.mouse.enabled = bool(self.settings.get("kempston_mouse_enabled", False))
+        machine.joystick.enabled = bool(self.settings.get("kempston_joystick_enabled", False))
+        machine.joystick.extended = bool(self.settings.get("kempston_joystick_extended", False))
         # Disks mount **write-protected by default**, and the tab on a real 3.5" disk is
         # the right analogy: you slide it open deliberately, for the one disk you meant to
         # write to. The asymmetry is what decides it -- a game refusing to save its high
@@ -238,6 +244,11 @@ class MainWindow(QMainWindow):
         self.controller.running_changed.connect(self._on_running_marker)
         self.controller.frame_ready.connect(self._on_frame_marker)
         self.controller.frame_ready.connect(self._check_tape_progress)
+
+        # A pad fitted in a previous session has to be picked up now, since the menu item
+        # is already ticked and nothing will toggle it to trigger the search.
+        if machine.joystick.enabled:
+            self._start_gamepad()
 
         self._reopen_last_project()  # reopen whatever project was last used
 
@@ -488,6 +499,8 @@ class MainWindow(QMainWindow):
         machine.fast_load_enabled = self._fast_load
         machine.tape_audible = self._tape_audible
         machine.mouse.enabled = bool(self.settings.get("kempston_mouse_enabled", False))
+        machine.joystick.enabled = bool(self.settings.get("kempston_joystick_enabled", False))
+        machine.joystick.extended = bool(self.settings.get("kempston_joystick_extended", False))
         self.controller.set_machine(machine)
         # Keep the Model menu's tick on the machine that's actually running, however the
         # switch was triggered (menu, or opening a project that targets the other model).
@@ -1691,13 +1704,72 @@ class MainWindow(QMainWindow):
         self.settings.set("show_special", on)
 
     def _set_kempston_mouse(self, on: bool) -> None:
-        """Toggle the Kempston Mouse interface and remember the choice (auto-saved)."""
+        """Fit or remove the Kempston Mouse, and remember the choice (auto-saved)."""
         self.machine.mouse.enabled = on
         self.settings.set("kempston_mouse_enabled", on)
-        if not on:
+        if on:
+            self._kempston_actions["joystick"].setChecked(False)  # they share port 0x1F
+            self._log_kempston_needs_a_restart("Kempston Mouse")
+        else:
             # Switching it off mid-capture would otherwise strand the pointer hidden
             # and grabbed with no interface left listening to it.
             self.view.release_mouse_capture()
+
+    def _set_kempston_joystick(self, on: bool) -> None:
+        """Fit or remove the Kempston Joystick, and remember the choice (auto-saved)."""
+        self.machine.joystick.enabled = on
+        self.settings.set("kempston_joystick_enabled", on)
+        self._kempston_actions["extended"].setEnabled(on)  # a mode of this, not a third device
+        if on:
+            self._kempston_actions["mouse"].setChecked(False)  # they share port 0x1F
+            self._log_kempston_needs_a_restart("Kempston Joystick")
+            self._start_gamepad()
+        else:
+            self.gamepad.close()
+            self.controller.input_poll = None
+            # Anything held when the interface goes away never gets its key-up, and the
+            # switches would stay closed -- a game left running into a wall for good.
+            self.machine.joystick.release_all()
+
+    def _set_kempston_joystick_extended(self, on: bool) -> None:
+        """Switch the joystick between the Next's Kempston and MD 3-button masks.
+
+        Not a separate interface and not a separate port -- the same 0x1F, with bits 7:6
+        either passed or forced to 0. See ``zxemu_core/joystick.py`` for why that masking
+        is the whole of the difference.
+        """
+        self.machine.joystick.extended = on
+        self.settings.set("kempston_joystick_extended", on)
+
+    def _start_gamepad(self) -> None:
+        """Look for a USB pad and, if one is there, poll it into the fitted joystick.
+
+        Deliberately silent when there is nothing to find: a pad is a bonus, the arrow keys
+        are the baseline, and a user who has never owned a gamepad should not be told about
+        one. When a pad *is* found its name is logged, because the opposite failure -- a
+        connected pad doing nothing -- is otherwise impossible to distinguish from a bug.
+        """
+        name = self.gamepad.open()
+        if name is None:
+            self.controller.input_poll = None
+            return
+        self._log("Gamepad detected: {} — steers the Kempston Joystick, any button fires.".format(name))
+        self.controller.input_poll = self._poll_gamepad
+
+    def _poll_gamepad(self) -> None:
+        """Hand one poll of the pad to the joystick (see ``KempstonJoystick.set_pad_switches``)."""
+        self.machine.joystick.set_pad_switches(self.gamepad.poll())
+
+    def _log_kempston_needs_a_restart(self, label: str) -> None:
+        """Say out loud that fitting an interface mid-game is usually too late.
+
+        Software reads these ports once, on startup, to decide what is attached and which
+        control scheme to offer. Plugging something in underneath a running game therefore
+        appears to do nothing at all, and the user is left toggling a menu item that (as
+        far as they can see) is broken. The port is live immediately -- it is the *game*
+        that has stopped asking.
+        """
+        self._log("{} fitted. Software checks for it at startup, so reset or reload for a running program to notice.".format(label))
 
     def _set_interface_scale(self, scale: float) -> None:
         """Scale all UI text, then restore the (now scaled) monospace code surfaces.

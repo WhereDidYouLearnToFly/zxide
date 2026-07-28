@@ -68,6 +68,28 @@ def test_escape_leaves_fullscreen(panel):
     assert not panel.is_fullscreen
 
 
+def test_escape_reaches_the_window_from_the_focused_view(panel, qapp):
+    """The route Esc actually travels, which the test above does not exercise.
+
+    Going fullscreen hands focus to the *view*, so the key lands there first and only
+    reaches the window because the view declines it. Qt propagates a key event up the
+    parent chain exactly when the child ignored it -- so a view that quietly swallowed
+    Esc would leave the menu as the only way out, with the test above still passing
+    happily because it posts straight to the window.
+    """
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+
+    panel.enter_fullscreen()
+    qapp.processEvents()
+    assert qapp.focusWidget() is panel._view
+
+    QTest.keyClick(panel._view, Qt.Key_Escape)
+    qapp.processEvents()
+
+    assert not panel.is_fullscreen
+
+
 def test_the_same_view_object_survives_the_round_trip(panel):
     """Why the stage is *lent* rather than rebuilt: the view keeps its signal
     connections, its key matrix and any keys currently held down."""

@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import QApplication
 from zxemu_ui.controller import EmulatorController
 from zxemu_ui.machine_factory import build_machine
 from zxemu_ui.main_window import MainWindow
-from zxemu_ui.theme import apply_dark_theme
+from zxemu_ui.theme import apply_dark_theme 
 
 
 def main() -> int:

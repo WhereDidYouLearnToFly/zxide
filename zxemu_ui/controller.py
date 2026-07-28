@@ -128,6 +128,13 @@ class EmulatorController(QObject):
         self._timer.setTimerType(Qt.PreciseTimer)
         self._timer.timeout.connect(self._tick)
 
+        #: Optional callable invoked at the top of each tick, before any frame runs, for
+        #: input that must be *polled* rather than delivered as events -- a gamepad. Kept
+        #: as a plain attribute so the controller needs to know nothing about who set it,
+        #: or that SDL exists. Sampling here rather than after emulating is the point: the
+        #: switches a frame reads should be the ones held when that frame began.
+        self.input_poll = None
+
     # --- lifecycle / controls -------------------------------------------------
 
     @property
@@ -488,6 +495,9 @@ class EmulatorController(QObject):
         self._time_accumulator += now - self._last_time
         self._last_time = now
         self._fps_ticks += 1
+
+        if self.input_poll is not None:
+            self.input_poll()
 
         ran = 0
         while self._time_accumulator >= FRAME_PERIOD_S and ran < MAX_CATCHUP_FRAMES:

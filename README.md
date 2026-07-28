@@ -104,6 +104,43 @@ focused tab isn't a source file. A folder zxide didn't scaffold calls its entry 
 whatever it calls it, and a project can hold several buildable sources with no single
 "main" among them.
 
+### Kempston Mouse and Joystick
+
+Both live under **Model**, beneath the machines — what's plugged into the emulated Spectrum
+is the same question as which Spectrum it is. Both are **off by default**, and only one can
+be fitted at a time: they share port 0x1F, and on real hardware two interfaces answering the
+same port fight over the data bus.
+
+| interface | how you use it |
+|---|---|
+| **Kempston Mouse** | Click the emulator screen to capture the pointer — the cursor hides and the mouse drives the Spectrum. `Esc` gives it back (twice in fullscreen: pointer first, then fullscreen). |
+| **Kempston Joystick** | Arrow keys steer, `Ctrl` fires. A USB gamepad works too, if one is plugged in. |
+
+The joystick port is **8-bit, following the ZX Spectrum Next** — which is really the Mega
+Drive pad's layout:
+
+| bit | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 |
+|---|---|---|---|---|---|---|---|---|
+| | START | A | C | B | up | down | left | right |
+| key | `End` | `Home` | `Insert` | `Ctrl` | ↑ | ↓ | ← | → |
+| pad button | 9 | 8 | 1 | 0 | | | | |
+
+**Model ▸ 8-bit extended (MD 3-button)** is what decides whether bits 7-6 reach the program
+at all: the Next's Kempston mode masks them to 0 and its MD 3-button mode passes them, and
+that masking is the entire difference between the two. A second fire (bit 5) works in either.
+Off by default, because software written for a one-button stick can read those bits as
+something else entirely. Original 1980s hardware simply never closes the upper switches, so
+it behaves identically in either mode — which is why there's no third setting for it.
+
+Any pad button the table doesn't name also fires, so an unfamiliar pad is never mute.
+
+**Fitting one mid-game does nothing until you reset**, and this catches everybody: software
+reads these ports once at startup to decide what's attached, so a game already running has
+long since concluded there's no mouse. The Output console says so when you fit one.
+
+While the joystick is fitted the arrow keys and `Ctrl` stop reaching the Spectrum keyboard.
+Feeding both would have a game see every nudge twice, the arrows being CAPS SHIFT + 5/6/7/8.
+
 ### Debugging
 
 Click the editor gutter to set a breakpoint; **Build ▸ Build & Debug** honours them.

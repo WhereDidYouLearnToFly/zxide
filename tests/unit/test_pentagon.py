@@ -10,6 +10,7 @@ import importlib.resources as res
 
 from zxemu_core.machine import Machine128, MachinePentagon
 from zxemu_core.memlayout import PAGED_MODELS, bank_ids_for_model
+from zxemu_core.mouse import BUTTON_LEFT
 from zxemu_core.ula import FRAME_TSTATES_128K, FRAME_TSTATES_PENTAGON
 from zxemu_ui.machine_factory import build_machine, machine_model
 
@@ -131,6 +132,28 @@ def test_reset_also_stops_the_drive():
     pentagon.reset()
 
     assert controller.track == 0 and not controller.intrq
+
+
+def test_the_disk_controller_outranks_a_fitted_kempston_mouse():
+    """Port 0x1F is the FDC's command/status register, and it also falls inside the
+    Kempston Mouse's deliberately greedy decode (A0 set, A5 clear -- see mouse.py).
+
+    Something has to win, and while TR-DOS is paged in it must be the controller: the
+    alternative is that switching a mouse on quietly stops disks from working, with the
+    machine giving no hint why. Once the interface pages out, nothing else is decoding
+    0x1F and the mouse is welcome to it -- which is exactly the collision that made
+    Kempston mice and Kempston joysticks mutually exclusive on real hardware.
+    """
+    pentagon = build_machine("pentagon")
+    pentagon.mouse.enabled = True
+    pentagon.mouse.set_button(BUTTON_LEFT, True)
+    pentagon.set_paging(0x10)
+    pentagon.beta.m1(0x3D00)  # enter TR-DOS: the interface's ROM, and its ports, page in
+
+    assert pentagon._io_read(0x001F) == pentagon.beta.read_port(0x001F)  # controller status
+
+    pentagon.beta.paged = False  # ordinary code again
+    assert pentagon._io_read(0x001F) == 0b11111101  # the mouse, left button held
 
 
 def test_it_boots_its_menu():

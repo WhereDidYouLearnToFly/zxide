@@ -281,6 +281,11 @@ def _build_model_menu(window, model_choices) -> dict[str, QAction]:
     machine is not *owned* by the project -- you often want to try a tape or a snapshot on
     the other model without creating a project at all. These are radio items reflecting
     the live machine, which is why the window keeps them: see ``MainWindow.set_machine``.
+
+    The peripherals underneath belong here rather than in View (which is about how the IDE
+    looks) or in Settings (which is about *your* machine -- assembler path, editor help):
+    what is plugged into the emulated Spectrum is the same question as which Spectrum it
+    is, one level down.
     """
     from zxemu_ui.machine_factory import machine_model
 
@@ -295,7 +300,49 @@ def _build_model_menu(window, model_choices) -> dict[str, QAction]:
         group.addAction(action)
         menu.addAction(action)
         actions[model] = action
+
+    menu.addSeparator()
+    _add_kempston_items(window, menu)
     return actions
+
+
+def _add_kempston_items(window, menu) -> None:
+    """The two Kempston peripherals, as mutually exclusive check items.
+
+    Not a QActionGroup, because an exclusive group insists on *one* member being chosen
+    and the normal state here is neither. The exclusivity is real hardware, not tidiness:
+    both interfaces answer port 0x1F, so a Spectrum with both plugged in has them fighting
+    over the data bus (see ``zxemu_core/joystick.py``). Off by default, both of them --
+    software probes these ports to decide what is fitted, and each decodes loosely enough
+    to sit on top of its neighbours.
+
+    The actions are handed to the window because the handlers untick each other, and
+    because they must follow the live machine after a model swap.
+    """
+    mouse = QAction("Kempston Mouse", window, checkable=True)
+    mouse.setChecked(bool(window.settings.get("kempston_mouse_enabled", False)))
+    mouse.setToolTip("Click the emulator screen to capture the pointer; Esc releases it")
+
+    joystick = QAction("Kempston Joystick", window, checkable=True)
+    joystick.setChecked(bool(window.settings.get("kempston_joystick_enabled", False)))
+    joystick.setToolTip("Arrow keys steer, Ctrl fires (the arrows stop reaching the keyboard)")
+
+    # The Next's MD 3-button mode: the same port, with bits 7:6 no longer masked off. A
+    # sub-item of the joystick in everything but indentation -- meaningless without one
+    # fitted, hence disabled until there is, which also says at a glance that it is not a
+    # third interface but a mode of the second.
+    extended = QAction("    8-bit extended (MD 3-button)", window, checkable=True)
+    extended.setChecked(bool(window.settings.get("kempston_joystick_extended", False)))
+    extended.setEnabled(joystick.isChecked())
+    extended.setToolTip("Pass buttons A and START (bits 6-7) as the ZX Spectrum Next does")
+
+    window._kempston_actions = {"mouse": mouse, "joystick": joystick, "extended": extended}
+    mouse.toggled.connect(window._set_kempston_mouse)
+    joystick.toggled.connect(window._set_kempston_joystick)
+    extended.toggled.connect(window._set_kempston_joystick_extended)
+    menu.addAction(mouse)
+    menu.addAction(joystick)
+    menu.addAction(extended)
 
 
 def _build_view_menu(window, bar, scale_choices) -> None:
@@ -330,14 +377,6 @@ def _build_view_menu(window, bar, scale_choices) -> None:
     fullscreen.triggered.connect(window.emulator_panel.toggle_fullscreen)
     window.emulator_panel.fullscreen_changed.connect(fullscreen.setChecked)
     view_menu.addAction(fullscreen)
-
-    # Kempston Mouse: off by default (see settings.py), so it stays invisible to
-    # software that probes for one and finds none fitted until you opt in here.
-    mouse = QAction("Kempston Mouse", window, checkable=True)
-    mouse.setChecked(bool(window.settings.get("kempston_mouse_enabled", False)))
-    mouse.setToolTip("Click the emulator screen to capture the pointer; Esc releases it")
-    mouse.toggled.connect(window._set_kempston_mouse)
-    view_menu.addAction(mouse)
 
     view_menu.addSeparator()
     for dock in window._all_docks:

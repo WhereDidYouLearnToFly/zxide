@@ -169,9 +169,42 @@ def test_recording_and_dumping_are_adjacent_and_numbered(window):
 
 def test_the_model_menu_ticks_the_live_machine(window):
     labels = _labels(_menu(window, "&Model"))
-    assert labels == ["ZX Spectrum 48K", "ZX Spectrum 128K", "Pentagon 128 (TR-DOS)"]
+    assert labels[:3] == ["ZX Spectrum 48K", "ZX Spectrum 128K", "Pentagon 128 (TR-DOS)"]
     checked = [a.text() for a in _menu(window, "&Model").actions() if a.isChecked()]
     assert checked == ["ZX Spectrum 48K"]  # the machine this window was built with
+
+
+def test_the_model_menu_carries_the_peripherals_below_the_models(window):
+    """They belong to the emulated machine, not to how the IDE looks, so they live here
+    rather than in View -- separated from the model radio group by a rule."""
+    labels = _labels(_menu(window, "&Model"))
+    assert labels[3:] == ["Kempston Mouse", "Kempston Joystick", "    8-bit extended (MD 3-button)"]
+    assert sum(1 for a in _menu(window, "&Model").actions() if a.isSeparator()) == 1
+
+
+def test_extended_mode_is_disabled_until_a_joystick_is_fitted(qapp, window):
+    """It is a mode of the joystick, not a third interface, and nothing about it means
+    anything with no stick fitted -- so it says so by being unavailable."""
+    joystick = _kempston(window, "Kempston Joystick")
+    extended = _kempston(window, "    8-bit extended (MD 3-button)")
+
+    assert not extended.isEnabled()
+
+    joystick.setChecked(True)
+    assert extended.isEnabled()
+
+    joystick.setChecked(False)
+    assert not extended.isEnabled()
+
+
+def test_extended_mode_reaches_the_live_machine_and_is_remembered(qapp, window):
+    _kempston(window, "Kempston Joystick").setChecked(True)
+    extended = _kempston(window, "    8-bit extended (MD 3-button)")
+
+    extended.setChecked(True)
+
+    assert window.machine.joystick.extended
+    assert window.settings.get("kempston_joystick_extended") is True
 
 
 def test_the_view_menu_lists_every_dock(window):
@@ -256,3 +289,61 @@ def test_a_checkable_item_connects_to_toggled_not_triggered(qapp, window):
     menu.actions()[0].setChecked(True)
 
     assert seen == [True]
+
+
+def _kempston(window, label):
+    return next(a for a in _menu(window, "&Model").actions() if a.text() == label)
+
+
+def test_kempston_mouse_reaches_the_live_machine_and_is_remembered(qapp, window):
+    """The item is the only route to a fitted mouse, so the wiring is the feature.
+
+    Off by default, and turning it on has to land on the *running* machine -- not just in
+    settings, which the next launch would read but this session's game never would.
+    """
+    action = _kempston(window, "Kempston Mouse")
+
+    assert not action.isChecked() and not window.machine.mouse.enabled
+
+    action.setChecked(True)
+
+    assert window.machine.mouse.enabled
+    assert window.settings.get("kempston_mouse_enabled") is True
+
+    action.setChecked(False)
+
+    assert not window.machine.mouse.enabled
+
+
+def test_kempston_joystick_reaches_the_live_machine_and_is_remembered(qapp, window):
+    action = _kempston(window, "Kempston Joystick")
+
+    assert not action.isChecked() and not window.machine.joystick.enabled
+
+    action.setChecked(True)
+
+    assert window.machine.joystick.enabled
+    assert window.settings.get("kempston_joystick_enabled") is True
+
+    action.setChecked(False)
+
+    assert not window.machine.joystick.enabled
+
+
+def test_the_two_kempston_interfaces_cannot_both_be_fitted(qapp, window):
+    """Both answer port 0x1F, so on real hardware they fight over the data bus. Fitting
+    one has to unfit the other -- in the menu *and* on the machine, or the tick would
+    describe a state the emulator isn't in."""
+    mouse = _kempston(window, "Kempston Mouse")
+    joystick = _kempston(window, "Kempston Joystick")
+
+    mouse.setChecked(True)
+    joystick.setChecked(True)
+
+    assert not mouse.isChecked() and not window.machine.mouse.enabled
+    assert joystick.isChecked() and window.machine.joystick.enabled
+
+    mouse.setChecked(True)
+
+    assert not joystick.isChecked() and not window.machine.joystick.enabled
+    assert mouse.isChecked() and window.machine.mouse.enabled

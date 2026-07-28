@@ -11,6 +11,10 @@ license = { text = "MIT" }
 dependencies = [
     "PyQt5>=5.15",
     "numpy>=1.24",
+    # SDL2, for reading a USB pad into the Kempston Joystick (zxemu_ui/gamepad.py).
+    # PyQt5 has no gamepad module, and Windows' XInput sees only Xbox-protocol devices --
+    # not the plain-HID USB NES/SNES clones people actually play Spectrum games with.
+    "pygame>=2.0",
 ]
 
 [project.optional-dependencies]
