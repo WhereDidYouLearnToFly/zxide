@@ -582,10 +582,7 @@ class MainWindow(QMainWindow):
         if not ok:
             return
         model = dict((label, m) for label, m in MACHINE_MODEL_CHOICES)[model_label]
-        folder = QFileDialog.getExistingDirectory(
-            self, "Choose a folder for the new project",
-            options=QFileDialog.DontUseNativeDialog,
-        )
+        folder = QFileDialog.getExistingDirectory(self, "Choose a folder for the new project")
         if not folder:
             return
         name, ok = QInputDialog.getText(self, "New Project", "Project name:", text=Path(folder).name)
@@ -598,9 +595,7 @@ class MainWindow(QMainWindow):
             self.editor.open_file(str(main))
 
     def _open_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(
-            self, "Open Folder", options=QFileDialog.DontUseNativeDialog,
-        )
+        folder = QFileDialog.getExistingDirectory(self, "Open Folder")
         if folder:
             self._open_project(folder)
 
@@ -961,8 +956,7 @@ class MainWindow(QMainWindow):
         has no single filename to derive a symbol from, so it asks for one up front.
         """
         paths, _filter = QFileDialog.getOpenFileNames(
-            self, "Import Animation Sequence", str(self._target_dir()), "Bitmap images (*.bmp)",
-            options=QFileDialog.DontUseNativeDialog,
+            self, "Import Animation Sequence", str(self._target_dir()), "Bitmap images (*.bmp)"
         )
         if not paths:
             return
@@ -1115,8 +1109,7 @@ class MainWindow(QMainWindow):
         tapes but behave differently enough to be worth choosing between deliberately.
         """
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load {}".format(fmt.label), self._media_dir(), fmt.file_filter,
-            options=QFileDialog.DontUseNativeDialog,
+            self, "Load {}".format(fmt.label), self._media_dir(), fmt.file_filter
         )
         if path:
             self._load_media(path)
@@ -1263,8 +1256,7 @@ class MainWindow(QMainWindow):
                         action.setChecked(True)
                 return
         folder = QFileDialog.getExistingDirectory(self, "Dump to a new project folder",
-                                                  self._media_dir(),
-                                                  options=QFileDialog.DontUseNativeDialog)
+                                                  self._media_dir())
         if not folder:
             return
         if any(Path(folder).iterdir()):
@@ -1371,7 +1363,6 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self, "Mount in drive {}".format('AB'[drive]), self._media_dir(),
             "TR-DOS disk image (*.trd *.scl)",
-            options=QFileDialog.DontUseNativeDialog,
         )
         if path:
             self._load_disk(path, drive)
@@ -1406,7 +1397,6 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(
             self, "Save disk image", str(Path(start) / suggested) if start else suggested,
             "TR-DOS disk image (*.trd)",
-            options=QFileDialog.DontUseNativeDialog,
         )
         if not path:
             return False
@@ -2007,9 +1997,15 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Layout saved", 3000)
 
     def _reset_layout(self) -> None:
-        """Restore the built-in default arrangement and delete the saved layout file."""
-        self.restoreState(self._default_state)  # default panel positions
-        self._apply_default_sizes()             # default proportions
+        """Restore the built-in default arrangement and delete the saved layout file.
+
+        The sizes wait a tick behind the arrangement for the same reason ``layout_store.apply``
+        defers its own: ``restoreState`` queues the splitter rebuild for the next event loop
+        pass, so ``resizeDocks`` called in this tick would size the *old* tree and silently
+        do nothing -- leaving Registers oversized on the very menu item meant to fix it.
+        """
+        self.restoreState(self._default_state)          # default panel positions
+        QTimer.singleShot(0, self._apply_default_sizes)  # default proportions, once it lands
         self._saved_layout = None
         if self._layout_path.exists():
             self._layout_path.unlink()

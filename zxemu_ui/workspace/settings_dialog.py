@@ -138,9 +138,7 @@ class SettingsDialog(QDialog):
             self._assembler_edit.setPlaceholderText("sjasmplus not found on PATH")
 
     def _browse(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Locate the assembler", options=QFileDialog.DontUseNativeDialog,
-        )
+        path, _ = QFileDialog.getOpenFileName(self, "Locate the assembler")
         if path:
             self._assembler_edit.setText(path)
 

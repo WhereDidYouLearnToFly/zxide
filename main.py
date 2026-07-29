@@ -30,6 +30,14 @@ def main() -> int:
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
+    # Use Qt's own file/colour dialogs rather than the desktop's native ones. The native
+    # path on Linux goes through an xdg-desktop-portal service that isn't always present
+    # or well-behaved, which is where the dialog trouble showed up; set here for every
+    # platform so the IDE's dialogs look and behave the same wherever it runs. One
+    # attribute covers every dialog type -- QFileDialog, QColorDialog, future ones --
+    # instead of an option argument repeated at each call site.
+    QApplication.setAttribute(Qt.AA_DontUseNativeDialogs, True)
+
     app = QApplication(sys.argv)
     apply_dark_theme(app)
 

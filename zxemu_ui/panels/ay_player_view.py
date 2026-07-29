@@ -272,10 +272,7 @@ class AyPlayerView(QWidget):
         """
         if self.on_locate_player is None:
             return
-        chosen, _ = QFileDialog.getOpenFileName(
-            self, "Find a PT2/PT3 player", "", "Player binary (*.bin);;All files (*)",
-            options=QFileDialog.DontUseNativeDialog,
-        )
+        chosen, _ = QFileDialog.getOpenFileName(self, "Find a PT2/PT3 player", "", "Player binary (*.bin);;All files (*)")
         if not chosen:
             return
         players = self.on_locate_player(chosen)
