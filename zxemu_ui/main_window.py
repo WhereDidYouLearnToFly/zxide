@@ -38,7 +38,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import QEvent, Qt, QTimer
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
     QAction,
@@ -282,32 +282,43 @@ class MainWindow(QMainWindow):
         self._reopen_last_project()  # reopen whatever project was last used
 
     def showEvent(self, event) -> None:  # noqa: N802 (Qt override name)
-        """Apply the layout once, after the window reaches its real (maximised) size.
+        """Arm the layout pass for once the window reaches its real (maximised) size.
 
-        Deferring lets per-dock sizes -- whether the saved ones or the default
-        proportions -- be placed correctly; splitDockWidget otherwise splits evenly,
-        letting the compact Registers panel claim as much height as the emulator.
+        ``showMaximized()`` resizes synchronously on Windows, so this first show already
+        has the final geometry. On X11/Wayland the maximise is negotiated with the window
+        manager (or compositor) asynchronously -- on GNOME/Wayland in particular it can take
+        well over a tick to land -- so laying out here would still see the pre-maximise
+        size, throwing off the saved dock sizes (most visibly the Registers panel). Instead
+        wait for the state-change event below, with this as a capped fallback for a window
+        manager that never reports maximised at all (e.g. no WM, or one that ignores the
+        request).
         """
         super().showEvent(event)
         if self._laid_out:
             return
-        self._laid_out = True
-        QTimer.singleShot(0, self._await_maximized_then_finish_layout)
+        QTimer.singleShot(3000, self._finish_layout_once)
 
-    def _await_maximized_then_finish_layout(self, attempts_left: int = 40) -> None:
-        """Poll briefly for the window manager to actually finish maximising.
+    def changeEvent(self, event) -> None:  # noqa: N802 (Qt override name)
+        """Catch the window manager actually reporting "maximised" and lay out then.
 
-        ``showMaximized()`` resizes synchronously on Windows, so a single deferred
-        tick is enough there. On X11/Wayland the resize is negotiated with the window
-        manager asynchronously, so that one tick can still see the pre-maximise size --
-        which is what was throwing off the saved dock sizes (most visibly the
-        Registers panel) on Linux. Poll a few times instead of trusting the first tick;
-        give up and lay out anyway after ~1s if the window manager never reports it.
+        Event-driven rather than polling isMaximized() on a timer: a fixed poll interval
+        either fires too early (Wayland's maximise can lag past a short poll window,
+        landing the saved sizes on the pre-maximise geometry) or wastes ticks once it has
+        landed. The WindowStateChange event fires exactly when Qt's idea of the window
+        state changes, so there is nothing to tune here.
         """
-        if self.isMaximized() or attempts_left <= 0:
-            self._finish_layout()
+        super().changeEvent(event)
+        if event.type() == QEvent.WindowStateChange and self.isMaximized():
+            self._finish_layout_once()
+
+    def _finish_layout_once(self) -> None:
+        if self._laid_out:
             return
-        QTimer.singleShot(25, lambda: self._await_maximized_then_finish_layout(attempts_left - 1))
+        self._laid_out = True
+        # One more deferred tick: the state-change event can fire a moment before the
+        # window's geometry itself has settled to the final maximised size, and dock
+        # sizing below reads that geometry.
+        QTimer.singleShot(0, self._finish_layout)
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt override name)
         """Leave fullscreen before the IDE goes away.

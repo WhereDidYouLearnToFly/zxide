@@ -31,7 +31,18 @@ _NAME_TO_AREA = {v: k for k, v in _AREA_TO_NAME.items()}
 
 
 def capture(window, docks) -> dict:
-    """A readable summary of each dock's location, size, visibility and floating state."""
+    """A readable summary of each dock's location, size, visibility and floating state.
+
+    Sizes are stored both as absolute pixels (for the humans reading the file) and as
+    fractions of the window's size at save time. Restoring must use the fraction: the
+    window this gets applied to next launch is not guaranteed to be the same size --
+    most commonly on Linux, where the window manager can take a while to maximise (or,
+    on an unusual WM, never does), so "restore" would otherwise mean stretching sizes
+    saved from a 1920px-wide maximised window onto whatever smaller size the window
+    happens to be at the moment layout is applied.
+    """
+    win_width = max(window.width(), 1)
+    win_height = max(window.height(), 1)
     summary = {}
     for dock in docks:
         geometry = dock.geometry()
@@ -41,6 +52,8 @@ def capture(window, docks) -> dict:
             "area": _AREA_TO_NAME.get(window.dockWidgetArea(dock), "right"),
             "width": geometry.width(),
             "height": geometry.height(),
+            "width_frac": geometry.width() / win_width,
+            "height_frac": geometry.height() / win_height,
             "x": dock.x(),
             "y": dock.y(),
         }
@@ -108,7 +121,17 @@ def _apply_summary_arrangement(window, docks_by_name: dict, summary: dict) -> No
 
 
 def _reinforce_sizes(window, docks_by_name: dict, summary: dict) -> None:
-    """Re-apply saved sizes to docked, visible panels: widths, then heights."""
+    """Re-apply saved sizes to docked, visible panels: widths, then heights.
+
+    Scaled from the saved fraction against the window's *current* size, not the raw
+    saved pixels -- those were captured against whatever size the window happened to be
+    last time (usually maximised, but not guaranteed), and applying them verbatim to a
+    window of a different size is what produced nonsense proportions. Older layout
+    files saved before fractions existed fall back to the raw pixels once, on the
+    window size at that same save time being the best guess available.
+    """
+    win_width = max(window.width(), 1)
+    win_height = max(window.height(), 1)
     docked = [
         (docks_by_name[name], info)
         for name, info in summary.items()
@@ -116,5 +139,13 @@ def _reinforce_sizes(window, docks_by_name: dict, summary: dict) -> None:
     ]
     if docked:
         group = [dock for dock, _ in docked]
-        window.resizeDocks(group, [info["width"] for _, info in docked], Qt.Horizontal)
-        window.resizeDocks(group, [info["height"] for _, info in docked], Qt.Vertical)
+        widths = [
+            round(info["width_frac"] * win_width) if "width_frac" in info else info["width"]
+            for _, info in docked
+        ]
+        heights = [
+            round(info["height_frac"] * win_height) if "height_frac" in info else info["height"]
+            for _, info in docked
+        ]
+        window.resizeDocks(group, widths, Qt.Horizontal)
+        window.resizeDocks(group, heights, Qt.Vertical)

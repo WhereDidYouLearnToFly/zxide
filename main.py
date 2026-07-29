@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import sys
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import QApplication
 
 from zxemu_ui.controller import EmulatorController
@@ -46,7 +46,13 @@ def main() -> int:
     controller = EmulatorController(machine)
     window = MainWindow(machine, controller)
 
-    window.showMaximized()
+    # showMaximized() called immediately, before the window has ever been shown, can
+    # maximise against a stale screen geometry -- on XWayland (Qt running under a GNOME
+    # Wayland session) it maximised to a size far smaller than the real monitor, because
+    # Qt hadn't yet synced the real output geometry from the compositor. Showing first,
+    # then deferring the maximise by one event-loop tick, lets that sync happen first.
+    window.show()
+    QTimer.singleShot(0, window.showMaximized)
     controller.start()
     return app.exec_()
 
