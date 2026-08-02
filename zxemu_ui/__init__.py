@@ -23,6 +23,10 @@ The shell, at the top level:
                       run / pause / reset / step / run-to controls, breakpoints and
                       watchpoints -- talking to the rest of the UI purely through Qt
                       signals, so nothing else needs to know how timing works.
+    recorder.py       Captures every emulated frame (as screen memory, not pixels) so a
+                      run can be exported as an animated GIF. Hooks the controller's
+                      per-frame observer rather than its repaint signal, which batches
+                      frames and so would drop them under load.
     editor.py         The central multi-tab code editor, with a breakpoint gutter
                       and an execution-line marker.
     project_tree_model.py  The project folder as the tree sees it, with the files the

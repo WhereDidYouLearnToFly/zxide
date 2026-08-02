@@ -17,7 +17,8 @@ Watching the machine:
     emulator_view.py    The screen itself: bitmap + attributes + border + FLASH, and
                         PC keys mapped onto the Spectrum's 8x5 matrix.
     emulator_panel.py   The screen plus its control strip (run / pause / step / reset /
-                        screenshot), and the fullscreen toggle.
+                        screenshot / record), and the fullscreen toggle. The record pair
+                        only asks; ``zxemu_ui/recorder.py`` does the capturing.
     fullscreen_stage.py The bare window that borrows the emulator for the whole display
                         (Alt+Enter in, Esc out) -- it lends the *same* live widget rather
                         than building a second renderer, so nothing is disturbed.

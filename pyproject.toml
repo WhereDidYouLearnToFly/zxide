@@ -15,6 +15,9 @@ dependencies = [
     # PyQt5 has no gamepad module, and Windows' XInput sees only Xbox-protocol devices --
     # not the plain-HID USB NES/SNES clones people actually play Spectrum games with.
     "pygame>=2.0",
+    # Writing the frame recorder's animated GIF (zxemu_ui/recorder.py). Imported lazily
+    # so a missing Pillow costs you the export, not the whole IDE.
+    "Pillow>=9.0",
 ]
 
 [project.optional-dependencies]

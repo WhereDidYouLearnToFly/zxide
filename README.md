@@ -10,9 +10,10 @@ CPU with 48K, 128K and Pentagon 128 machine models (memory paging, ULA, keyboard
 AY-3-8912), tape and snapshot loading (`.tap`/`.tzx`, both instant and at
 authentic pulse-level tape speed; `.sna`/`.z80` snapshots), wrapped in a dockable IDE with an assembler build pipeline, a
 source-level debugger, and an asset workflow that imports art and audio, places it in
-memory and generates the assembly to include it. 850 tests pass; the CPU is
-cross-checked against the FUSE reference emulator. See `dev-support/STATUS.md` for
-the full state and `DEV_PLAN.md` for what's next.
+memory and generates the assembly to include it. The screen can be saved as a
+still (`.scr` + `.bmp`) or recorded frame by frame and exported as an animated GIF.
+1389 tests pass; the CPU is cross-checked against the FUSE reference emulator. See
+`dev-support/STATUS.md` for the full state and `DEV_PLAN.md` for what's next.
 
 ## Layout
 
@@ -36,8 +37,8 @@ the full state and `DEV_PLAN.md` for what's next.
     `dumper.py` (memory back into source), and `asm_meter.py` (source into
     bytes and T-states).
 - `zxemu_ui/` — the PyQt5 layer. Shell at the top level (`main_window.py`,
-  `controller.py`, `editor.py`, `project_tree_model.py`, `theme.py`,
-  `system_open.py`, …), plus:
+  `controller.py`, `editor.py`, `recorder.py`, `project_tree_model.py`,
+  `theme.py`, `system_open.py`, …), plus:
   - `panels/` — the dockable views: screen, registers, memory, memory map,
     disassembly, call stack, analysis, Output, Inspector, and the sprite and
     beeper-SFX editors.

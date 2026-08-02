@@ -1,8 +1,75 @@
 # zxide — project status & handoff
 
-_Last updated: 2026-07-27._ A snapshot to make it easy to pick the project back up.
+_Last updated: 2026-08-01._ A snapshot to make it easy to pick the project back up.
 
-## Latest session (2026-07-27, later) — AY music preview
+## Latest session (2026-08-01) — frame recording (screenshots, but for animation)
+
+**1389 tests pass** (1360 unit + 29 integration). A red dot and a stop square joined the
+camera on the emulator control strip: they record every emulated frame and write an
+animated GIF into a `recordings/` folder, beside the existing `screenshots/`. Confirmed
+working by the user on a real game.
+
+**The design question was where the frames come from.** The obvious answer — stash the
+rendered image each frame — is 320KB a frame, 16MB a second, and forces a full render on
+every frame instead of every repaint. What actually gets stored is the 6912-byte screen
+file plus that frame's border state: ~7KB a frame, little more than a memcpy of something
+the machine is already holding, with *all* rendering deferred to the moment you press
+Stop. Measured, the capture cost is below noise against a ~15ms frame, and a full 60s take
+is ~21MB of RAM.
+
+**The trap that would have made it quietly wrong** is hanging the recorder off
+`frame_ready`. That signal fires once per *batch* of up to `MAX_CATCHUP_FRAMES` frames, so
+a recorder listening to it drops frames precisely when the machine is behind — the busy
+moments you most wanted. `EmulatorController` grew a `frame_observer` hook instead (a plain
+attribute, same pattern as `input_poll`), called after every *completed* frame; a run
+stopped part-way by a breakpoint has half a picture in screen memory and is skipped. The
+hook is attached only for the duration of a take, so nobody pays a call per frame for a
+feature they aren't using.
+
+**GIF turns out to be lossless for a Spectrum**, which is not its usual reputation: the
+machine has 16 colours and GIF is a paletted format, so there is nothing to quantise; and
+GIF's delay unit is 1/100s, so 50Hz is a delay of exactly 2. Making that true rather than
+nearly true meant splitting `render_frame_fast` — `render_frame_indexed` is now the real
+renderer (palette indices, one uint8 per pixel) and `render_frame_fast` is a lookup on top
+of it. Frames reach Pillow as ready-made index arrays with `optimize=False`. Verified by
+reading the file back and comparing every pixel's *colour* (not index — Pillow may write a
+later frame against a local palette, so the index is an encoding detail).
+
+**Export is far cheaper than expected**, which killed a planned complication: Pillow stores
+only the changed rectangle per frame and merges identical consecutive frames, summing their
+delays — both lossless. 1000 frames export in 0.72s at 0.28MB, so the synchronous export
+needs no threading, and a static screen costs almost nothing.
+
+**Two things found by looking rather than reasoning:**
+- The first toolbar render showed the REC readout appearing and shoving the transport
+  buttons left — moving Stop out from under the pointer at the moment you'd just clicked
+  Record. A fixed-width blank spacer now shows with it, so nothing moves.
+- A test that "made each frame different" poked bitmap bytes under a random attribute whose
+  ink equalled its paper, so the frames rendered identically and Pillow merged them all into
+  one. The invisible-cell trap is worth remembering when generating screen test data.
+
+**What it does and doesn't capture**, since the user immediately noticed sprites half-drawn
+in one frame and finished in the next: that is real — the program's draw routine hadn't
+finished by the frame boundary, which makes this a passable way to spot a game overrunning
+its budget. But a TV paints top-to-bottom across the frame, so its tearing is spread down
+the screen; beam-accurate capture would need per-scanline *screen* rendering, which this
+codebase doesn't do (only the border is modelled per row). Separately, falling behind
+discards owed *real time* rather than emulated frames, so a recording made while stuttering
+still plays back at true 50fps — the frame sequence is unbroken, it was only watched in
+slow motion.
+
+Bounded at 3000 frames (60s), and it says so in the Output console when the cap ends a take
+rather than just stopping. A failed GIF export still writes the frames out as a `.scr`
+sequence — they are already in that format, and losing a recording to a missing optional
+dependency would be the worst outcome. Pillow is a declared dependency now, imported lazily.
+
+Not wired up: `frame_step` (half-rate, smaller file) and the PNG/`.scr` sequence exports
+exist in `FrameRecorder` but nothing in the UI reaches them yet. RZX-style input recording
+(snapshot + per-frame input, replayed to re-render — kilobytes for minutes, and a natural
+regression-test fixture) was discussed and deliberately left for later; Fuse implements it,
+so there is a reference at `E:/github/fuse`.
+
+## Earlier session (2026-07-27, later) — AY music preview
 
 Six music files in a real project (`E:\github\rehq\music`) all play now: an `.ay` container,
 a `.c` compiled module, and raw `.pt3`/`.pt2`. Double-click opens a floating Music Player;
@@ -863,6 +930,8 @@ zxemu_ui/          shell at top level: main_window (docks + wiring), menu_builde
                    (the menu bar as data), debug_session (source map, breakpoints,
                    conditions, watchpoints), media (which loader a file needs),
                    controller, editor, theme, system_open, asset_icons, ...
+                   + recorder.py (every emulated frame captured as screen memory,
+                     exported as an animated GIF -- no Qt, so it tests headless)
   panels/          the dockable views: emulator, registers, memory cells, memory
                    map, disassembly, call stack, analysis, inspector, output_console
                    + the in-app editors (sprite_editor_view, beeper_sfx_editor_view)
@@ -914,7 +983,13 @@ is one dockable panel among many, as this section originally predicted.
   range will sound flatter here than on hardware. No game tested so far uses MIC, so
   this is theoretical for now rather than an observed problem.
 - **Timing** is functional, not cycle-accurate: contention is modelled/tested
-  but not applied to every memory access; no per-scanline border effects.
+  but not applied to every memory access. Per-scanline *border* effects are drawn
+  (`border_rows`), per-scanline *screen* rendering is not — the display file is sampled
+  once, at the frame boundary. So a frame shows one consistent instant of screen memory
+  rather than what a beam painted top-to-bottom across the frame. Visible in a recording
+  as a half-drawn sprite appearing whole in the next frame: the partial draw is real (the
+  program missed its budget), but a TV would have spread that tearing down the picture.
+  Multicolour tricks at 8-pixel granularity need the finer model too.
 - ~~**Turbo tape loaders don't load.**~~ **Fixed** by edge replay (see the 2026-07-25
   session). Fast loading still can't serve them — a loader that times its own bits never
   calls the ROM routine — but turning **Load ▸ Tape Deck ▸ Fast Load** off gives them the

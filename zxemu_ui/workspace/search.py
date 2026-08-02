@@ -31,7 +31,7 @@ GENERATED_NAMES = {"assets_generated.asm"}
 GENERATED_ENDINGS = (".sld.txt",)
 
 # Folders never worth walking into.
-SKIPPED_DIRS = {".git", "__pycache__", ".vscode", "screenshots"}
+SKIPPED_DIRS = {".git", "__pycache__", ".vscode", "screenshots", "recordings"}
 
 DEFAULT_RESULT_LIMIT = 500
 

@@ -1,10 +1,26 @@
 """PyQt5 widget rendering the Spectrum's display: screen bitmap/attributes,
-a solid per-frame border color, and FLASH-attribute ink/paper swapping.
+the border, and FLASH-attribute ink/paper swapping.
 
 Screen memory addressing, the 8-color palette, and the border margin are
 standard, publicly documented Spectrum hardware/emulation conventions,
-reimplemented independently. Per-scanline border effects (mid-frame color
-changes) aren't modeled -- one border color is used for the whole frame.
+reimplemented independently.
+
+How far the model goes. The **border** is drawn per scanline from the ULA's log of
+mid-frame changes (:func:`border_rows`), so an ``OUT`` to port 0xFE part-way down a
+frame draws a band rather than recolouring everything -- which is what border timing
+is for. The **screen** is not: the display file is sampled once, at the frame
+boundary, so a frame shows one consistent instant of screen memory rather than what
+a beam painted top-to-bottom across it. That is the line between horizontal border
+bands (drawn) and 8-pixel-granularity multicolour tricks (not), and it is also why a
+recording can show a sprite half-drawn in one frame and whole in the next: the
+partial draw is real, but a TV would have spread that tearing down the picture.
+
+Rendering comes in three forms, all agreeing byte-for-byte (the tests check it):
+:func:`render_bordered_frame` is the plain-Python reference, :func:`render_frame_indexed`
+is the numpy renderer everything else is built on (palette indices, one uint8 per
+pixel -- what a paletted file format wants, and what the frame recorder writes GIFs
+from), and :func:`render_frame_fast` is that with the palette applied, for the QImage
+the widget paints.
 """
 
 from __future__ import annotations
@@ -100,6 +116,12 @@ for _attr in range(256):
 
 # The border can only ever be one of the 8 non-bright colors (port 0xFE has no bright bit).
 _BORDER_COLORS = [_bgra_bytes(rgb) for rgb in _NORMAL_RGB]
+
+#: The whole 16-entry Spectrum palette as (r, g, b), indexed the way render_frame_indexed
+#: numbers its output: 0-7 normal, 8-15 bright. Public because anything writing a *paletted*
+#: image file (the frame recorder's GIF/PNG export) needs the exact same colours the screen
+#: shows, and re-deriving them elsewhere is how two renderers quietly drift apart.
+PALETTE_RGB = tuple(_NORMAL_RGB + _BRIGHT_RGB)
 
 
 def bitmap_address(y: int, x_byte: int) -> int:
@@ -218,13 +240,22 @@ def border_rows(changes, start_color: int, line_tstates: int, screen_start_tstat
     return np.where(index == 0, start_color & 0x07, colors[np.clip(index - 1, 0, None)]).astype(np.uint8)
 
 
-def render_frame_fast(screen_bank: np.ndarray, border_color: int, flash_on: bool = False, rows: np.ndarray | None = None) -> np.ndarray:
-    """Vectorized equivalent of render_bordered_frame, operating on the raw 16K screen
-    bank as a uint8 array. Returns a (FULL_HEIGHT, FULL_WIDTH) uint32 image array.
+def render_frame_indexed(screen_bank: np.ndarray, border_color: int, flash_on: bool = False, rows: np.ndarray | None = None) -> np.ndarray:
+    """The full frame as *palette indices* (0-15), one uint8 per pixel.
+
+    This is the real renderer; :func:`render_frame_fast` is a colour lookup on top of it.
+    Splitting it out is not decoration: a Spectrum picture is only ever 16 colours, so an
+    indexed frame is the honest representation, and it is exactly what a paletted file
+    format wants -- the frame recorder writes GIF frames straight from this array, with no
+    quantisation step to lose or approximate colours the machine actually displayed.
+
+    ``screen_bank`` may be either the whole 16K display bank or just its first 6912 bytes
+    (the classic screen file): nothing here reads past the last attribute byte.
 
     ``rows`` is an optional per-row border colour array from :func:`border_rows`; without
     it the whole border is ``border_color``, which is what a still picture wants and what
-    every caller did before mid-frame changes were drawn at all."""
+    every caller did before mid-frame changes were drawn at all.
+    """
     bitmap = screen_bank[_BITMAP_INDEX]  # (192, 32) bitmap bytes
     attr = screen_bank[_ATTR_INDEX]  # (192, 32) attribute bytes
 
@@ -238,13 +269,21 @@ def render_frame_fast(screen_bank: np.ndarray, border_color: int, flash_on: bool
         swap = (attr_px & 0x80) != 0
         ink, paper = np.where(swap, paper, ink), np.where(swap, ink, paper)
 
-    color_index = np.where(bits != 0, ink, paper) + bright * 8
-    screen_rgb = _PALETTE_U32[color_index]  # (192, 256) uint32
+    color_index = (np.where(bits != 0, ink, paper) + bright * 8).astype(np.uint8)
 
-    frame = np.empty((FULL_HEIGHT, FULL_WIDTH), dtype="<u4")
-    frame[:] = _PALETTE_U32[border_color & 0x07] if rows is None else _PALETTE_U32[rows][:, None]
-    frame[BORDER_MARGIN : BORDER_MARGIN + SCREEN_HEIGHT, BORDER_MARGIN : BORDER_MARGIN + SCREEN_WIDTH] = screen_rgb
+    frame = np.empty((FULL_HEIGHT, FULL_WIDTH), dtype=np.uint8)
+    frame[:] = (border_color & 0x07) if rows is None else (rows & 0x07)[:, None]
+    frame[BORDER_MARGIN : BORDER_MARGIN + SCREEN_HEIGHT, BORDER_MARGIN : BORDER_MARGIN + SCREEN_WIDTH] = color_index
     return frame
+
+
+def render_frame_fast(screen_bank: np.ndarray, border_color: int, flash_on: bool = False, rows: np.ndarray | None = None) -> np.ndarray:
+    """Vectorized equivalent of render_bordered_frame, operating on the raw 16K screen
+    bank as a uint8 array. Returns a (FULL_HEIGHT, FULL_WIDTH) uint32 image array.
+
+    Just :func:`render_frame_indexed` with the palette applied -- see there for the
+    arguments and for why the indexed form is the one that does the work."""
+    return _PALETTE_U32[render_frame_indexed(screen_bank, border_color, flash_on=flash_on, rows=rows)]
 
 
 # Qt key -> the single Spectrum matrix key it presses. Letters/digits enter the ROM's

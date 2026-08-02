@@ -1,10 +1,15 @@
 """EmulatorPanel -- the emulator as a self-contained IDE panel.
 
 Rather than scatter the machine controls into a global toolbar, we group them
-with the screen they act on: a small control strip (Run / Pause / Step / Reset)
-sits on top of the emulator display, the way a media player puts its transport
-bar above the picture. The whole thing is one widget you can dock, move, or
-resize as a unit.
+with the screen they act on: a small control strip (Run / Pause / Step / Reset,
+then Screenshot and the Record/Stop pair) sits on top of the emulator display,
+the way a media player puts its transport bar above the picture. The whole thing
+is one widget you can dock, move, or resize as a unit.
+
+Both media buttons only *ask* -- they emit a signal and MainWindow acts, because
+where a screenshot or a recording gets saved is a property of the open project,
+which this panel knows nothing about. The frames themselves are collected by
+``zxemu_ui/recorder.py``, hooked straight into the emulation loop.
 
 Two pieces live here:
 
@@ -27,6 +32,7 @@ from PyQt5.QtGui import QColor, QIcon, QPainter, QPalette, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QAction,
     QHBoxLayout,
+    QLabel,
     QStyle,
     QToolButton,
     QVBoxLayout,
@@ -63,6 +69,45 @@ def camera_icon(color: QColor, size: int = 32) -> QIcon:
     lens_center = QPointF(0.50 * s, 0.60 * s)
     painter.drawEllipse(lens_center, 0.16 * s, 0.16 * s)
     painter.drawEllipse(lens_center, 0.06 * s, 0.06 * s)
+    painter.end()
+    return QIcon(pixmap)
+
+
+#: The record dot stays red whatever the theme. Every recorder ever built uses a red dot,
+#: and a themed one would be the only control on the bar you had to stop and read.
+_RECORD_RED = QColor("#e04b4b")
+
+#: Width reserved for the "● REC nnn frames (n.n s)" readout. Fixed rather than fitted, so
+#: neither the counter ticking up nor the readout appearing at all moves the buttons.
+_RECORD_READOUT_WIDTH = 170
+
+
+def record_icon(size: int = 32) -> QIcon:
+    """The filled red dot that means "start recording"."""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(_RECORD_RED)
+    painter.drawEllipse(QPointF(0.5 * size, 0.5 * size), 0.30 * size, 0.30 * size)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def stop_icon(color: QColor, size: int = 32) -> QIcon:
+    """The filled square that means "stop recording", in the caller's colour.
+
+    Drawn in the theme's text colour rather than literally black: on a dark theme a black
+    square on a dark bar is an invisible button, and the shape is what carries the meaning.
+    """
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(color)
+    painter.drawRect(QRectF(0.24 * size, 0.24 * size, 0.52 * size, 0.52 * size))
     painter.end()
     return QIcon(pixmap)
 
@@ -113,6 +158,11 @@ class EmulatorPanel(QWidget):
     #: Emitted when "Screenshot" is clicked -- MainWindow owns the project (and so
     #: where a screenshot gets saved), so it does the actual saving.
     screenshot_requested = pyqtSignal()
+
+    #: Emitted by the red dot and the stop square. Same division of labour as the
+    #: screenshot: the panel offers the buttons, the window knows where recordings go.
+    record_requested = pyqtSignal()
+    stop_record_requested = pyqtSignal()
 
     #: Emitted when fullscreen is entered (True) or left (False), so the window can keep
     #: a checkable menu item in step with a state the user can also leave by pressing Esc.
@@ -221,6 +271,17 @@ class EmulatorPanel(QWidget):
         self.screenshot_action.setToolTip("Save a screenshot (.scr + .bmp) to the project's screenshots folder")
         self.screenshot_action.triggered.connect(self.screenshot_requested)
 
+        # Recording: a transport pair rather than one toggle, so the button under the
+        # pointer never changes meaning between the glance and the click.
+        self.record_action = QAction(record_icon(), "Record", self)
+        self.record_action.setToolTip("Record every frame, for export as an animated GIF")
+        self.record_action.triggered.connect(self.record_requested)
+
+        self.stop_record_action = QAction(stop_icon(self.palette().color(QPalette.ButtonText)), "Stop Recording", self)
+        self.stop_record_action.setToolTip("Stop recording and save the animation")
+        self.stop_record_action.triggered.connect(self.stop_record_requested)
+        self.stop_record_action.setEnabled(False)
+
     def _build_control_bar(self) -> QWidget:
         bar = QWidget()
         bar.setObjectName("emulatorControlBar")
@@ -228,16 +289,51 @@ class EmulatorPanel(QWidget):
         row.setContentsMargins(4, 4, 4, 4)
         row.setSpacing(4)
         row.addStretch()
+        # A blank twin of the recording readout, shown and hidden with it. Without it the
+        # readout appearing would shove the whole transport left by half its width -- moving
+        # Stop out from under the pointer at the exact moment you have just pressed Record.
+        self._record_spacer = QWidget()
+        self._record_spacer.hide()
+        row.addWidget(self._record_spacer)
         actions = (self.run_action, self.pause_action, self.step_action,
                    self.step_over_action, self.step_out_action, self.frame_action,
-                   self.reset_action, self.screenshot_action)
+                   self.reset_action, self.screenshot_action,
+                   self.record_action, self.stop_record_action)
         for action in actions:
             button = QToolButton()
             button.setDefaultAction(action)
             button.setToolButtonStyle(Qt.ToolButtonIconOnly)
             row.addWidget(button)
+        # A running frame count, hidden until recording starts. Without it there is no way
+        # to tell a recording in progress from a button that did nothing -- and no warning
+        # that you are approaching the frame cap until you hit it. Fixed-width so the
+        # numbers ticking up never re-lay-out the bar (see _record_spacer above).
+        self._record_label = QLabel()
+        self._record_label.setStyleSheet("color: {}".format(_RECORD_RED.name()))
+        self._record_label.setFixedWidth(_RECORD_READOUT_WIDTH)
+        self._record_spacer.setFixedWidth(_RECORD_READOUT_WIDTH)
+        self._record_label.hide()
+        row.addWidget(self._record_label)
         row.addStretch()
         return bar
+
+    # --- recording state ------------------------------------------------------
+
+    def set_recording(self, recording: bool) -> None:
+        """Swap the transport pair over and show or hide the frame counter."""
+        self.record_action.setEnabled(not recording)
+        self.stop_record_action.setEnabled(recording)
+        self._record_label.setVisible(recording)
+        self._record_spacer.setVisible(recording)  # keeps the buttons where they were
+        if not recording:
+            self._record_label.clear()
+
+    def set_recorded_frames(self, frames: int) -> None:
+        """Update the "recording" readout; called once per frame batch, so it does nothing
+        unless the tenth of a second it displays has actually changed."""
+        text = "● REC  {} frames ({:.1f}s)".format(frames, frames / 50.0)
+        if text != self._record_label.text():
+            self._record_label.setText(text)
 
     def _on_running_changed(self, running: bool) -> None:
         """Run only when paused; Pause only when running; stepping only while paused."""

@@ -135,6 +135,14 @@ class EmulatorController(QObject):
         #: switches a frame reads should be the ones held when that frame began.
         self.input_poll = None
 
+        #: Optional callable invoked as ``observer(machine, frame_number)`` after *every*
+        #: completed frame, for anything that must see each frame rather than each repaint --
+        #: the frame recorder. It cannot hang off ``frame_ready``, which fires once per batch
+        #: of up to MAX_CATCHUP_FRAMES frames and so skips frames precisely when the machine
+        #: is behind. A plain attribute for the same reason as input_poll: the controller
+        #: needs to know nothing about who set it, or that recording exists.
+        self.frame_observer = None
+
     # --- lifecycle / controls -------------------------------------------------
 
     @property
@@ -363,6 +371,7 @@ class EmulatorController(QObject):
             return
         self.machine.run_frame()
         self._emulated_frames += 1
+        self._observe_frame()
         self.frame_ready.emit(self._emulated_frames)
 
     def step_instruction(self) -> None:
@@ -510,6 +519,10 @@ class EmulatorController(QObject):
             ran += 1
             if hit:  # paused on a breakpoint -- stop advancing
                 break
+            # Every frame, not every repaint: this loop can run several frames before
+            # frame_ready is emitted, and a recorder that missed those would drop frames
+            # exactly when the machine was catching up.
+            self._observe_frame()
 
         if self._time_accumulator > MAX_CATCHUP_FRAMES * FRAME_PERIOD_S:
             self._time_accumulator = 0.0  # fell too far behind; drop the backlog
@@ -524,6 +537,16 @@ class EmulatorController(QObject):
             self.frame_ready.emit(self._emulated_frames)
 
         self._emit_status(now)
+
+    def _observe_frame(self) -> None:
+        """Hand the just-completed frame to ``frame_observer``, if one is attached.
+
+        Only *completed* frames are offered. A run stopped part-way by a breakpoint has
+        half a picture in screen memory, and recording that would put a torn frame in the
+        middle of an animation.
+        """
+        if self.frame_observer is not None:
+            self.frame_observer(self.machine, self._emulated_frames)
 
     def _run_one_frame(self) -> bool:
         """Run ~one frame. Returns True if it paused on a breakpoint or watchpoint."""

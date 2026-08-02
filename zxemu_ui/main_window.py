@@ -74,6 +74,7 @@ from zxemu_ui.panels.emulator_view import EmulatorView
 from zxemu_ui import layout_store, media, menu_builder
 from zxemu_ui.debug_session import DebugSession
 from zxemu_ui.project_tree_model import ProjectFilesModel
+from zxemu_ui.recorder import FrameRecorder
 from zxemu_ui.panels.inspector_view import InspectorView
 from zxemu_ui.panels.sprite_editor_view import SpriteEditorView
 from zxemu_ui.panels.beeper_sfx_editor_view import BeeperSfxEditorView
@@ -231,6 +232,10 @@ class MainWindow(QMainWindow):
         self.output_console = OutputConsole()
         self.output_console.link_activated.connect(self._open_search_hit)
 
+        # Frame-by-frame capture for exporting gameplay as an animation. Built here but
+        # only hooked into the emulation loop while a take is running (see _start_recording).
+        self.recorder = FrameRecorder()
+
         self._build_docks()
 
         # Remember the built-in default arrangement (for "Reset layout"), and load any
@@ -263,6 +268,9 @@ class MainWindow(QMainWindow):
         # A file dropped onto the Design-mode map becomes an asset -- the tree badges it.
         self.memory_map.assets_changed.connect(self._assets_changed)
         self.emulator_panel.screenshot_requested.connect(self._save_screenshot)
+        self.emulator_panel.record_requested.connect(self._start_recording)
+        self.emulator_panel.stop_record_requested.connect(self._stop_recording)
+        self.controller.frame_ready.connect(self._on_recording_progress)
         self.editor.breakpoints_changed.connect(self._sync_breakpoints)
         # The execution-line marker: cleared while running, shown (and moved) whenever
         # paused -- on a breakpoint, a manual pause, or after each Step.
@@ -2096,6 +2104,83 @@ class MainWindow(QMainWindow):
         if error:
             self._log("Could not show {}: {}".format(target, error))
 
+    def _output_folder(self, name: str) -> Path:
+        """The project's ``name`` subfolder for generated media, created if need be.
+
+        Falls back to the app's own folder (the same anchor layout.json uses) when no
+        project is open -- e.g. after loading a .sna directly rather than a project.
+        """
+        root = self.project.folder if self.project is not None else Path(__file__).resolve().parent.parent
+        folder = root / name
+        folder.mkdir(exist_ok=True)
+        return folder
+
+    # --- recording ------------------------------------------------------------
+
+    def _start_recording(self) -> None:
+        """Begin capturing every emulated frame (the red dot).
+
+        The recorder is attached to the controller only for the duration of the take: the
+        hook it uses runs inside the emulation loop fifty times a second, and a permanently
+        attached observer would charge every user a function call per frame for a feature
+        they are not using.
+        """
+        if self.recorder.recording:
+            return
+        self.recorder.start()
+        self.controller.frame_observer = self.recorder.capture
+        self.emulator_panel.set_recording(True)
+        self.emulator_panel.set_recorded_frames(0)
+        self._log("Recording started (up to {} frames, {:.0f}s).".format(self.recorder.max_frames, self.recorder.max_frames / 50.0))
+
+    def _stop_recording(self) -> None:
+        """Stop capturing and write the animation out (the black square)."""
+        self.controller.frame_observer = None
+        frames = self.recorder.stop()
+        self.emulator_panel.set_recording(False)
+        if not frames:
+            self._log("Recording stopped: no frames captured.")
+            return
+        self._log("Recording stopped: {} frames ({:.1f}s). Rendering...".format(frames, frames / 50.0))
+        self._export_recording()
+        self.recorder.clear()
+
+    def _export_recording(self) -> None:
+        """Render the captured frames to a GIF beside the screenshots.
+
+        Rendering is synchronous and can take a couple of seconds for a long take -- all of
+        it deferred from the emulation loop, which is the whole point of capturing screen
+        memory rather than pixels. If Pillow is missing the frames are still written out as
+        a .scr sequence rather than thrown away: they are already in that format, and losing
+        a recording to a missing optional dependency would be the worst possible outcome.
+        """
+        folder = self._output_folder("recordings")
+        base = folder / "recording_{:%Y%m%d_%H%M%S}".format(datetime.now())
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            path = base.with_suffix(".gif")
+            written = self.recorder.export_gif(path)
+            self._log("Saved recording: {} ({} frames, {:.1f} MB)".format(path.name, written, path.stat().st_size / 1e6))
+        except Exception as error:  # noqa: BLE001 -- any export failure must still save the frames
+            folder = base.with_suffix("")
+            count = self.recorder.export_scr_sequence(folder)
+            self._log("Could not write the GIF ({}); saved {} frames as .scr in {}".format(error, count, folder.name))
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _on_recording_progress(self) -> None:
+        """Keep the REC readout current, and speak up if the frame cap ended the take.
+
+        Driven by frame_ready (a few times a second) rather than by the capture hook, which
+        runs inside the emulation loop and has no business touching widgets.
+        """
+        if not (self.recorder.recording or self.recorder.stopped_at_limit):
+            return  # no take in progress, and none that just ended itself
+        self.emulator_panel.set_recorded_frames(self.recorder.frame_count)
+        if self.recorder.stopped_at_limit:
+            self._log("Recording hit the {}-frame limit.".format(self.recorder.max_frames))
+            self._stop_recording()
+
     def _save_screenshot(self) -> None:
         """Save the current screen as both a real .scr and a viewable .bmp.
 
@@ -2109,12 +2194,7 @@ class MainWindow(QMainWindow):
         which would only capture whatever size the dock happens to be scaling the
         picture to right now.
         """
-        # Falls back to the app's own folder (the same anchor layout.json uses) when no
-        # project is open -- e.g. after loading a .sna directly rather than a project.
-        folder = self.project.folder if self.project is not None else Path(__file__).resolve().parent.parent
-        screenshots_dir = folder / "screenshots"
-        screenshots_dir.mkdir(exist_ok=True)
-        base = screenshots_dir / "screenshot_{:%Y%m%d_%H%M%S}".format(datetime.now())
+        base = self._output_folder("screenshots") / "screenshot_{:%Y%m%d_%H%M%S}".format(datetime.now())
 
         scr_path = base.with_suffix(".scr")
         scr_path.write_bytes(bytes(self.machine.display_memory()[:6912]))

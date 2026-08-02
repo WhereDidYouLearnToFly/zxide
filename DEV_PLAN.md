@@ -402,6 +402,15 @@ Note the symmetry with Phase E: that places assets *into* memory, this pulls the
 - **Tape-deck UI** ✅ *partly* -- Load ▸ Tape Deck has Fast Load, Tape Sound,
   Play / Stop / Rewind / Eject. A visible **block list** with the play head marked is
   still open, and would be the natural home for per-block timing detail.
+- **RZX (input recording)** -- *discussed, not scheduled.* The other way to capture a
+  session: instead of the pictures, store a snapshot plus the *input* each frame and
+  replay it deterministically to re-render. Kilobytes for minutes of play, against
+  megabytes for the frame recorder's GIF -- and the two are complementary, since an RZX
+  is the storage format and rendering is a separate export step. The reason to want it is
+  less about sharing than about testing: a recorded session is a regression fixture that
+  replays an entire game through the emulator and can be checked frame-for-frame. It
+  needs saving machine state first (see the snapshot entry above -- nothing writes state
+  yet), and Fuse implements RZX, so there is a behavioural reference at `E:/github/fuse`.
 
 ### 3. Visual memory management (Phase E -- the "Unity" centerpiece)
 Superseded by the detailed **Milestone 4: Asset workflow (Phase E)** section below --
@@ -844,6 +853,56 @@ Inspector preview).
   now -- but `EmulatorView`'s own native 320x256 `QImage` (a new `current_image()`
   accessor), so it's always crisp at the Spectrum's real resolution, border included,
   regardless of window size.
+- **Record**, the same idea moved from a moment to a stretch of time: a red dot and a
+  stop square beside the camera, writing an animated GIF into a `recordings/` folder
+  (same project-or-app-folder anchor as screenshots). `zxemu_ui/recorder.py` holds it,
+  and three decisions do all the work:
+
+  **Capture screen memory, not pixels.** Storing each rendered frame would be 320KB a
+  frame, 16MB a second, and would force a full render every frame instead of every
+  repaint. Storing the 6912-byte screen file plus that frame's border state is ~7KB a
+  frame -- little more than a memcpy of something the machine already holds -- and
+  *all* rendering is deferred to the moment you press Stop, where a second or two costs
+  nobody anything. Measured, the capture is below noise against a ~15ms frame. The
+  recording is also, incidentally, a sequence of real `.scr` files, which is why
+  exporting them is offered.
+
+  **Capture per emulated frame, not per repaint.** `frame_ready` fires once per *batch*
+  of up to `MAX_CATCHUP_FRAMES` frames, so a recorder hung off it would silently drop
+  frames exactly when the machine was struggling. `EmulatorController` gained a
+  `frame_observer` hook -- a plain attribute, same pattern as `input_poll` -- called
+  after every completed frame. Only completed ones: a run stopped part-way by a
+  breakpoint has half a picture in screen memory. The hook is attached only for the
+  duration of a take, so a feature nobody is using costs nothing per frame.
+
+  **GIF is lossless here, which it usually isn't.** A Spectrum picture is 16 colours and
+  GIF is a paletted format, so there is nothing to quantise away; and GIF's delay unit is
+  1/100s, so 50Hz is a delay of exactly 2. To make that true rather than nearly true,
+  `render_frame_fast` was split: `render_frame_indexed` is now the renderer (returning
+  palette indices, one uint8 per pixel) and `render_frame_fast` is a palette lookup on
+  top of it. Frames go to Pillow as ready-made index arrays with `optimize=False`, so it
+  never re-quantises. Verified by reading the GIF back and comparing every pixel's colour
+  against the rendered frame. Pillow stores only the changed rectangle per frame
+  (`disposal=1`) and merges identical consecutive frames, summing their delays -- both
+  lossless, and between them the reason 1000 frames export in 0.7s at 0.28MB, so no
+  threading was needed.
+
+  Bounded at 3000 frames (60s, ~21MB) because recording is easy to start and forget, and
+  the take says so in the Output console when the cap ends it rather than just stopping.
+  If the GIF export fails for any reason the frames are still written out as a `.scr`
+  sequence -- they are already in that format, and losing a recording to a missing
+  optional dependency would be the worst possible outcome. Pillow is a dependency now,
+  imported lazily so it costs you the export and not the whole IDE.
+
+  **What it does and doesn't capture.** Frames are sampled at the frame boundary, so a
+  half-drawn sprite in the recording is real -- the program's draw routine genuinely
+  hadn't finished, which makes this a passable way to catch a game overrunning its frame
+  budget. But a real TV paints top-to-bottom over the whole frame, so its tearing is
+  spread down the screen; a beam-accurate recording would need per-scanline screen
+  rendering, which this codebase doesn't do (only the border is modelled per row). And
+  because falling behind discards *owed real time* rather than emulated frames, a
+  recording made while the emulator stutters still plays back at true speed -- the frame
+  sequence is unbroken, it was only watched in slow motion.
 
 ### Polish pass over the asset editors and the project tree
 
