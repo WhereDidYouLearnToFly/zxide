@@ -34,8 +34,9 @@ still (`.scr` + `.bmp`) or recorded frame by frame and exported as an animated G
     `binary_convert.py`, `pt3_convert.py`, `beeper_sfx.py`, `native_sprite.py`),
     the `manifest.py` that records them, and `preview.py` that draws them.
   - `debug/` — `disassembler.py`, `rom_symbols.py`, `debug_expr.py`, `analysis.py`,
-    `dumper.py` (memory back into source), and `asm_meter.py` (source into
-    bytes and T-states).
+    `dumper.py` (memory back into source), `asm_meter.py` (source into
+    bytes and T-states), and the editor's hover help: `asm_help.py` (what an
+    instruction is for) with `asm_symbols.py` (what your `equ` constants come to).
 - `zxemu_ui/` — the PyQt5 layer. Shell at the top level (`main_window.py`,
   `controller.py`, `editor.py`, `recorder.py`, `project_tree_model.py`,
   `theme.py`, `system_open.py`, …), plus:
@@ -46,6 +47,9 @@ still (`.scr` + `.bmp`) or recorded frame by frame and exported as an animated G
     sjasmplus build, asset codegen, project-wide search, and the SLD source map.
 - `tests/` — unit, integration (ROM boot), and the zexdoc/zexall harness.
 - `dev-support/` — status/handoff notes, screenshots, the ZEXALL binaries.
+- `build/` — packaging: the PyInstaller spec, the build scripts and the icon
+  generator that turn the source tree into a standalone app. Not needed to run
+  from source; see [Building a standalone app](#building-a-standalone-app).
 
 **Each package's `__init__.py` opens with an educational overview — start there.**
 Individual modules carry the reasoning: not just what the code does, but why it is
@@ -204,8 +208,8 @@ which — a call stack is reconstructed rather than recorded, cross-references a
 static scan that cannot follow computed jumps, and an address absent from coverage
 means "not executed *yet*", never "unreachable".
 
-Not everything needs the machine running, though. The **Z80 Assembly Meter** in the
-status bar costs whatever you select in the editor — or the whole file when nothing is
+Not everything needs the machine running, though. The **Z80 Assembly Meter** along the
+bottom of the editor costs whatever you select — or the whole file when nothing is
 selected — in bytes and T-states:
 
 ```
@@ -223,6 +227,42 @@ timing in contended memory will be higher. `db`/`dw`/`ds` count toward bytes and
 time, and anything the table doesn't recognise (a macro invocation, an `incbin` whose
 file it can't see) is reported as *unrecognised* beside the totals rather than silently
 counting as zero.
+
+### Hover help in the editor
+
+Hovering a line of assembly says what the instruction is for, what that exact operand
+form costs, and which flags it disturbs — priced through the same tables as the meter, so
+`ld a,(hl)` and `ld a,(ix+d)` are told apart rather than given a range covering both.
+Assembler directives (`org`, `incbin`, `savesna`, …) get the same one-line treatment.
+
+Any constant the line names is answered too, which is the part you'd otherwise leave the
+file to look up:
+
+```
+ld de,ATTRS
+Copy a value from the source (right) to the destination (left).
+3 bytes · 10 T
+Flags: unaffected
+ATTRS = SCREEN + SCREEN_LEN = 22528 ($5800) · consts.asm
+```
+
+The working is shown when the constant was derived from others, and the file it came from
+is named when it wasn't this one. Constants are found by reading the **source** — your
+file plus everything it `include`s, in whatever form it is on screen right now, so a value
+you changed a second ago and haven't saved is the value you're shown. Nothing needs to
+have been built, and a file that doesn't yet assemble still answers.
+
+Both `NAME: equ …` and `NAME equ …` are understood, as are `=`, `defl` and `DEFINE`, and
+values may be written in any of the usual notations (`$4000`, `#4000`, `4000h`, `%1010`,
+`1010b`, `0x10`, `'A'`). Expressions are worked out — `+ - * / % & | ^ ~ << >>` and
+parentheses, including constants defined in terms of each other, in any order.
+
+What it will not do is guess. `equ $` (the assembler's current address), a macro argument,
+an unknown name, or anything else only the assembler could resolve shows the expression as
+written instead of a value. Addresses of *labels* are a different question, answered by
+the disassembly panel from the build's SLD map rather than here.
+
+**Settings ▸ Show instruction help when hovering code** turns the whole thing off.
 
 ### Assets
 
@@ -383,6 +423,48 @@ timings, plus bare tones, pulse sequences and pauses. Anything else in the conta
 pip install -e ".[dev]"
 pytest
 ```
+
+## Building a standalone app
+
+To hand zxide to someone who has no Python at all, freeze it into `release/`:
+
+```
+pip install -e ".[build]"          # PyInstaller, on top of the runtime deps
+
+powershell -ExecutionPolicy Bypass -File build\build.ps1     # Windows
+build/build.sh                                               # Linux/macOS
+```
+
+That produces `release/zxide/` — an executable plus an `_internal/` folder holding
+the Python runtime, Qt, and the app's ROMs, tracker players, project templates and
+addons. Copy or zip the whole folder; the executable alone will not run.
+
+Requirements and caveats worth knowing before you build:
+
+- **Python 3.10+ 64-bit, with the runtime dependencies installed** (`pip install -e .`).
+  PyInstaller bundles the copies it finds, so the interpreter first on `PATH` is the
+  one that gets frozen.
+- **No cross-compiling.** A Windows `.exe` has to be built on Windows and a Linux
+  binary on Linux — hence the two scripts, both driving the same `build/zxide.spec`.
+- **sjasmplus is not bundled.** zxide runs the assembler as an external process
+  chosen in Settings, so a machine running the release still needs its own copy
+  before the Build menu will do anything. Everything else — emulator, editor,
+  debugger, asset tools — works without it.
+- **The frozen app keeps `settings.json` and `layout.json` inside its own folder**,
+  which is fine for unzip-and-run but not for an install under `C:\Program Files`.
+
+On Linux there are two more steps, because a bundle folder does not register itself
+with the desktop:
+
+```
+build/linux/install.sh     app menu entry, icon and a `zxide` command, into ~/.local
+build/package.sh           pack the build into release/zxide-linux-<arch>-<version>.tar.gz
+```
+
+`build/README.md` has the details: what goes into the bundle and why, the `-Clean`
+and `-Console` switches, how the icon is generated, the Linux install/uninstall and
+glibc/xcb caveats, and what to do when a module or data file goes missing from a
+build.
 
 ## Licensing
 

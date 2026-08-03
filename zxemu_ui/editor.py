@@ -19,7 +19,7 @@ from PyQt5.QtCore import QEvent, QPoint, QSize, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QPolygon, QTextCursor, QTextFormat, QTextOption
 from PyQt5.QtWidgets import QPlainTextEdit, QTabWidget, QTextEdit, QToolTip, QWidget
 
-from zxemu_core.debug import asm_help
+from zxemu_core.debug import asm_help, asm_symbols
 from zxemu_ui.theme import monospace_font
 from zxemu_ui.z80_highlighter import Z80Highlighter
 
@@ -68,6 +68,9 @@ class CodeEdit(QPlainTextEdit):
         self._breakpoints: set[int] = set()  # 0-based block numbers
         self._exec_block: int | None = None  # 0-based line where execution is paused
         self._instruction_help = True  # hover tooltips; switched off in Settings
+        self._symbols: dict[str, asm_symbols.Constant] = {}  # equ constants, rebuilt on demand
+        self._symbols_revision = -1  # document revision the table above was built from
+        self._read_source = None     # supplied by EditorArea; reads other files' text
         self._gutter = _Gutter(self)
         self.blockCountChanged.connect(lambda _n: self._update_gutter_width())
         self.updateRequest.connect(self._on_update_request)
@@ -93,7 +96,7 @@ class CodeEdit(QPlainTextEdit):
                 QToolTip.hideText()
                 return True
             cursor = self.cursorForPosition(self.viewport().mapFrom(self, event.pos()))
-            help_text = asm_help.describe(cursor.block().text(), cursor.positionInBlock())
+            help_text = asm_help.describe(cursor.block().text(), cursor.positionInBlock(), self.symbol_table())
             if help_text is None:
                 QToolTip.hideText()
             else:
@@ -103,6 +106,29 @@ class CodeEdit(QPlainTextEdit):
 
     def set_instruction_help(self, on: bool) -> None:
         self._instruction_help = on
+
+    def set_source_reader(self, reader) -> None:
+        """Tell this tab how to read the files it includes (EditorArea supplies it)."""
+        self._read_source = reader
+
+    def symbol_table(self) -> dict[str, asm_symbols.Constant]:
+        """The ``equ`` constants this file can see, scanned at most once per edit.
+
+        Rebuilt lazily on hover rather than on every keystroke: the scan is cheap, but
+        typing is the one thing in an editor that must never wait, and nothing looks at
+        this table until a tooltip is actually asked for.
+        """
+        revision = self.document().revision()
+        if revision != self._symbols_revision:
+            path = self.property("file_path")
+            base = Path(path).parent if path else None
+            self._symbols = asm_symbols.collect(self.toPlainText(), base, self._read_source)
+            self._symbols_revision = revision
+        return self._symbols
+
+    def invalidate_symbols(self) -> None:
+        """Forget the cached constants -- an included file changed underneath us."""
+        self._symbols_revision = -1
 
     # --- indentation (spaces, not tabs) ---------------------------------------
 
@@ -324,8 +350,27 @@ class EditorArea(QTabWidget):
         edit.cursorPositionChanged.connect(self.cursor_or_text_changed)
         edit.selectionChanged.connect(self.cursor_or_text_changed)
         edit.set_instruction_help(self._instruction_help)
+        edit.set_source_reader(self._read_source_text)
         self._apply_special_chars(edit)
         return edit
+
+    def _read_source_text(self, path: str) -> str | None:
+        """The text of an included file: the open tab's copy if there is one, else disk.
+
+        An include you are editing in another tab has to answer with what is on screen --
+        reading the saved file would show a constant's old value moments after you changed
+        it, which is worse than showing none.
+        """
+        wanted = str(path).lower()  # tabs are keyed by resolved path; Windows varies the case
+        for i in range(self.count()):
+            widget = self.widget(i)
+            file_path = widget.property("file_path") if widget else None
+            if file_path and str(file_path).lower() == wanted and isinstance(widget, QPlainTextEdit):
+                return widget.toPlainText()
+        try:
+            return Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
 
     def selected_or_all_text(self) -> tuple[str, bool]:
         """``(text, is_selection)`` -- what the caret has selected, or the whole document.
@@ -468,6 +513,12 @@ class EditorArea(QTabWidget):
             return  # nothing to save (welcome tab, or unchanged)
         Path(path).write_text(edit.toPlainText(), encoding="utf-8")
         edit.document().setModified(False)
+        # Saving a file of constants changes what every *other* tab's includes are worth,
+        # and their own documents haven't changed, so nothing else would notice.
+        for i in range(self.count()):
+            widget = self.widget(i)
+            if isinstance(widget, CodeEdit):
+                widget.invalidate_symbols()
 
     def _update_title(self, edit) -> None:
         index = self.indexOf(edit)

@@ -20,11 +20,12 @@ to stop you assuming a flag survived an instruction when it didn't.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from zxemu_core.debug import asm_meter
+from zxemu_core.debug import asm_meter, asm_symbols
 
 _NO_FLAGS = "unaffected"
+_MAX_SYMBOLS = 6  # a line naming more constants than this is better read than hovered
 
 # mnemonic -> (what it does, which flags it disturbs)
 _INSTRUCTIONS: dict[str, tuple[str, str]] = {
@@ -149,14 +150,18 @@ class Help:
     summary: str        # one line: what it does
     cost: str = ""      # "1 byte · 7 T", empty when the form isn't priceable
     flags: str = ""     # which flags change, empty for directives
+    symbols: list[str] = field(default_factory=list)  # "SCREEN = 16384 ($4000)" per constant
 
     def as_text(self) -> str:
         """Plain text, one fact per line -- what the tooltip shows."""
-        lines = [self.title, self.summary]
+        lines = [self.title]
+        if self.summary:  # a line that only names constants has nothing to explain
+            lines.append(self.summary)
         if self.cost:
             lines.append(self.cost)
         if self.flags:
             lines.append("Flags: {}".format(self.flags))
+        lines.extend(self.symbols)
         return "\n".join(lines)
 
 
@@ -194,13 +199,42 @@ def _statement_at(line: str, column: int) -> tuple[str, list[str], str] | None:
     return None
 
 
-def describe(line: str, column: int = 0) -> Help | None:
-    """Hover help for the instruction on ``line``, or None if there is nothing to say."""
+def _constant_text(constant: asm_symbols.Constant) -> str:
+    """One constant as a tooltip line: what it is worth, and where it was set.
+
+    The working is shown when the definition isn't already a plain number
+    (``TILE_END = TILES+2048 = 34816 ($8800)``), because the interesting part of a derived
+    constant is usually what it was derived from -- but repeating ``= 4`` for ``equ 4``
+    would be noise.
+    """
+    if constant.value is None:
+        text = "{} = {}".format(constant.name, " ".join(constant.expression.split()))
+    else:
+        shown = "{} (${:04X})".format(constant.value, constant.value) if 0 <= constant.value <= 0xFFFF else str(constant.value)
+        if asm_meter.parse_number(constant.expression) is None:
+            text = "{} = {} = {}".format(constant.name, " ".join(constant.expression.split()), shown)
+        else:
+            text = "{} = {}".format(constant.name, shown)
+    return "{} · {}".format(text, constant.origin) if constant.origin else text
+
+
+def describe(line: str, column: int = 0, symbols: dict[str, asm_symbols.Constant] | None = None) -> Help | None:
+    """Hover help for the instruction on ``line``, or None if there is nothing to say.
+
+    ``symbols`` is the ``equ`` table of the file being edited (see
+    :mod:`zxemu_core.debug.asm_symbols`). Any constant the line names is appended to the
+    instruction's help rather than replacing it -- hovering ``ld hl,SCREEN`` raises both
+    questions at once -- and a line that names a constant but holds no instruction still
+    gets a tooltip, since the value is the whole answer there.
+    """
     found = _statement_at(line, column)
+    constants = [_constant_text(constant) for constant in asm_symbols.references(line, symbols)[:_MAX_SYMBOLS]]
     if found is None:
-        return None
+        if not constants:
+            return None
+        return Help(title=" ".join(asm_meter.strip_comment(line).split()), summary="", symbols=constants)
     mnemonic, operands, written = found  # the title is the statement as you typed it
     if mnemonic in _INSTRUCTIONS:
         summary, flags = _INSTRUCTIONS[mnemonic]
-        return Help(title=written, summary=summary, cost=_cost_text(mnemonic, operands), flags=flags)
-    return Help(title=written, summary=_DIRECTIVES[mnemonic])
+        return Help(title=written, summary=summary, cost=_cost_text(mnemonic, operands), flags=flags, symbols=constants)
+    return Help(title=written, summary=_DIRECTIVES[mnemonic], symbols=constants)

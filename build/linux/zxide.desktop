@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=zxide
+GenericName=ZX Spectrum IDE
+Comment=Write, assemble and debug ZX Spectrum programs against a built-in emulator
+# install.sh rewrites Exec= to wherever it put the binary. Left as a bare name here so
+# the file is still readable/lintable on its own.
+Exec=zxide
+Icon=zxide
+Terminal=false
+Categories=Development;IDE;
+# Qt takes WM_CLASS from the executable name, so this is what the running window
+# reports. Without it the taskbar shows a second, iconless entry when zxide is open
+# instead of highlighting the launcher you started it from.
+StartupWMClass=zxide
+StartupNotify=true
+Keywords=ZX;Spectrum;Z80;assembler;emulator;retro;8-bit;

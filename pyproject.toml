@@ -24,6 +24,11 @@ dependencies = [
 dev = [
     "pytest>=7.0",
 ]
+# Packaging zxide as a standalone app (build/build.ps1, build/build.sh). Needed only
+# to produce a release build, never to run from source -- see build/README.md.
+build = [
+    "pyinstaller>=6.0",
+]
 
 # Flat layout: packages live at the repo root; main.py is a top-level entry script.
 [tool.setuptools]

@@ -3,8 +3,9 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
-build/
 dist/
+build/lib/
+build/bdist*/
 .venv/
 venv/
 .mypy_cache/
@@ -27,8 +28,25 @@ dev-support/ZEXALL-main/
 dev-support/*.png
 dev-support/*.txt
 
+# Media written by the Screenshot and Record buttons when no project is open
+screenshots/
+recordings/
+
 # Per-user saved window layout (written by "Save layout")
 layout.json
 
 # Per-user app settings (auto-created; holds machine-specific paths)
 settings.json
+
+# Standalone builds: the shipped bundle and PyInstaller's scratch state. The build
+# scripts and spec in build/ are tracked; only what they generate is not.
+# Note the `release/*` form rather than `release/`: git never looks inside a directory
+# it has excluded, so the exceptions below would be dead rules under `release/`.
+release/*
+build/work/
+
+# ...because a packed release archive is meant to be committed, unlike the loose
+# build it was made from. No `git add -f` needed.
+!release/*.7z
+!release/*.zip
+!release/*.tar.gz

@@ -1105,6 +1105,50 @@ because why they were made the first way is worth keeping.*
   than `sel:`/`file:` -- because which of the two it is decides how to read every number
   after it, and the abbreviation was quiet enough that the meter looked like it simply
   never followed the selection.
+- **Hover help in the editor** (`zxemu_core/debug/asm_help.py`): what an instruction is
+  *for*, in one line, plus the flags it disturbs, priced through `asm_meter`'s tables so
+  the cost shown is that of the operand form actually written (`ld a,(hl)` is 7 T,
+  `ld a,(ix+d)` is 19) rather than a range covering every form of the mnemonic. The whole
+  *line* is looked up rather than the token under the pointer: hovering the `(hl)` in
+  `ld a,(hl)` is asking the same question as hovering the `ld`, and being precise about
+  which character you touched would read as broken rather than as exact. Directives get
+  the same treatment as instructions, on the grounds that they are what a beginner is
+  least sure of. Flag notes name *which* flags change, not the condition each changes
+  under -- that belongs in a reference book; the tooltip's job is to stop you assuming a
+  flag survived an instruction when it didn't.
+- **`equ` constants in the hover text** (`zxemu_core/debug/asm_symbols.py`): reading
+  `ld hl,SCREEN_ADDR` tells you nothing about where that write lands, and the answer is
+  usually two files away in a constants include. Any constant a line names is now appended
+  to that line's help -- `SCREEN_ADDR = 16384 ($4000) · consts.asm` -- with the working
+  shown when it was derived from other constants, and the origin file named only when it
+  wasn't this one. A line that holds *no* instruction (a macro invocation, a bare `equ`
+  definition) now gets a tooltip where it previously got nothing, because there the value
+  is the entire answer.
+
+  It reads **source, not a build**, which is the decision the rest follows from: the
+  values have to be there while you type, before anything assembles, and for a file that
+  never assembles cleanly at all. So the scan follows `include` directives itself
+  (depth-limited, cycle-safe) through a reader the editor supplies rather than going
+  straight to disk -- an include open in another tab answers with what is *on screen*,
+  since showing the saved value moments after you changed it is worse than showing none.
+  Expressions are evaluated by rewriting assembler notation (`$4000`, `%1010`, `0FFh`,
+  `'A'`) into Python and walking the parse tree by hand over a whitelist of operators;
+  nothing is executed, and an expression using anything outside that whitelist yields no
+  value rather than a clever guess. Forward and mutual references resolve, self-reference
+  gives up instead of recursing.
+
+  The honest-uncertainty theme of the `debug/` package applies here too: `equ $`, macro
+  arguments and unknown names show their *expression* instead of a value, because a
+  constant confidently reported as the wrong number is exactly the kind of help that sends
+  you looking in the wrong place. Label addresses are deliberately **not** answered from
+  here -- where code landed is a fact about a build, and `workspace/sld.py` already holds
+  it; source text can only say what a constant was set to.
+
+  Cached per document revision and rebuilt lazily on hover rather than on every keystroke:
+  the scan is cheap, but typing is the one thing in an editor that must never wait, and
+  nothing reads the table until a tooltip is actually asked for. Saving any tab drops
+  every tab's cache, since an include's value may have just moved and nobody else's
+  document changed.
 
 ## Milestone 5: Visual Logic (design, not yet started)
 
