@@ -209,8 +209,12 @@ class MemoryPlanWindow(QDialog):
 
         used = sum(claim.length for claim in self._plan.claims if claim.bank)
         conflicts = len(self._plan.conflicts)
-        self._summary.setText("{} blocks in {} banks · {} used · {}".format(
-            len(self._plan.claims), shown, _size_text(used),
+        # Which program this is a plan of, first: a project holds several buildable sources
+        # (the game, and a test of one part of it) with entirely different memory maps, and
+        # a plan that doesn't name its entry point is a map with no "you are here".
+        entry = " · ".join(getattr(self._plan, "entries", []) or ["no source"])
+        self._summary.setText("{} · {} blocks in {} banks · {} used · {}".format(
+            entry, len(self._plan.claims), shown, _size_text(used),
             "no conflicts" if not conflicts else "{} conflict(s)".format(conflicts)))
 
     def conflicting_names(self) -> set:

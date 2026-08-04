@@ -58,6 +58,10 @@ class MemoryPlan:
     bad_annotations: list[str] = field(default_factory=list)  # `; zxide:` lines that made no sense
     missing_binaries: list[str] = field(default_factory=list)  # `incbin`s whose file is not there
     built: bool = False                                   # whether an .sld was available
+    # Which source this plan is a plan *of*. A project has more than one program in it --
+    # the game, and a test that exercises one part of it -- and they have different memory
+    # maps, so a plan that doesn't say which one you are looking at is ambiguous.
+    entries: list[str] = field(default_factory=list)
 
     @property
     def claims(self) -> list[Region]:
@@ -90,8 +94,19 @@ def entry_points(project, main=None) -> list[str]:
     wrote, so this agrees with what the assembler is being asked to do rather than guessing
     from filenames. A real project hit exactly this: a manifest still saying ``main.asm``
     beside a source tree whose entry point had been renamed.
+
+    The caller's file has to pass that same buildable test, and this is the one place that
+    decides it. A project holds two kinds of ``.asm``: the few you can point an assembler
+    at, and the many that only make sense ``include``d by one of them. Scanning an include
+    on its own would draw a plan of one file -- technically true, and a lie about the
+    project, since every block the rest of the tree places would simply be absent. So a
+    focused ``tests/sound_test.asm`` moves the whole plan onto that program (which is the
+    point: it is a different program, with its own memory map), while a focused
+    ``core/audio/music.asm`` leaves the plan showing whatever the project last had.
     """
-    for candidate in (main, project.load_manifest().get("main", "main.asm")):
+    candidates = [main if main and snapshot_from_source(project.folder / main) else None,
+                  project.load_manifest().get("main", "main.asm")]
+    for candidate in candidates:
         if candidate and (project.folder / candidate).is_file():
             return [candidate]
     return sorted(path.name for path in project.folder.glob("*.asm") if snapshot_from_source(path))
@@ -112,6 +127,7 @@ def build_plan(project, read_source=None, main=None) -> MemoryPlan:
         text = reader(str(project.folder / entry))
         if text is None:
             continue
+        plan.entries.append(entry)
         result = asm_layout.scan(
             text, project.model, origin=entry, base_dir=project.folder,
             read_source=reader, file_size=_disk_size,

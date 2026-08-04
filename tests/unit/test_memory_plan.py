@@ -139,6 +139,28 @@ def test_sld_extension_is_clamped_to_the_next_region(tmp_path, monkeypatch):
     assert first.length == 0x100  # not 9999, which would swallow `second`
 
 
+def test_the_plan_follows_the_source_you_would_build(tmp_path):
+    """A test program in tests/ has its own memory map, and running it moves the plan onto it."""
+    project = _project(tmp_path, "    org $8000\ngame:\n    ret\n")
+    (project.folder / "main.asm").write_text('    org $8000\ngame:\n    ret\n    savesna "main.sna", game\n', encoding="utf-8")
+    (project.folder / "tests").mkdir()
+    (project.folder / "tests" / "sound_test.asm").write_text('    org $9000\nsound:\n    ds 8\n    savesna "sound_test.sna", sound\n', encoding="utf-8")
+
+    plan = build_plan(project, main="tests/sound_test.asm")
+    assert [(region.name, region.address) for region in plan.regions] == [("sound", 0x9000)]
+    assert plan.entries == ["tests/sound_test.asm"]
+
+
+def test_an_include_you_are_editing_does_not_become_the_plan(tmp_path):
+    """It has no savesna, so it is not a program -- scanning it alone would hide the rest."""
+    project = _project(tmp_path, '    org $8000\ngame:\n    ret\n    include "part.asm"\n    savesna "main.sna", game\n')
+    (project.folder / "part.asm").write_text("    org $9000\npart:\n    ds 4\n", encoding="utf-8")
+
+    plan = build_plan(project, main="part.asm")
+    assert [region.name for region in plan.regions] == ["game", "part"]
+    assert plan.entries == ["main.asm"]
+
+
 def test_a_missing_main_source_gives_an_empty_plan(tmp_path):
     project = Project.create(tmp_path / "p", "P", "48k")
     (project.folder / "main.asm").unlink()

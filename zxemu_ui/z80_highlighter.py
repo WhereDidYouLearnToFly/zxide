@@ -36,7 +36,7 @@ _MNEMONICS = (
 # Common sjasmplus directives / pseudo-ops.
 _DIRECTIVES = (
     "org device end include incbin equ db dw dd ds defb defw defs defm dc dz byte "
-    "word align assert macro endm module endmodule struct proc endp savesna savetap "
+    "word align assert macro endm module endmodule endmod struct proc endp savesna savetap "
     "savebin savehob output emptytap savesld page slot mmu dup edup rept endr repeat "
     "block if else endif ifdef ifndef define undefine export lua endlua"
 ).split()

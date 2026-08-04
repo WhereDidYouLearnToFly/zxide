@@ -33,6 +33,17 @@ def test_module_names_the_region_in_either_order():
     assert before[0].name == "Player"
 
 
+def test_endmod_closes_a_module_like_endmodule():
+    """sjasmplus' short spelling, which vendored third-party players are written with.
+
+    Missing it is not a cosmetic gap: the module stack never unwinds, so every ``org``
+    for the rest of the project inherits the name of whatever was included -- a plan
+    showing seven blocks all called PTS, one per file that followed the player.
+    """
+    source = "    MODULE PTS\n    org $8400\n    ret\n    ENDMOD\n    org $9000\nafter:\n    ret\n"
+    assert [region.name for region in _scan(source).regions] == ["PTS", "after"]
+
+
 def test_nested_modules_join_with_dots():
     source = "    MODULE Game\n    MODULE Sprites\n    org $9000\n    ret\n    ENDMODULE\n    ENDMODULE\n"
     assert _scan(source).regions[0].name == "Game.Sprites"

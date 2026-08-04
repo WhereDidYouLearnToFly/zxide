@@ -88,7 +88,7 @@ def _index(text, path, table, base, reader, seen, depth) -> None:
         head = statements[0] if statements else ""
         mnemonic = head.split(None, 1)[0].lower() if head else ""
 
-        if mnemonic == "endmodule" and modules:
+        if mnemonic in asm_meter.MODULE_CLOSE and modules:
             modules.pop()
             continue
         module_match = _MODULE.match(head) if head else None

@@ -471,7 +471,11 @@ class MainWindow(QMainWindow):
         if self.project is None:
             self._plan = MemoryPlan()
             return
-        self._plan = build_plan(self.project, self.editor.source_reader())
+        # The plan is a plan of whatever F5 would assemble, which is the file you have open
+        # -- so running a test from tests/ moves the map onto that test's memory, not the
+        # game's. `entry_points` decides what counts as something to scan from; an include
+        # you happen to be editing is not one, and leaves the plan where it was.
+        self._plan = build_plan(self.project, self.editor.source_reader(), self._compile_target())
         self._on_plan_refreshed(self._plan)
         if self._memory_plan_window is not None:
             self._memory_plan_window.set_plan(self._plan, self.project.model, self._movable_regions())
@@ -2266,7 +2270,7 @@ class MainWindow(QMainWindow):
             path = self.editor.current_path()
             text = reader(path) if path else None
             return asm_defs.collect(text or "", path or "", Path(path).parent if path else None, reader)
-        for entry in entry_points(self.project):
+        for entry in entry_points(self.project, self._compile_target()):
             path = str(self.project.folder / entry)
             text = reader(path)
             if text is not None:

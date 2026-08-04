@@ -342,6 +342,17 @@ def instruction_cost(mnemonic: str, operands: list[str]) -> tuple[int, int, int]
 
 # --- directives --------------------------------------------------------------------------
 
+#: Every spelling that closes a ``MODULE``. Public, and shared, because three modules track
+#: the module stack (this one prices the directive, ``asm_defs`` indexes the names it makes,
+#: ``asm_layout`` names regions after it) and a stack that closes in one of them but not the
+#: others is worse than one that never closes at all: the region names, the label prefixes
+#: and the byte counts would then disagree about which module the source is in.
+#:
+#: ``ENDMOD`` is sjasmplus' documented short form, and vendored third-party code uses it --
+#: a player written for the original SjASM, dropped into a project, closes with ``ENDMOD``.
+#: Missing it made every region after such an include inherit that player's module name.
+MODULE_CLOSE = frozenset({"endmodule", "endmod"})
+
 # Directives that emit no bytes of their own. Listed rather than inferred so that anything
 # *not* here is reported as unknown instead of silently counting as zero -- a meter that
 # quietly ignores what it doesn't understand is worse than one that says so.
@@ -349,7 +360,7 @@ _NO_SIZE_DIRECTIVES = frozenset(
     {
         "org", "equ", "=", "defl", "include", "incdir", "device", "end", "assert", "display",
         "output", "page", "slot", "align", "macro", "endm", "mend", "endmacro", "rept", "endr",
-        "dup", "edup", "module", "endmodule", "struct", "ends", "if", "ifdef", "ifndef", "ifn",
+        "dup", "edup", "module", *MODULE_CLOSE, "struct", "ends", "if", "ifdef", "ifndef", "ifn",
         "ifused", "else", "elseif", "endif", "define", "undefine", "export", "labelslist",
         "savesna", "savebin", "savetap", "savetrd", "savehob", "emptytrd", "emptytap", "cspectmap",
         "sldopt", "lua", "endlua", "shellexec", "opt", "abyte", "textarea", "encoding",

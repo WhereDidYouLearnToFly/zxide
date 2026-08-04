@@ -124,6 +124,7 @@ _DIRECTIVES: dict[str, str] = {
     "endm": "End a macro definition.",
     "module": "Prefix the labels that follow with a module name.",
     "endmodule": "End the module's label prefix.",
+    "endmod": "End the module's label prefix (short form of endmodule).",
     "dup": "Repeat the block that follows N times (edup ends it).",
     "edup": "End a dup block.",
     "rept": "Repeat the block that follows N times (endr ends it).",

@@ -424,7 +424,7 @@ class _Scanner:
             if self.open is not None and not self.open.module:
                 self.open.module = ".".join(self.modules)
             return
-        if mnemonic == "endmodule":
+        if mnemonic in asm_meter.MODULE_CLOSE:
             if self.modules:
                 self.modules.pop()
             return
