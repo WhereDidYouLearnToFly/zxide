@@ -66,7 +66,8 @@ def test_the_documented_shortcuts_are_all_bound(window):
     shortcuts = _shortcuts(window)
     assert shortcuts["F5"] == "Build && Debug"
     assert shortcuts["Ctrl+F5"] == "Build && Run"
-    assert shortcuts["Ctrl+F"] == "&Find in Project…"
+    assert shortcuts["Ctrl+F"] == "&Find…"                      # in this file
+    assert shortcuts["Ctrl+Shift+F"] == "Find in &Project…"     # across the project
     assert shortcuts["Ctrl+G"] == "&Go to Line…"
     assert shortcuts["Ctrl+F10"] == "Run to Cursor"
     assert shortcuts["Ctrl+S"] == "&Save"
@@ -209,7 +210,7 @@ def test_extended_mode_reaches_the_live_machine_and_is_remembered(qapp, window):
 
 def test_the_view_menu_lists_every_dock(window):
     labels = _labels(_menu(window, "&View"))
-    assert len(window._all_docks) == 14
+    assert len(window._all_docks) == 13  # the Memory map dock was dropped for the plan window
     for dock in window._all_docks:
         assert dock.toggleViewAction().text() in labels
 

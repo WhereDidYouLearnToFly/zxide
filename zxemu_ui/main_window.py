@@ -58,15 +58,17 @@ from PyQt5.QtWidgets import (
 
 from zxemu_core.machine import Machine
 from zxemu_core.memlayout import PAGED_MODELS
-from zxemu_core.debug import asm_meter, debug_expr
+from zxemu_core.debug import asm_defs, asm_meter, debug_expr
 from zxemu_core.assets.manifest import AssetKind
 from zxemu_core.assets.native_sprite import blank_sprite, sprite_format, sprite_suffix, suffix_for
 from zxemu_core.assets.beeper_sfx import SUFFIX as BEEPER_SFX_SUFFIX
 from zxemu_core.sound import music_file
-from zxemu_ui.workspace import builder, project_files
+from zxemu_ui.workspace import builder, memory_edit, project_files
+from zxemu_ui.workspace.asset_build import resolve_auto_placements
+from zxemu_ui.workspace.memory_plan import MemoryPlan, build_plan, entry_points
 from zxemu_ui.workspace.settings import detect_tracker_players
 from zxemu_ui.controller import EmulatorController
-from zxemu_ui.editor import EditorArea
+from zxemu_ui.editor import EditorArea, FindBar
 from zxemu_ui.gamepad import GamepadSource
 from zxemu_ui.panels.emulator_panel import EmulatorPanel
 from zxemu_ui.panels.ay_player_view import AyPlayerView
@@ -84,7 +86,7 @@ from zxemu_ui.panels.call_stack_view import CallStackView
 from zxemu_ui.panels.disassembly_view import DisassemblyView
 from zxemu_ui.panels.disk_view import DiskView
 from zxemu_ui.panels.memory_cells_view import MemoryCellsView
-from zxemu_ui.panels.memory_map_view import MemoryMapView
+from zxemu_ui.panels.memory_plan_window import MemoryPlanWindow
 from zxemu_ui.panels.output_console import OutputConsole
 from zxemu_ui.workspace.dump_project import dump_to_project
 from zxemu_ui.workspace.project import ASM_SUFFIXES, SOURCE_SUFFIXES, Project, is_text_file
@@ -199,6 +201,13 @@ class MainWindow(QMainWindow):
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(0)
         column.addWidget(self.editor, 1)
+        # The find bar lives between the text and the meter, hidden until Ctrl+F.
+        self.find_bar = FindBar()
+        self.find_bar.hide()
+        self.find_bar.search_changed.connect(self._on_find_changed)
+        self.find_bar.step.connect(self._on_find_step)
+        self.find_bar.closed.connect(self._close_find_bar)
+        column.addWidget(self.find_bar)
         column.addWidget(self._build_asm_meter())
         self.setCentralWidget(central)
 
@@ -219,7 +228,6 @@ class MainWindow(QMainWindow):
         self.disk.write_protect_changed.connect(
             lambda drive, protected: self._set_disk_write_protect(protected, drive))
         self.registers = RegistersView(machine)
-        self.memory_map = MemoryMapView(machine)
         self.inspector = InspectorView()
         self.sprite_editor = SpriteEditorView()
         self.beeper_sfx_editor = BeeperSfxEditorView()
@@ -227,6 +235,8 @@ class MainWindow(QMainWindow):
         # two are independent streams, and previewing a tune must not fight the machine you
         # are debugging for the sound device -- or fall silent whenever it is paused.
         self._tracker_players = []  # found per project, see _refresh_tracker_players
+        self._memory_plan_window = None  # created on first open (View ▸ Memory plan…)
+        self._plan = MemoryPlan()       # the last scan; see _refresh_memory_plan
         self.music_player = AyPlayerView(_music_audio_sink())
         self.music_player.on_locate_player = self._adopt_tracker_player
         self.output_console = OutputConsole()
@@ -257,16 +267,12 @@ class MainWindow(QMainWindow):
         self.controller.frame_ready.connect(self.memory_cells.refresh)
         self.controller.frame_ready.connect(self.disassembly.refresh)
         self.controller.frame_ready.connect(self.call_stack.refresh)
-        self.controller.frame_ready.connect(self.memory_map.refresh)
         self.controller.status_changed.connect(self.statusBar().showMessage)
         self.controller.breakpoint_hit.connect(self._on_breakpoint_hit)
         self.controller.watchpoint_hit.connect(self._on_watchpoint_hit)
         # Double-clicking an analysis result should take you to the code it names.
         self.analysis.address_activated.connect(self._disasm_goto)
-        # Clicking a placed asset in the Design-mode memory map shows it in the Inspector.
-        self.memory_map.asset_selected.connect(self._on_asset_selected)
-        # A file dropped onto the Design-mode map becomes an asset -- the tree badges it.
-        self.memory_map.assets_changed.connect(self._assets_changed)
+        self.editor.definition_requested.connect(self._go_to_definition)
         self.emulator_panel.screenshot_requested.connect(self._save_screenshot)
         self.emulator_panel.record_requested.connect(self._start_recording)
         self.emulator_panel.stop_record_requested.connect(self._stop_recording)
@@ -361,7 +367,6 @@ class MainWindow(QMainWindow):
         self.memory_cells.refresh(force=True)
         self.disassembly.refresh(force=True)
         self.call_stack.refresh(force=True)
-        self.memory_map.refresh()
         self.disk.refresh()
 
     @staticmethod
@@ -376,11 +381,10 @@ class MainWindow(QMainWindow):
 
     def _apply_default_sizes(self) -> None:
         h = self.height()
-        # Right column: give the emulator the lion's share; keep registers compact,
-        # sitting just above the memory map.
+        # Right column: the emulator takes the lion's share, registers stay compact.
         self.resizeDocks(
-            [self._emulator_dock, self._registers_dock, self._memmap_dock],
-            [int(h * 0.55), int(h * 0.15), int(h * 0.30)],
+            [self._emulator_dock, self._registers_dock],
+            [int(h * 0.8), int(h * 0.2)],
             Qt.Vertical,
         )
         # Left column: project tree gets more room than the inspector.
@@ -437,20 +441,198 @@ class MainWindow(QMainWindow):
             return
         self.inspector.show_path(self.project, self.project.relative(path) or path)
 
-    def _on_asset_selected(self, asset_id: str) -> None:
-        """A placed asset was clicked in the Design-mode memory map."""
-        if self.project is not None:
-            self.inspector.show_asset_id(self.project, asset_id)
+    def open_memory_plan_window(self) -> None:
+        """Show the memory plan as a window: every bank, one uniform row per block.
+
+        A separate window rather than another dock, because the dock will never be wide
+        or tall enough -- and because a 128K project can put bytes in eight banks, while
+        the dock's to-scale map can only draw the four currently paged in.
+        """
+        if self._memory_plan_window is None:
+            self._memory_plan_window = MemoryPlanWindow(self)
+            self._memory_plan_window.region_activated.connect(self._on_region_activated)
+            self._memory_plan_window.region_moved.connect(self._on_region_moved)  # (region, address, bank)
+            self._memory_plan_window.attribute_requested.connect(self._set_region_attribute)
+            self._memory_plan_window.refresh_requested.connect(self._refresh_memory_plan)
+            self._memory_plan_window.arrange_requested.connect(self._arrange_memory)
+            self._memory_plan_window.auto_locate_requested.connect(self._auto_locate_assets)
+        self._refresh_memory_plan()
+        self._memory_plan_window.show()
+        self._memory_plan_window.raise_()
+
+    def _refresh_memory_plan(self) -> None:
+        """Re-read the project's sources, report what that found, and update the window.
+
+        Runs when you ask for it (the window's Refresh), when a project opens, when the
+        asset list changes, and after a build -- never on a keystroke. Reading goes through
+        the editor, so a scan sees the ``org`` you just typed rather than the one you last
+        saved.
+        """
+        if self.project is None:
+            self._plan = MemoryPlan()
+            return
+        self._plan = build_plan(self.project, self.editor.source_reader())
+        self._on_plan_refreshed(self._plan)
+        if self._memory_plan_window is not None:
+            self._memory_plan_window.set_plan(self._plan, self.project.model, self._movable_regions())
+
+    def _set_region_attribute(self, region, attribute: str) -> None:
+        """Write (or remove) a `; zxide:` attribute above a block's own ``org``.
+
+        Always in the block's *own* file, next to its ``org`` -- never beside the ``equ``
+        the org points at, even when that is where a move would edit. The constraint is a
+        fact about the code, and ``memmap.i`` holds addresses for a dozen modules.
+        """
+        if self.project is None or not region.origin:
+            self._log("Memory plan: {} has no source file to mark".format(getattr(region, "name", "?")))
+            return
+        path = str(self.project.folder / region.origin)
+        text = self.editor.source_reader()(path)
+        if text is None:
+            self._log("Memory plan: could not read {}".format(region.origin))
+            return
+        change = memory_edit.plan_annotation(text.splitlines(), region.line, attribute or None)
+        if change.empty:
+            return
+        if change.action == "insert":
+            self.editor.insert_lines(path, change.line, [change.text])
+        elif change.action == "replace":
+            self.editor.replace_line(path, change.line, change.text)
+        else:
+            self.editor.delete_line(path, change.line)
+        self._log("Memory plan: {} is now {} ({}:{})".format(
+            region.name, attribute or "unconstrained", region.origin, region.line))
+        self._refresh_memory_plan()
+
+    def _movable_regions(self) -> dict:
+        """``{id(region): region}`` for the blocks whose address traces to one editable line.
+
+        The symbol table is built once here rather than per block: resolving ``org Attributes``
+        means reading the whole include tree, and doing that eleven times over is eleven
+        times the work for the same answer.
+        """
+        if self.project is None:
+            return {}
+        reader = self.editor.source_reader()
+        symbols = memory_edit.symbol_table(self.project, reader)
+        movable = {}
+        for region in self._plan.regions:
+            try:
+                memory_edit.anchor_for(self.project, region, reader, symbols)
+            except memory_edit.NotMovable:
+                continue
+            movable[id(region)] = region
+        return movable
+
+    def _arrange_memory(self) -> None:
+        """Pack every movable block tight, per bank, in its current order -- button only."""
+        if self.project is None:
+            return
+        self._refresh_memory_plan()
+        movable = self._movable_regions()
+        moves = memory_edit.arrange(self._plan.regions, set(movable))
+        for region_id, address in sorted(moves.items(), key=lambda item: item[1]):
+            region = movable[region_id]
+            self._on_region_moved(region, address, region.bank)
+        self._refresh_memory_plan()
+
+    def _auto_locate_assets(self) -> None:
+        """Give every asset still marked ``"auto"`` a home, clear of the code the scan found."""
+        if self.project is None:
+            return
+        self._refresh_memory_plan()
+        resolve_auto_placements(self.project, self._plan.occupied())
+        self._assets_changed()
+
+    def _on_region_activated(self, origin: str, line: int) -> None:
+        """A scanned code region was clicked -- open the source line its ``org`` sits on."""
+        if self.project is None:
+            return
+        path = Path(origin)
+        self.editor.goto_line(str(path if path.is_absolute() else self.project.folder / origin), line)
+
+    def _on_region_moved(self, region, address: int, bank: str = "") -> None:
+        """A block was dragged (or arranged) somewhere else -- move it in the source.
+
+        Usually one line: the ``equ`` its ``org`` names, or the ``org`` itself. Moving it
+        into a different bank adds a second, smaller edit -- the ``SLOT``/``PAGE`` pair
+        above the ``org`` -- because that is what decides which bank the assembler puts
+        the bytes in. Both go through the editor, so the file opens where it changed and
+        Ctrl+Z takes it back; nothing is written to disk until you save.
+
+        Order matters: the address line is rewritten first, while the line numbers from
+        the scan are still true, and only then are lines inserted above the ``org``.
+        """
+        if self.project is None:
+            return
+        reader = self.editor.source_reader()
+        try:
+            anchor = memory_edit.anchor_for(self.project, region, reader)
+            replacement = memory_edit.rewrite(self._line_at(reader, anchor.path, anchor.line, anchor.display), anchor, address)
+        except memory_edit.NotMovable as exc:
+            self._log("Memory map: can't move {} -- {}".format(region.name, exc))
+            return
+        if not self.editor.replace_line(anchor.path, anchor.line, replacement):
+            self._log("Memory map: could not edit {}".format(anchor.display))
+            return
+        self._log("Memory map: {} ${:04X} -> ${:04X}  ({})".format(region.name, region.address, address, anchor.display))
+        if bank and bank != region.bank:
+            self._rebank(region, bank, reader)
+        self._refresh_memory_plan()
+
+    def _line_at(self, reader, path: str, line: int, display: str) -> str:
+        text = reader(path)
+        if text is None:
+            raise memory_edit.NotMovable("cannot read {}".format(display))
+        lines = text.splitlines()
+        if not 0 < line <= len(lines):
+            raise memory_edit.NotMovable("{} has no line {}".format(display, line))
+        return lines[line - 1]
+
+    def _rebank(self, region, bank: str, reader) -> None:
+        """Put ``SLOT``/``PAGE`` above the block's ``org`` so it assembles into ``bank``."""
+        path = str(self.project.folder / region.origin)
+        text = reader(path)
+        if text is None:
+            self._log("Memory map: moved the address, but could not open {} to set its bank".format(region.origin))
+            return
+        change = memory_edit.plan_bank_change(text.splitlines(), region.line, bank, self.project.model)
+        if change.empty:
+            return
+        for line, replacement in change.edits:
+            self.editor.replace_line(path, line, replacement)
+        if change.inserted:
+            self.editor.insert_lines(path, change.insert_at, change.inserted)
+        self._log("Memory map: {} now assembles into {} ({}:{})".format(region.name, bank.upper(), region.origin, region.line))
+        self._log("           the program must page {} in before running that code -- SLOT/PAGE only place the bytes.".format(bank.upper()))
+
+    def _on_plan_refreshed(self, plan) -> None:
+        """Report what a rescan found that the map alone can't say: overlaps, missing includes.
+
+        Logged rather than shown as a dialog, and never blocking: an overlap can be
+        deliberate (two routines that are never resident at once), so this is the map
+        telling you what it noticed, not the IDE refusing to proceed.
+        """
+        for path in plan.missing_includes:
+            self._log("Memory map: could not read include \"{}\" -- region sizes past it are estimates.".format(path))
+        # An attribute that didn't parse is worse than one that isn't there: you would
+        # believe a block was pinned while Arrange was free to move it. Say so loudly.
+        for name in plan.missing_binaries:
+            self._log("Memory plan: cannot measure incbin \"{}\" -- its block is sized as an estimate.".format(name))
+        for bad in plan.bad_annotations:
+            self._log("Memory map: ignored a zxide attribute it could not read -- {}".format(bad))
+        for conflict in plan.conflicts:
+            self._log("Memory map: {}".format(conflict.describe()))
 
     def _assets_changed(self) -> None:
-        """The manifest's asset list changed -- re-badge the tree and redraw the map.
+        """The manifest's asset list changed -- re-badge the tree and redraw the plan.
 
         One method rather than two calls at each of the five sites that can change it
         (new sprite, new SFX, imported sequence, dropped file, deleted file), so a sixth
         can't forget half of the update.
         """
         self._fs_model.refresh_assets()
-        self.memory_map.refresh()
+        self._refresh_memory_plan()
 
     # --- the Z80 assembly meter -------------------------------------------------
 
@@ -539,7 +721,7 @@ class MainWindow(QMainWindow):
         self._fs_model.setRootPath(str(folder))
         self._fs_model.set_project(self.project)  # badge this project's assets in the tree
         self.project_tree.setRootIndex(self._fs_model.index(str(folder)))
-        self.memory_map.set_project(self.project)
+        self._refresh_completions()
         self.setWindowTitle("zxide — {}".format(self.project.name))
         self.settings.set("last_project", str(folder))
         self.settings.push_recent("recent_projects", str(folder))
@@ -565,7 +747,6 @@ class MainWindow(QMainWindow):
         self.call_stack.machine = machine
         self.analysis.machine = machine
         self.registers.machine = machine
-        self.memory_map.machine = machine
         self.disk.set_machine(machine)
         self.debug.machine = machine  # conditions are validated against the live machine
         # A fresh machine comes with the defaults, not with your deck settings; re-apply
@@ -1043,6 +1224,10 @@ class MainWindow(QMainWindow):
             self._log("Build succeeded, but no snapshot was produced.")
             return
         self.debug.debugging = debug
+        # A build is the one moment the map can stop guessing: the .sld it just wrote says
+        # what the assembler really emitted, so rescan while that is fresh.
+        self._refresh_memory_plan()
+        self._refresh_completions()
         self._load_source_map(result.sld)  # source lines <-> addresses
         self._sync_breakpoints()            # applied only when debugging
         if self._load_snapshot(result.snapshot):
@@ -1609,13 +1794,11 @@ class MainWindow(QMainWindow):
         self._inspector_dock = self._make_dock("Inspector", self.inspector, "inspectorDock")
         self.splitDockWidget(self._project_dock, self._inspector_dock, Qt.Vertical)
 
-        # Right column, top-to-bottom: emulator, registers, memory map.
+        # Right column, top-to-bottom: emulator, then registers.
         self._emulator_dock = self._make_dock("Emulator", self.emulator_panel, "emulatorDock")
         self.addDockWidget(Qt.RightDockWidgetArea, self._emulator_dock)
         self._registers_dock = self._make_dock("Registers", self.registers, "registersDock")
         self.splitDockWidget(self._emulator_dock, self._registers_dock, Qt.Vertical)
-        self._memmap_dock = self._make_dock("Memory map", self.memory_map, "memmapDock")
-        self.splitDockWidget(self._registers_dock, self._memmap_dock, Qt.Vertical)
 
         # The Memory (hex) panel is tall and would squeeze the emulator, so it starts
         # detached (a floating window) and hidden -- give the machine column its room.
@@ -1689,7 +1872,7 @@ class MainWindow(QMainWindow):
 
         self._all_docks = [
             self._project_dock, self._inspector_dock, self._emulator_dock,
-            self._memory_dock, self._registers_dock, self._memmap_dock,
+            self._memory_dock, self._registers_dock,
             self._disasm_dock, self._callstack_dock, self._analysis_dock,
             self._sprite_editor_dock, self._beeper_sfx_editor_dock, self._music_dock,
             self._disk_dock, self._output_dock,
@@ -2037,13 +2220,97 @@ class MainWindow(QMainWindow):
 
     # --- find / go to line -----------------------------------------------------
 
-    def _find_in_project(self) -> None:
-        """Ctrl+F: search every text file in the project, results into Output.
+    def _go_to_definition(self, name: str = "") -> None:
+        """F12: jump to where the name under the caret is defined.
 
-        Project-wide rather than within-file on purpose: a Z80 project is a dozen small
-        included files, so "where is this label used" is nearly always a question about
-        the project, and the answer is only useful if it takes you to the line -- hence
-        clickable results rather than a printed list.
+        Indexed from the project's entry point down, so a label in one of a dozen includes
+        is found from anywhere -- and read through the editor, so a definition you have
+        typed but not saved counts. One hit jumps; several are listed in Output as links,
+        because two files defining the same label is a fact about the project, not an
+        ambiguity for the IDE to resolve by guessing.
+        """
+        name = name or self.editor.name_at_cursor()
+        if not name:
+            self._log("Go to definition: put the caret on a label, constant or macro first.")
+            return
+        table = self._definitions()
+        hits = asm_defs.find(name, table)
+        if not hits:
+            self._log("Go to definition: no definition of '{}' in this project.".format(name))
+            return
+        if len(hits) == 1:
+            self.editor.goto_line(hits[0].path, hits[0].line)
+            return
+        self._reveal_dock(self._output_dock)
+        self._log("── '{}' is defined in {} places ──".format(name, len(hits)))
+        for hit in hits:
+            self.output_console.append_link(hit.path, hit.line, "{}  {}".format(hit.kind, hit.text))
+
+    def _refresh_completions(self) -> None:
+        """Hand the editor every name this project defines, for Ctrl+Space completion.
+
+        Rebuilt at the moments a project's names actually change -- opening it, and after
+        a build -- rather than while typing. A completion list one edit out of date costs
+        you nothing; a scan of the include tree per keystroke would cost you the editor.
+        """
+        entries = []
+        for definitions in self._definitions().values():
+            for definition in definitions:
+                entries.append((definition.name, "{} — {}:{}".format(definition.kind, definition.origin, definition.line)))
+        self.editor.set_completions(sorted(set(entries)))
+
+    def _definitions(self) -> dict:
+        """Every name the project defines, from its entry point down."""
+        reader = self.editor.source_reader()
+        if self.project is None:
+            path = self.editor.current_path()
+            text = reader(path) if path else None
+            return asm_defs.collect(text or "", path or "", Path(path).parent if path else None, reader)
+        for entry in entry_points(self.project):
+            path = str(self.project.folder / entry)
+            text = reader(path)
+            if text is not None:
+                return asm_defs.collect(text, path, self.project.folder, reader)
+        return {}
+
+    def _find_in_document(self) -> None:
+        """Ctrl+F: find in the file you are looking at, via the bar under the editor.
+
+        The narrow half of search, and the one that has to be instant: "take me to the
+        next one of these". Seeded with the selection when it is a single word, which is
+        nearly always what you meant by selecting it.
+        """
+        self.find_bar.start(self.editor.selected_text())
+
+    def _on_find_changed(self, query: str, cased: bool) -> None:
+        total = self.editor.set_search(query, cased)
+        self.find_bar.show_count(0, total)
+
+    def _on_find_step(self, forward: bool) -> None:
+        self.editor.set_search(self.find_bar.query(), self.find_bar.case_sensitive())
+        which, total = self.editor.find_next(forward)
+        self.find_bar.show_count(which, total)
+
+    def _find_step_from_key(self, forward: bool) -> None:
+        """F3 / Shift+F3, which work whether or not the bar has focus."""
+        if not self.find_bar.isVisible() or not self.find_bar.query():
+            self._find_in_document()
+            return
+        self._on_find_step(forward)
+
+    def _close_find_bar(self) -> None:
+        """Esc: drop the highlights and put the caret back in the code."""
+        self.editor.clear_search()
+        self.find_bar.hide()
+        if self.editor.currentWidget() is not None:
+            self.editor.currentWidget().setFocus()
+
+    def _find_in_project(self) -> None:
+        """Ctrl+Shift+F: search every text file in the project, results into Output.
+
+        The wide half: "where is this label used" is a question about the whole project,
+        since a Z80 program is a dozen small included files -- and the answer is only
+        useful if it takes you to the line, hence clickable results rather than a list.
         """
         if self.project is None:
             self._log("No project open — Find in Project needs a project folder.")

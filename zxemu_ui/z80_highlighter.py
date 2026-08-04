@@ -23,6 +23,8 @@ from __future__ import annotations
 from PyQt5.QtCore import QRegularExpression
 from PyQt5.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
 
+from zxemu_core.debug.asm_hidden import SUSPECTS
+
 # Z80 instruction mnemonics (including undocumented sll).
 _MNEMONICS = (
     "adc add and bit call ccf cp cpd cpdr cpi cpir cpl daa dec di djnz ei ex exx "
@@ -78,6 +80,11 @@ def _word_regex(words) -> QRegularExpression:
     pattern = r"\b(?:" + "|".join(words) + r")\b"
     return QRegularExpression(pattern, QRegularExpression.CaseInsensitiveOption)
 
+
+
+_INVISIBLE = QTextCharFormat()
+_INVISIBLE.setBackground(QColor("#8c2f39"))
+_INVISIBLE.setToolTip("Invisible character — not valid in assembly source")
 
 class Z80Highlighter(QSyntaxHighlighter):
     """Highlights Z80 assembly in a QTextDocument."""
@@ -136,7 +143,23 @@ class Z80Highlighter(QSyntaxHighlighter):
             self._highlight_asm(text)
             if _LUA_START.match(text).hasMatch():
                 state = _STATE_LUA
+        self._mark_invisible(text)
         self.setCurrentBlockState(state)
+
+
+    def _mark_invisible(self, text: str) -> None:
+        """Paint a red block over any character that shows nothing.
+
+        Last, so it wins over every syntax colour -- the whole point is that it cannot be
+        missed. Applied in both languages and inside strings and comments, because an
+        invisible character is a problem wherever it is, and the one place people assume
+        it is harmless (a comment) is where pasted text usually lands.
+        """
+        if not text:
+            return
+        for column, character in enumerate(text):
+            if character in SUSPECTS:
+                self.setFormat(column, 1, _INVISIBLE)
 
     def _highlight_asm(self, text: str) -> None:
         for regex, fmt in self._rules:

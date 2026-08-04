@@ -479,8 +479,8 @@ def _is_known(mnemonic: str) -> bool:
     )
 
 
-def _statements(line: str) -> list[str]:
-    """One source line -> the statements on it, with any label removed.
+def split_line(line: str) -> tuple[str | None, list[str]]:
+    """One source line -> ``(label, statements)``, the label removed from the statements.
 
     Two label styles have to survive this. ``loop:`` is easy -- it is its own statement
     once the line is split on colons, and a lone word that isn't a mnemonic is a label.
@@ -488,20 +488,47 @@ def _statements(line: str) -> list[str]:
     marks it: the giveaway is that the line starts flush left *and* its first word is not
     a mnemonic, which is exactly the rule an assembler applies too. An indented line is
     never treated that way, so ``    ld a,1`` can't lose its ``ld``.
+
+    The label is *returned* rather than dropped because it names things elsewhere: the
+    memory map calls a region after the label that opens it (``asm_layout``). The meter
+    itself only ever wanted the statements, so it takes the second half via ``_statements``
+    -- one rule, two readers, no chance of the two disagreeing about what a label is.
     """
     body = strip_comment(line)
     stripped = body.strip()
     if not stripped:
-        return []
+        return None, []
 
+    label: str | None = None
     parts = [part.strip() for part in _split_top_level(stripped, ":")]
-    if len(parts) > 1 and parts[0] and " " not in parts[0] and not _is_known(parts[0]):
+    if len(parts) > 1 and parts[0] and " " not in parts[0] and (not _is_known(parts[0]) or _assigns(parts[1])):
+        label = parts[0]
         parts = parts[1:]  # `loop:` and anything after it on the same line
     elif len(parts) == 1 and body[:1] not in (" ", "\t"):
         head, _, rest = stripped.partition(" ")
-        if not _is_known(head):
+        if not _is_known(head) or _assigns(rest):
+            label = head
             parts = [rest.strip()]  # a bare column-zero label; `name equ 5` keeps its `equ`
-    return [part for part in parts if part]
+    return label, [part for part in parts if part]
+
+
+def _assigns(text: str) -> bool:
+    """Does what follows a name make it a *definition* -- ``equ``, ``defl``, ``=``?
+
+    The tie-breaker for a name that also happens to be a directive. ``Text equ $8750``
+    defines a constant called Text; without this it parses as the ``TEXT`` byte directive
+    with one operand and costs a phantom byte. Real projects hit this -- a memory-map
+    include full of ``Name equ $addr`` lines is exactly where names like Text, Screen and
+    Align live, and an assembler reads all of them as labels because a name in front of
+    ``equ`` can be nothing else.
+    """
+    head = text.strip().split(None, 1)[0].lower() if text.strip() else ""
+    return head in ("equ", "defl", "=") or head.startswith("=")
+
+
+def _statements(line: str) -> list[str]:
+    """The statements on one source line, with any label removed -- see :func:`split_line`."""
+    return split_line(line)[1]
 
 
 def measure_statement(statement: str) -> MeterResult:

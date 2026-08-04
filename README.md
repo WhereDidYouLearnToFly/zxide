@@ -299,10 +299,91 @@ Two things can be authored in the IDE rather than imported, and both autosave:
   frequency axis is logarithmic; a linear one would squash everything below 500Hz, which
   is exactly where thuds and rumbles live.
 
-The one honest limit: auto-locate knows where *assets* and the screen live, and reads the
-previous build's SLD to avoid where your code landed last time — so on a project's very
-first build, before any SLD exists, it can still place an asset on top of hand-written
-code. Build twice, or place it by hand.
+Auto-locate places assets clear of your own code as well as of other assets, because it
+reads the memory plan described next.
+
+### The memory plan: your source *is* the map
+
+You already write where things go — `org $8000`, a label, a `MODULE`. Design mode reads
+that back. Press **Refresh** and the map draws one rectangle per region, named after the
+module or label that opens it, behind the asset rectangles. Click one to open the line
+that put it there.
+
+It reads the directives that actually decide layout — `DEVICE`, `org`, `MODULE`,
+`SLOT`/`PAGE`, `include`, `incbin` — through the whole include tree from your build entry
+point, and it resolves `org` operands through your `equ` constants, because a real project
+writes `org AppStart` against a table of addresses rather than a literal. Sizes come from
+the assembly meter; where the last build left an `.sld`, the real figures replace the
+measured ones.
+
+It is a button rather than something that runs as you type. A scan you did not ask for is
+one whose timing you cannot trust — press it when you want the map to catch up. Opening a
+project and finishing a build each scan once, and nothing else does.
+
+**What it admits.** A region whose length it had to guess — an unexpanded macro, a `DUP`
+block, a conditional whose branches it counted blind — is drawn hatched, the same
+convention an asset whose bytes have never been converted already uses. A bare `org $c000`
+on a 128K is drawn in slot 3 but marked as having no known bank, because which of the
+eight sits there depends on a port write no static reader can see. Regions that overlap
+anything else are outlined in red and listed in the Output, never blocked: two routines
+that are never resident at once are a legitimate thing to write.
+
+#### The memory plan window (Ctrl+M)
+
+**View ▸ Memory plan…** opens the plan as its own maximisable window, and that is where
+the rearranging actually happens. The dock's map is drawn *to scale*, which is the right
+picture for watching PC and SP move but the wrong one for editing: a 43-byte routine is
+two pixels of a 16K column, too small to read or aim at. And it draws *slots*, so on a
+128K it can only ever show the four banks paged in at that moment — while your code can
+assemble into any of the eight.
+
+The window gives up on proportion instead. Every block is one row of the same height,
+carrying its name, `$start - $end`, its size, and `(estimate)` when the length is a guess.
+Each run of unclaimed memory is a row of its own saying how much is there and where, so
+"will this fit" is something you read rather than measure. Every bank gets a column —
+including ones nothing is paged into — and empty banks are hidden until you ask for them.
+The header line counts blocks, banks, bytes used and conflicts.
+
+Drag a row onto a gap and the block starts there; drop it on another block and it packs
+flush after it. Both are the same one-line source edit described below. Moving a block to
+a *different bank* is refused for now with a note saying why: which bank bytes assemble
+into is set by `SLOT`/`PAGE` beside the `org`, so it means inserting directives rather
+than changing a number, and doing something structurally different under the same gesture
+would be the wrong kind of surprise.
+
+#### Moving a block
+
+Regions can also be **dragged on the dock's map**. Pick one up, drop it where there is room, and the source moves
+with it — *one line* rewritten:
+
+| what your `org` says | what changes |
+| --- | --- |
+| `org Attributes` | the `Attributes equ $8300` line, wherever it is defined |
+| `org $8181` | that `org` line itself |
+
+The first case is the one that matters. Once a project has more than a few blocks its
+addresses live in one table of `equ`s that every `org` points at — that table *is* the
+memory plan you maintain by hand, and moving a block by editing it keeps the table and the
+code agreeing. Rewriting the `org` instead would leave the table lying.
+
+The rewrite is surgical: only the number changes. Indentation, alignment, the notation
+(`$8300` stays `$8300`, not `0x8300`) and the trailing size comment are left exactly as
+they were, so the diff of a move is one value. And it is applied **through the editor**
+rather than to the file — the tab opens at the changed line, Ctrl+Z undoes it like any
+other edit, and it reaches disk when you save. Anything you had unsaved in that file
+survives.
+
+A drag lands on a 256-byte boundary, or flush against a neighbour's edge when it comes
+close, since packing one block hard against another is the move you make constantly and
+aiming at ~27 bytes per pixel is luck. **Arrange** does that to everything at once: every
+movable block packed tight, per bank, in its current order. It runs only when pressed —
+nothing here ever moves your code on its own — and it edits one line per block, so undoing
+it is one Ctrl+Z per block.
+
+A block is movable when its address traces to exactly one line. One org'd to an expression
+(`Base + 32`), or to a name whose definition can't be found, is drawn like any other and
+stays put; the Output says which and why, rather than the IDE editing a line it only
+half-understood.
 
 ### Reversing someone else's program
 

@@ -24,8 +24,19 @@ Watching the machine:
                         than building a second renderer, so nothing is disturbed.
     registers_view.py   Registers and flags, a T-state read-out, and click-to-edit.
     memory_cells_view.py  Hex dump, with a Poke field to write bytes back.
-    memory_map_view.py  Bank-oriented overview with PC/SP markers and 128K paging --
-                        and, in Design mode, drag-and-drop asset placement.
+    memory_plan_window.py
+                        Where everything lands, as a maximisable *window* rather than a
+                        dock, and deliberately **not** to scale: one uniform row per
+                        block carrying its name, start-end and size as text, with the
+                        free space between them spelled out, and a column per bank.
+                        There was a to-scale dock version of this first; it was dropped
+                        because neither of its two ideas survived contact with a real
+                        project. Proportional drawing makes a 43-byte routine two pixels
+                        of a 16K column -- unreadable and unclickable, which is most of
+                        what a program is made of. And its columns were *slots*, so a
+                        128K project spread across more than four banks was half
+                        invisible, when where bytes are assembled has nothing to do with
+                        what the CPU can see this instant.
     disassembly_view.py Code around PC, decoded, with ROM and project labels.
     call_stack_view.py  The inferred chain of callers.
     analysis_view.py    Results of whole-program queries (search, xrefs, coverage).

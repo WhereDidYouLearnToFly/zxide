@@ -135,22 +135,47 @@ def display_length(project, entry) -> tuple[int, bool]:
     return PLACEHOLDER_LENGTH, True
 
 
-def resolve_auto_placements(project) -> None:
+def _merge(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Union overlapping/abutting ``(offset, length)`` ranges into disjoint ones.
+
+    Needed because the ranges seeding the free-space index come from two sources that
+    describe the same bytes differently -- the last build's SLD and a scan of the source.
+    Feeding them in raw would have the second ``place`` of an overlapping pair rejected
+    *whole*, quietly leaving the part it covered beyond the first looking free.
+    """
+    merged: list[tuple[int, int]] = []
+    for offset, length in sorted(ranges):
+        if merged and offset <= merged[-1][0] + merged[-1][1]:
+            start, existing = merged[-1]
+            merged[-1] = (start, max(existing, offset + length - start))
+        else:
+            merged.append((offset, length))
+    return merged
+
+
+def resolve_auto_placements(project, occupied: dict[str, list[tuple[int, int]]] | None = None) -> None:
     """Place every ``"auto"`` asset into the first free space that fits it.
 
     Shared by the memory map's "Auto-locate" button and every build, so a project
     always builds even if you forgot to click the button -- the button is a way to
     *see* where things land before building, not the only way they get placed.
 
-    Also avoids the previous build's known hand-written-code addresses (see
-    ``reserved_code_ranges``) -- best-effort and slot-limited, but it directly closes
-    the collision this project hit twice in practice: a freshly imported asset's
-    auto-located "first free byte" landing exactly on a template's own ``org $8000``.
+    Also avoids memory that is already spoken for. Two sources say so, and both are used:
+    the previous build's addresses (``reserved_code_ranges``, exact but only after a
+    build), and whatever the caller passes as ``occupied`` -- in practice
+    ``memory_plan.MemoryPlan.occupied()``, a scan of the source that works on a project
+    which has never been built. Between them they close the collision this project hit
+    twice in practice: a freshly imported asset's auto-located "first free byte" landing
+    exactly on a template's own ``org $8000``.
     """
     assets = project.assets()
     index = FreeSpaceIndex(project.model)
-    for bank, ranges in reserved_code_ranges(project).items():
-        for offset, length in ranges:
+    reserved: dict[str, list[tuple[int, int]]] = {}
+    for source in (reserved_code_ranges(project), occupied or {}):
+        for bank, ranges in source.items():
+            reserved.setdefault(bank, []).extend(ranges)
+    for bank, ranges in reserved.items():
+        for offset, length in _merge(ranges):
             try:
                 index.place(bank, offset, length)
             except ValueError:
@@ -282,15 +307,18 @@ def _asset_asm_block(project, entry: AssetEntry, raw_bytes: bytes, result, cache
     return lines
 
 
-def regenerate_assets_asm(project) -> Path:
+def regenerate_assets_asm(project, occupied: dict[str, list[tuple[int, int]]] | None = None) -> Path:
     """Convert every manifest asset, cache its bytes, and emit ``assets_generated.asm``.
 
     Runs tileset-producing kinds (``sprite_sheet``/``sprite_sequence``/``font``)
     before ``tilemap`` entries, since a tilemap's conversion needs to validate its tile
     indices against the tileset's real frame count.
+
+    ``occupied`` is passed straight to :func:`resolve_auto_placements` -- the build hands
+    it the source scan so a first-ever build places assets clear of the code.
     """
     ensure_assets_include(project)
-    resolve_auto_placements(project)
+    resolve_auto_placements(project, occupied)
     assets = project.assets()
 
     def read_bytes(rel_path: str) -> bytes:

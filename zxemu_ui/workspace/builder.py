@@ -8,6 +8,11 @@ that into log lines and, on success, loads the snapshot.
 Before invoking sjasmplus, it regenerates ``assets_generated.asm`` from the project's
 imported assets (``zxemu_ui.workspace.asset_build``) -- a converter failure there is
 reported the same way an assembler error would be, never a crash.
+
+That regeneration is handed the project's memory plan (``zxemu_ui.workspace.memory_plan``),
+a scan of the sources for where their ``org``s put things, so an asset still waiting to be
+auto-located lands clear of the code even on a project that has never been built -- the one
+case the previous build's ``.sld`` cannot help with, because there isn't one yet.
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from zxemu_ui.workspace.asset_build import AssetBuildError, regenerate_assets_asm
+from zxemu_ui.workspace.memory_plan import build_plan
 from zxemu_ui.workspace.project import DEFAULT_BUILD_ARGS, snapshot_from_source
 
 
@@ -46,7 +52,7 @@ def build(project, settings, main: str | None = None) -> BuildResult:
     settings (it's a per-machine install, the same for every project).
     """
     try:
-        regenerate_assets_asm(project)
+        regenerate_assets_asm(project, build_plan(project).occupied())
     except AssetBuildError as exc:
         return BuildResult([], 1, "Asset build failed: {}\n".format(exc), None, None)
 

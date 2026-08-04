@@ -1150,6 +1150,78 @@ because why they were made the first way is worth keeping.*
   every tab's cache, since an include's value may have just moved and nobody else's
   document changed.
 
+## The memory plan: source as the map, and MEMOBJs you can move ✅ *delivered*
+
+The Design-mode map could only ever draw what the *manifest* knew -- placed assets. Where
+your own code lived was a stated gap in `memlayout.py` and only half-covered by reading the
+previous build's SLD, so a first build could still drop an asset onto a hand-written `org`.
+The information was never missing, though: `org` + a label + a `MODULE` **is** a memory
+plan, written where it cannot go stale. So the map reads it.
+
+**Three layers, each reusing what already existed rather than re-parsing:**
+
+- `zxemu_core/debug/asm_layout.py` -- scans `DEVICE`, `org`, `MODULE`, `SLOT`/`PAGE`,
+  `include` and `incbin` into `Region`s (bank, offset, length, origin, line). Prices each
+  statement through `asm_meter.measure_statement`, follows includes the way
+  `asm_symbols.collect` does, and resolves `org` operands through the `equ` table -- real
+  projects write `org AppStart`, not `org $7b00`, and without that none of their regions
+  would resolve at all.
+- `zxemu_ui/workspace/memory_plan.py` -- the project-wide view: the scan, plus the
+  manifest's assets, plus the last build's `.sld`, plus the overlaps between all of them.
+  Its `occupied()` now seeds the free-space index, which is what finally closes the
+  first-build collision.
+- `zxemu_ui/workspace/memory_edit.py` -- the write direction. Finds the single line that
+  decides a region's address and rewrites only the number in it.
+
+**Load-bearing decisions:**
+
+- **A button, not a keystroke hook.** Scanning re-runs on Refresh, on project open, and
+  after a build. The user was explicit: a scan you did not ask for is one you cannot trust
+  the timing of. `Arrange` likewise never runs on its own.
+- **A move edits the `equ`, not the `org`.** A project of any size keeps its addresses in
+  one table that every `org` points at; that table is the plan its author maintains. Moving
+  a block by rewriting its `equ` keeps table and code agreeing -- rewriting the `org` would
+  leave the table lying, which is worse than having no tool.
+- **Edits go through the editor, never to disk.** Undoable, visible, and incapable of
+  clobbering an unsaved tab. The build's existing save-all picks them up.
+- **Refuse rather than guess.** An `org` written as an expression, or naming a constant
+  whose definition can't be found, is drawn but not movable, and says why. Same instinct as
+  the rest of `debug/`: an estimated length is hatched, an unknowable 128K slot-3 bank is
+  marked as such.
+- **The symbol table resolves from the entry point**, not from the file the `org` sits in.
+  A module in `core/` writes `org Attributes` without including the table that defines it,
+  because whatever includes the module did that first -- the assembler sees one translation
+  unit, and so must this.
+
+**Found by running it against a real project** (`rehq`, ~11 regions): a label named `Text`
+was parsing as sjasmplus's `TEXT` byte directive, costing a phantom byte and a phantom
+region -- `asm_meter.split_line` now treats a name in front of `equ`/`defl`/`=` as a label
+whatever it collides with, which was mis-pricing the assembly meter too. Also: a manifest
+`main` that no longer exists, hence the entry-point fallback to any root source carrying a
+`savesna`.
+
+**Known limits, all stated in docstrings:** conditionals and repeat blocks are counted
+blind; `DISP`/`ENT` moves the cursor but the display address is not modelled; the scan
+follows one entry point's include tree, so a second unincluded entry point is invisible
+until built.
+
+**The dock was not enough, and why.** First cut put all of this in the Design-mode map,
+drawn to scale. Tried on a real project it was unusable: modules are hundreds of bytes in
+a 16K column, so they render as two-pixel lines you cannot read, click or aim at -- and
+the four columns are *slots*, so a 128K project spread across more than four banks is
+half-invisible. Hence `panels/memory_plan_window.py`: a separate maximisable window, one
+**uniform row per block** carrying name / start-end / size as text, free space spelled out
+as its own labelled row, and a column per bank whether or not it is currently paged in.
+To-scale drawing stays in the dock, where "watch PC and SP move" is the actual question.
+
+**Not done, and worth considering:** moving a block **between banks** (it needs
+`SLOT`/`PAGE` inserted next to the `org`, not a number changed -- currently refused with
+a message), a start address for `Arrange` per bank (packing RAM5 from the bottom walks
+code into contended memory), and declared regions in `zxide.json` for things no source
+states -- stack, scratch buffers, "keep this free".
+
+---
+
 ## Milestone 5: Visual Logic (design, not yet started)
 
 *Sequenced after Milestone 4 -- actions like `draw_sprite` need assets to already exist.

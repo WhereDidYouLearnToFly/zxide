@@ -73,10 +73,16 @@ class Constant:
     name: str               # as written in the source, so the tooltip echoes your spelling
     expression: str         # the right-hand side, verbatim
     value: int | None = None  # what it comes to, or None when it can't be worked out here
-    origin: str = ""        # file it came from; empty for the file being edited
+    origin: str = ""        # file it came from, for display; empty for the file being edited
+    # Where the definition lives, exactly. Hover help only ever needed the value, but the
+    # memory map *edits* these lines -- moving a block of code means rewriting the one
+    # `equ` its `org` points at -- and for that "somewhere in a file called memmap.i" is
+    # not enough. The path is the resolved one, so an include in a subfolder is findable.
+    path: str = ""
+    line: int = 0           # 1-based; 0 when unknown
 
 
-def definitions(text: str, origin: str = "") -> dict[str, Constant]:
+def definitions(text: str, origin: str = "", path: str = "") -> dict[str, Constant]:
     """Every constant defined in one file, keyed by lower-cased name.
 
     The first definition of a name wins. Redefinition is an error for ``equ`` anyway, and
@@ -85,7 +91,7 @@ def definitions(text: str, origin: str = "") -> dict[str, Constant]:
     introduced.
     """
     found: dict[str, Constant] = {}
-    for line in text.splitlines():
+    for number, line in enumerate(text.splitlines(), start=1):
         body = asm_meter.strip_comment(line)
         match = _DEFINITION.match(body) or _DEFINE.match(body)
         if match is None:
@@ -93,7 +99,7 @@ def definitions(text: str, origin: str = "") -> dict[str, Constant]:
         name, expression = match.group(1), match.group(2).strip()
         key = name.lower()
         if expression and key not in found and key not in _REGISTERS:
-            found[key] = Constant(name=name, expression=expression, origin=origin)
+            found[key] = Constant(name=name, expression=expression, origin=origin, path=path, line=number)
     return found
 
 
@@ -146,7 +152,7 @@ def _follow_includes(text: str, base: Path, reader, table: dict[str, Constant], 
         included = reader(str(path))
         if included is None:
             continue
-        for name, constant in definitions(included, origin=path.name).items():
+        for name, constant in definitions(included, origin=path.name, path=str(path)).items():
             table.setdefault(name, constant)
         _follow_includes(included, path.parent, reader, table, seen, depth - 1)
 

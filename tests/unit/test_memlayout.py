@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from zxemu_core.memlayout import FreeSpaceIndex, bank_ids_for_model
+from zxemu_core.memlayout import FreeSpaceIndex, bank_ids_for_model, slot_for_bank
 from zxemu_core.memory import BANK_SIZE, SCREEN_BYTES
 
 
@@ -101,3 +101,19 @@ def test_auto_locate_places_the_asset_so_it_wont_be_offered_twice():
 def test_auto_locate_returns_none_when_nothing_fits():
     index = FreeSpaceIndex("48k")
     assert index.auto_locate(BANK_SIZE * 10) is None
+
+
+def test_slot_for_bank_follows_the_128k_wiring_by_default():
+    """RAM5 and RAM2 are soldered to slots 1 and 2; everything else reaches the CPU
+    only through slot 3, which is the only one port $7FFD can repoint."""
+    assert [slot_for_bank(bank) for bank in ("rom0", "ram5", "ram2", "ram0", "ram7")] == [0, 1, 2, 3, 3]
+
+
+def test_slot_for_bank_on_48k_is_the_slot_the_bank_is_wired_to():
+    """A 48K's banks *are* its slots. Without the model the 128K rule answers "slot 3"
+    for ram1, which put every address in that column 32K too high."""
+    assert [slot_for_bank(bank, "48k") for bank in ("rom", "ram1", "ram2", "ram3")] == [0, 1, 2, 3]
+
+
+def test_pentagon_pages_like_a_128k():
+    assert slot_for_bank("ram1", "pentagon") == 3

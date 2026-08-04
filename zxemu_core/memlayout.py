@@ -51,14 +51,74 @@ def bank_ids_for_model(model: str) -> list[str]:
     return ["rom", "ram1", "ram2", "ram3"]
 
 
+#: The CPU address each 16K slot starts at. Slots are the *address space*; banks are the
+#: memory that can be paged into them, and these four numbers are the only bridge between
+#: the two -- which is why they live here rather than in whichever module needed them first.
+SLOT_BASE = (0x0000, 0x4000, 0x8000, 0xC000)
+
+
+def slot_for_address(address: int) -> int:
+    """Which of the four 16K slots a CPU address falls in."""
+    return (address & 0xFFFF) // BANK_SIZE
+
+
+def slot_for_bank(bank_id: str, model: str | None = None) -> int:
+    """The slot a bank is addressed through when assembling bytes into it.
+
+    On a **paged** machine (the default when no model is given): ROM in slot 0, RAM5 and
+    RAM2 fixed to the slots the hardware wires them to, and every other bank through the
+    one "free choice" slot 3. sjasmplus's ``SLOT``/``PAGE`` would technically accept any
+    combination -- those directives are about where in the assembled image bytes land, not
+    about runtime paging -- but matching the real 128K map keeps generated source readable
+    as the thing a human would have written.
+
+    On an **unpaged** one the question is simpler and the answer above is wrong: a 48K's
+    banks *are* its slots, in order, so ``ram1`` is slot 1 and not the 128K's "anything
+    unrecognised goes in slot 3". Pass ``model`` wherever a 48K project can reach this --
+    without it, a 48K block at ``$4000`` is reported as living at ``$C000``.
+    """
+    if model is not None and model not in PAGED_MODELS:
+        ids = bank_ids_for_model(model)
+        if bank_id in ids:
+            return ids.index(bank_id)
+    if bank_id.startswith("rom"):
+        return 0
+    if bank_id == "ram5":
+        return 1
+    if bank_id == "ram2":
+        return 2
+    return 3
+
+
+def default_bank_for_slot(model: str, slot: int) -> str | None:
+    """Which bank a slot holds when the source hasn't said -- or None when nothing can be.
+
+    The inverse of :func:`slot_for_bank`, and deliberately partial. On 48K every slot is
+    wired to exactly one bank forever, so the answer is always certain. On 128K slots 0-2
+    are certain *by convention* (ROM0, RAM5, RAM2 -- what the machine boots with), but slot
+    3 can hold any of eight banks depending on a port write this module cannot see, so it
+    returns None rather than name one. Callers are expected to say "unknown" too: see
+    ``workspace/sld.py``, which excludes the same slot for the same reason.
+    """
+    if model not in PAGED_MODELS:
+        return bank_ids_for_model(model)[slot]
+    return {0: "rom0", 1: "ram5", 2: "ram2"}.get(slot)
+
+
 def _screen_bank_ids(model: str) -> set[str]:
     """Which bank(s) hold display memory -- the normal screen, and the shadow screen too
     on the models that have one."""
     return {"ram5", "ram7"} if model in PAGED_MODELS else {"ram1"}
 
 
-def _hardware_reserved(bank_id: str, model: str) -> list[Range]:
-    """Ranges within ``bank_id`` no asset may ever claim, before any asset is placed."""
+def hardware_reserved(bank_id: str, model: str) -> list[Range]:
+    """Ranges within ``bank_id`` no asset may ever claim, before any asset is placed.
+
+    Public because "what is free here" is asked in two ways: :class:`FreeSpaceIndex`
+    answers it while *placing* things, and the memory plan window answers it while
+    *drawing* them, where a claim that overlaps another must not make the bytes under it
+    look empty. Both have to start from the same reserved ranges.
+    """
     if bank_id.startswith("rom"):
         return [(0, BANK_SIZE)]
     if bank_id in _screen_bank_ids(model):
@@ -79,7 +139,7 @@ class FreeSpaceIndex:
         self._bank_ids = bank_ids_for_model(model)
         self._placed: dict[str, list[Range]] = {bank_id: [] for bank_id in self._bank_ids}
         for bank_id in self._bank_ids:
-            self._placed[bank_id].extend(_hardware_reserved(bank_id, model))
+            self._placed[bank_id].extend(hardware_reserved(bank_id, model))
 
     def place(self, bank: str, offset: int, length: int) -> None:
         if bank not in self._placed:

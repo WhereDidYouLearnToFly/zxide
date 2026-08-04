@@ -16,10 +16,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt5.QtCore import QEvent, QPoint, QSize, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QPainter, QPolygon, QTextCursor, QTextFormat, QTextOption
-from PyQt5.QtWidgets import QPlainTextEdit, QTabWidget, QTextEdit, QToolTip, QWidget
+from PyQt5.QtGui import QColor, QPainter, QPolygon, QStandardItem, QStandardItemModel, QTextCursor, QTextDocument, QTextFormat, QTextOption
+from PyQt5.QtWidgets import QAction, QCompleter, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QTabWidget, QTextEdit, QToolButton, QToolTip, QWidget
 
-from zxemu_core.debug import asm_help, asm_symbols
+from zxemu_core.debug import asm_defs, asm_help, asm_symbols
+from zxemu_core.debug.asm_hidden import SUSPECTS
 from zxemu_ui.theme import monospace_font
 from zxemu_ui.z80_highlighter import Z80Highlighter
 
@@ -29,6 +30,15 @@ _LINE_NUMBER = QColor("#6d7276")
 _BREAKPOINT = QColor("#e5484d")
 _CURRENT_LINE = QColor("#2a2a2a")
 _EXEC_LINE = QColor("#4a3f1a")   # highlighted line where execution is paused
+_MATCH = QColor("#3d5a80")       # every occurrence of what Ctrl+F is looking for
+
+#: How many characters before the completion popup appears on its own. Two, because one
+#: matches most of a project and would pop up constantly; Ctrl+Space forces it any time.
+COMPLETE_AFTER = 2
+
+#: Enough to see a label's uses down a file; a cap so a one-character query in a 2000-line
+#: source doesn't build tens of thousands of selections on every keystroke.
+_MAX_HIGHLIGHTS = 500
 _EXEC_ARROW = QColor("#e0a13a")  # gutter arrow on the execution line
 _BREAKPOINT_COLUMN = 18  # width of the clickable breakpoint strip, px
 
@@ -62,6 +72,8 @@ class CodeEdit(QPlainTextEdit):
 
     INDENT_WIDTH = 4
     breakpoints_changed = pyqtSignal()
+    #: A name was right-clicked; the window resolves it (this widget knows no project).
+    definition_requested = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -71,7 +83,9 @@ class CodeEdit(QPlainTextEdit):
         self._symbols: dict[str, asm_symbols.Constant] = {}  # equ constants, rebuilt on demand
         self._symbols_revision = -1  # document revision the table above was built from
         self._read_source = None     # supplied by EditorArea; reads other files' text
+        self._search, self._search_cased = "", False  # what Ctrl+F is highlighting
         self._gutter = _Gutter(self)
+        self._make_completer()
         self.blockCountChanged.connect(lambda _n: self._update_gutter_width())
         self.updateRequest.connect(self._on_update_request)
         self.cursorPositionChanged.connect(self._refresh_selections)
@@ -104,6 +118,123 @@ class CodeEdit(QPlainTextEdit):
             return True
         return super().event(event)
 
+    def insertFromMimeData(self, source) -> None:  # noqa: N802
+        """Paste plain text, and only plain text.
+
+        Assembly source has no use for a non-breaking space, a zero-width space or a
+        text-direction mark -- but a browser, a PDF and most chat clients hand them out
+        freely, and they arrive looking exactly like what you meant to paste. Cleaning at
+        the door is better than detecting them later: the alternative is an assembler
+        error naming a character nobody can see, which is precisely the hour this cost.
+
+        A non-breaking space becomes an ordinary space (that is what it was standing in
+        for); everything else invisible is simply dropped.
+        """
+        text = source.text()
+        if text:
+            cleaned = "".join(" " if ch == " " else "" if ch in SUSPECTS else ch for ch in text)
+            if cleaned != text:
+                self.insertPlainText(cleaned)
+                return
+        super().insertFromMimeData(source)
+
+    def contextMenuEvent(self, event) -> None:  # noqa: N802
+        """The standard menu, with Go to Definition on top when a name was clicked.
+
+        Built from ``createStandardContextMenu`` rather than replacing it: undo, cut, paste
+        and select-all are what a right-click means everywhere, and losing them to gain one
+        entry would be a poor trade. The name comes from *where you clicked*, not from the
+        caret -- right-clicking a label across the file should ask about that label, not
+        about wherever you happened to be typing.
+        """
+        menu = self.createStandardContextMenu()
+        cursor = self.cursorForPosition(event.pos())
+        name = asm_defs.name_at(cursor.block().text(), cursor.positionInBlock())
+        if name:
+            action = QAction("Go to Definition of “{}”".format(name), menu)
+            action.setShortcut("F12")
+            action.triggered.connect(lambda _checked=False, n=name: self.definition_requested.emit(n))
+            first = menu.actions()[0] if menu.actions() else None
+            menu.insertAction(first, action)
+            menu.insertSeparator(first)
+        if any(ch in SUSPECTS for ch in self.toPlainText()):
+            menu.addSeparator()
+            clean = QAction("Remove invisible characters from this file", menu)
+            clean.triggered.connect(self.remove_invisible)
+            menu.addAction(clean)
+        menu.exec_(event.globalPos())
+
+    def remove_invisible(self) -> int:
+        """Strip every invisible character from this document. Returns how many went.
+
+        One undo step, and it goes through the document rather than the file, so it is
+        taken back the same way as any other edit.
+        """
+        text = self.toPlainText()
+        cleaned = "".join(" " if ch == " " else "" if ch in SUSPECTS else ch for ch in text)
+        if cleaned == text:
+            return 0
+        cursor = self.textCursor()
+        cursor.beginEditBlock()
+        cursor.select(QTextCursor.Document)
+        cursor.insertText(cleaned)
+        cursor.endEditBlock()
+        return sum(1 for ch in text if ch in SUSPECTS)
+
+    # --- completion -------------------------------------------------------------
+
+    def set_completions(self, entries: list) -> None:
+        """Supply ``[(name, detail), ...]`` -- the project's labels, constants and macros.
+
+        Pushed in rather than gathered here: the names come from the whole include tree,
+        which only the window knows how to walk, and rebuilding that per keystroke would
+        be the one thing an editor must never do.
+        """
+        model = QStandardItemModel(self)
+        for name, detail in entries:
+            item = QStandardItem(name)
+            item.setToolTip(detail)
+            model.appendRow(item)
+        self._completer.setModel(model)
+
+    def _make_completer(self) -> None:
+        self._completer = QCompleter(self)
+        self._completer.setWidget(self)
+        self._completer.setCompletionMode(QCompleter.PopupCompletion)
+        self._completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self._completer.activated.connect(self._insert_completion)
+        self._completer.setModel(QStandardItemModel(self))
+
+    def _prefix_under_cursor(self) -> str:
+        """The identifier being typed, back to whatever is not part of a name."""
+        text = self.textCursor().block().text()
+        column = self.textCursor().positionInBlock()
+        start = column
+        while start > 0 and (text[start - 1].isalnum() or text[start - 1] in "_@."):
+            start -= 1
+        return text[start:column]
+
+    def _insert_completion(self, completion: str) -> None:
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.Left, QTextCursor.KeepAnchor, len(self._prefix_under_cursor()))
+        cursor.insertText(completion)
+        self.setTextCursor(cursor)
+
+    def _update_completer(self, forced: bool = False) -> None:
+        """Show, filter or hide the popup for what is being typed right now."""
+        prefix = self._prefix_under_cursor()
+        if not forced and len(prefix) < COMPLETE_AFTER:
+            self._completer.popup().hide()
+            return
+        self._completer.setCompletionPrefix(prefix)
+        if self._completer.completionCount() == 0:
+            self._completer.popup().hide()
+            return
+        self._completer.popup().setCurrentIndex(self._completer.completionModel().index(0, 0))
+        rect = self.cursorRect()
+        rect.setWidth(self._completer.popup().sizeHintForColumn(0) + self._completer.popup().verticalScrollBar().sizeHint().width() + 24)
+        self._completer.complete(rect)
+
     def set_instruction_help(self, on: bool) -> None:
         self._instruction_help = on
 
@@ -133,6 +264,17 @@ class CodeEdit(QPlainTextEdit):
     # --- indentation (spaces, not tabs) ---------------------------------------
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
+        # While the completion popup is up it owns the navigation keys -- otherwise Enter
+        # would insert a newline behind it and Up/Down would move the caret out from under
+        # the list you are choosing from.
+        if self._completer.popup().isVisible() and event.key() in (
+            Qt.Key_Enter, Qt.Key_Return, Qt.Key_Tab, Qt.Key_Escape, Qt.Key_Up, Qt.Key_Down
+        ):
+            event.ignore()
+            return
+        if event.key() == Qt.Key_Space and event.modifiers() & Qt.ControlModifier:
+            self._update_completer(forced=True)
+            return
         if event.key() == Qt.Key_Tab and event.modifiers() == Qt.NoModifier:
             if self._shift_selected_lines(+1):
                 return
@@ -145,6 +287,7 @@ class CodeEdit(QPlainTextEdit):
             self._dedent()
             return
         super().keyPressEvent(event)
+        self._update_completer()
 
     def _shift_selected_lines(self, direction: int) -> bool:
         """Indent (+1) or outdent (-1) every line of a multi-line selection.
@@ -291,6 +434,51 @@ class CodeEdit(QPlainTextEdit):
         self._refresh_selections()
         self._gutter.update()
 
+    # --- find in this document --------------------------------------------------
+
+    def set_search(self, query: str, case_sensitive: bool = False) -> int:
+        """Highlight every occurrence of ``query``. Returns how many there are.
+
+        Highlighting *all* of them rather than only the one you are on: in assembly the
+        useful question is usually "how many places use this label", and seeing four marks
+        down the scrollbar's worth of text answers it without pressing next four times.
+        """
+        self._search, self._search_cased = query, case_sensitive
+        self._refresh_selections()
+        return len(self._match_positions())
+
+    def _match_positions(self) -> list:
+        """Every match as ``(start, end)``, capped so a one-letter query can't stall the UI."""
+        if not self._search:
+            return []
+        flags = QTextDocument.FindCaseSensitively if self._search_cased else QTextDocument.FindFlags()
+        found, cursor = [], QTextCursor(self.document())
+        while len(found) < _MAX_HIGHLIGHTS:
+            cursor = self.document().find(self._search, cursor, flags)
+            if cursor.isNull():
+                break
+            found.append((cursor.selectionStart(), cursor.selectionEnd()))
+        return found
+
+    def find_next(self, forward: bool = True) -> tuple:
+        """Move to the next (or previous) match, wrapping. Returns ``(which, total)``, 1-based."""
+        matches = self._match_positions()
+        if not matches:
+            return 0, 0
+        here = self.textCursor().selectionStart() if forward else self.textCursor().selectionStart()
+        if forward:
+            index = next((i for i, (start, _end) in enumerate(matches) if start > here), 0)
+        else:
+            earlier = [i for i, (start, _end) in enumerate(matches) if start < here]
+            index = earlier[-1] if earlier else len(matches) - 1
+        start, end = matches[index]
+        cursor = self.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.KeepAnchor)
+        self.setTextCursor(cursor)
+        self.centerCursor()
+        return index + 1, len(matches)
+
     def _refresh_selections(self) -> None:
         selections = []
         cursor_line = QTextEdit.ExtraSelection()
@@ -299,6 +487,17 @@ class CodeEdit(QPlainTextEdit):
         cursor_line.cursor = self.textCursor()
         cursor_line.cursor.clearSelection()
         selections.append(cursor_line)
+
+        # Match highlights sit above the current-line band and below the execution line:
+        # you need to see a match on the line you are standing on, but never in place of
+        # where the program is paused.
+        for start, end in self._match_positions():
+            match = QTextEdit.ExtraSelection()
+            match.format.setBackground(_MATCH)
+            match.cursor = QTextCursor(self.document())
+            match.cursor.setPosition(start)
+            match.cursor.setPosition(end, QTextCursor.KeepAnchor)
+            selections.append(match)
 
         if self._exec_block is not None:
             block = self.document().findBlockByNumber(self._exec_block)
@@ -313,8 +512,101 @@ class CodeEdit(QPlainTextEdit):
         self.setExtraSelections(selections)
 
 
+class FindBar(QWidget):
+    """The Ctrl+F strip: find as you type, in the file you are looking at.
+
+    A bar under the editor rather than a dialog, for the reason every editor settled on
+    one: a dialog covers the text you are searching and has to be dismissed before you can
+    read the result. This stays out of the way, keeps the query while you move around, and
+    Esc puts you back in the code.
+
+    It is deliberately the *narrow* half of search. "Where is this label used" is a
+    project-wide question and has its own answer (Ctrl+Shift+F, results in Output); this
+    one is "take me to the next one of these in this file", which wants to be instant and
+    to leave no trace.
+    """
+
+    #: ``(query, case sensitive)`` -- emitted as you type, so highlights follow the query.
+    search_changed = pyqtSignal(str, bool)
+    #: True for next, False for previous.
+    step = pyqtSignal(bool)
+    closed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._field = QLineEdit()
+        self._field.setPlaceholderText("Find in this file")
+        self._field.setClearButtonEnabled(True)
+        self._field.textChanged.connect(self._announce)
+        self._field.returnPressed.connect(lambda: self.step.emit(True))
+
+        self._cased = QToolButton()
+        self._cased.setText("Aa")
+        self._cased.setCheckable(True)
+        self._cased.setToolTip("Match case")
+        self._cased.toggled.connect(self._announce)
+
+        self._count = QLabel("")
+        self._count.setStyleSheet("color: #9aa0a6;")
+        self._count.setMinimumWidth(90)
+
+        previous, following, close = QToolButton(), QToolButton(), QToolButton()
+        previous.setText("▲")
+        previous.setToolTip("Previous match (Shift+F3)")
+        previous.clicked.connect(lambda: self.step.emit(False))
+        following.setText("▼")
+        following.setToolTip("Next match (F3)")
+        following.clicked.connect(lambda: self.step.emit(True))
+        close.setText("✕")
+        close.setToolTip("Close (Esc)")
+        close.clicked.connect(self.closed)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(6, 3, 6, 3)
+        row.setSpacing(4)
+        row.addWidget(QLabel("Find:"))
+        row.addWidget(self._field, 1)
+        for widget in (self._cased, previous, following, self._count, close):
+            row.addWidget(widget)
+
+    def _announce(self) -> None:
+        self.search_changed.emit(self._field.text(), self._cased.isChecked())
+
+    def query(self) -> str:
+        return self._field.text()
+
+    def case_sensitive(self) -> bool:
+        return self._cased.isChecked()
+
+    def start(self, seed: str = "") -> None:
+        """Show the bar, pre-filled with ``seed`` (the selection, normally), and focus it."""
+        if seed:
+            self._field.setText(seed)
+        self.show()
+        self._field.setFocus()
+        self._field.selectAll()
+        self._announce()
+
+    def show_count(self, which: int, total: int) -> None:
+        if not self._field.text():
+            self._count.setText("")
+        elif not total:
+            self._count.setText("no matches")
+        else:
+            self._count.setText("{} of {}".format(which or 1, total))
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() == Qt.Key_Escape:
+            self.closed.emit()
+            return
+        super().keyPressEvent(event)
+
+
 class EditorArea(QTabWidget):
     """A tab group of code documents; the window's central editing surface."""
+
+    #: Bubbled up from whichever tab was right-clicked.
+    definition_requested = pyqtSignal(str)
 
     breakpoints_changed = pyqtSignal()  # any tab's breakpoints changed
     # Any edit, cursor move, or selection change in any tab. One signal rather than three
@@ -346,6 +638,8 @@ class EditorArea(QTabWidget):
         edit.setTabStopDistance(4 * edit.fontMetrics().horizontalAdvance(" "))
         edit._highlighter = Z80Highlighter(edit.document())  # keep a reference alive
         edit.breakpoints_changed.connect(self.breakpoints_changed)  # bubble up
+        edit.definition_requested.connect(self.definition_requested)
+        edit.set_completions(getattr(self, "_completions", []))
         edit.textChanged.connect(self.cursor_or_text_changed)
         edit.cursorPositionChanged.connect(self.cursor_or_text_changed)
         edit.selectionChanged.connect(self.cursor_or_text_changed)
@@ -353,6 +647,59 @@ class EditorArea(QTabWidget):
         edit.set_source_reader(self._read_source_text)
         self._apply_special_chars(edit)
         return edit
+
+    # --- find in the current document -------------------------------------------
+
+    def selected_text(self) -> str:
+        """What is selected in the current tab, if it is one line of it -- the Ctrl+F seed."""
+        edit = self.currentWidget()
+        if not isinstance(edit, QPlainTextEdit):
+            return ""
+        text = edit.textCursor().selectedText()
+        return text if text and " " not in text else ""  # U+2029 is Qt's line separator
+
+    def set_completions(self, entries: list) -> None:
+        """Give every tab the project's names, and remember them for tabs opened later."""
+        self._completions = entries
+        for i in range(self.count()):
+            widget = self.widget(i)
+            if isinstance(widget, CodeEdit):
+                widget.set_completions(entries)
+
+    def set_search(self, query: str, case_sensitive: bool = False) -> int:
+        """Highlight ``query`` in the current tab; returns the number of matches."""
+        edit = self.currentWidget()
+        return edit.set_search(query, case_sensitive) if isinstance(edit, CodeEdit) else 0
+
+    def find_next(self, forward: bool = True) -> tuple:
+        edit = self.currentWidget()
+        return edit.find_next(forward) if isinstance(edit, CodeEdit) else (0, 0)
+
+    def clear_search(self) -> None:
+        """Drop the highlights everywhere, not just in the tab you happen to be on."""
+        for i in range(self.count()):
+            widget = self.widget(i)
+            if isinstance(widget, CodeEdit):
+                widget.set_search("")
+
+    def name_at_cursor(self) -> str:
+        """The identifier the caret is in, for Go to Definition."""
+        edit = self.currentWidget()
+        if not isinstance(edit, QPlainTextEdit):
+            return ""
+        cursor = edit.textCursor()
+        if cursor.hasSelection():
+            return cursor.selectedText().strip()
+        return asm_defs.name_at(cursor.block().text(), cursor.positionInBlock())
+
+    def source_reader(self):
+        """The "path -> text" callable other panels should scan a project with.
+
+        Handed out rather than each caller reading files itself, because only the editor
+        knows about unsaved tabs -- and a memory map drawn from the saved copy of a file
+        you are editing is showing you the past.
+        """
+        return self._read_source_text
 
     def _read_source_text(self, path: str) -> str | None:
         """The text of an included file: the open tab's copy if there is one, else disk.
@@ -461,12 +808,87 @@ class EditorArea(QTabWidget):
             self.setCurrentIndex(existing)
             return
         edit = self._new_edit()
-        edit.setPlainText(Path(path).read_text(encoding="utf-8", errors="replace"))
+        # A byte-order mark is *file* metadata, not text. Read as plain utf-8 it survives
+        # as a U+FEFF character at position 0 -- invisible, and therefore something you
+        # can insert a line in front of, which moves it into the middle of the file where
+        # an assembler reads it as a stray label in column zero. (Exactly that happened:
+        # marking a block from the memory plan inserted its comment above the BOM and
+        # broke the build.) So: strip it on the way in, remember it, put it back on save,
+        # and the file stays byte-identical while nothing in the editor can trip over it.
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        edit.setProperty("had_bom", text.startswith("﻿"))
+        edit.setPlainText(text.lstrip("﻿"))
         edit.setProperty("file_path", key)  # the tab's identity, stable across reorders
         edit.document().setModified(False)
         edit.document().modificationChanged.connect(lambda _m, e=edit: self._update_title(e))
         index = self.addTab(edit, Path(path).name)
         self.setCurrentIndex(index)
+
+    def replace_line(self, path: str, line: int, text: str) -> bool:
+        """Replace one 1-based line of a file, through the editor. True if it happened.
+
+        Deliberately *not* a write to disk. The memory map rewrites source when you drag a
+        block somewhere else, and doing that behind the editor's back would be two bugs at
+        once: an unsaved tab would silently lose the change (or clobber it on the next
+        save), and there would be no way to take it back. Going through the document
+        instead means the file opens where it changed, Ctrl+Z undoes it like any other
+        edit, and it is saved when you save -- including by the save-all a build does.
+        """
+        self.open_file(path)
+        edit = self.currentWidget()
+        if not isinstance(edit, QPlainTextEdit):
+            return False
+        block = edit.document().findBlockByNumber(max(0, line - 1))
+        if not block.isValid():
+            return False
+        cursor = edit.textCursor()
+        cursor.setPosition(block.position())
+        cursor.setPosition(block.position() + block.length() - 1, QTextCursor.KeepAnchor)
+        cursor.insertText(text)  # one undo step, and it marks the document modified
+        edit.setTextCursor(cursor)
+        edit.centerCursor()
+        return True
+
+    def insert_lines(self, path: str, line: int, texts: list) -> bool:
+        """Insert lines before 1-based ``line``, through the editor. True if it happened.
+
+        The companion to :meth:`replace_line`, for the one edit that is not a substitution:
+        putting a block into another bank needs ``SLOT``/``PAGE`` *added* above its ``org``.
+        One undo step for the whole insertion, for the same reasons as replace_line.
+        """
+        if not texts:
+            return True
+        self.open_file(path)
+        edit = self.currentWidget()
+        if not isinstance(edit, QPlainTextEdit):
+            return False
+        block = edit.document().findBlockByNumber(max(0, line - 1))
+        if not block.isValid():
+            return False
+        cursor = edit.textCursor()
+        cursor.setPosition(block.position())
+        cursor.insertText("\n".join(texts) + "\n")
+        edit.setTextCursor(cursor)
+        edit.centerCursor()
+        return True
+
+    def delete_line(self, path: str, line: int) -> bool:
+        """Remove one 1-based line, through the editor. The third of the trio with
+        :meth:`replace_line` and :meth:`insert_lines`, for taking an attribute back off."""
+        self.open_file(path)
+        edit = self.currentWidget()
+        if not isinstance(edit, QPlainTextEdit):
+            return False
+        block = edit.document().findBlockByNumber(max(0, line - 1))
+        if not block.isValid():
+            return False
+        cursor = edit.textCursor()
+        cursor.setPosition(block.position())
+        cursor.setPosition(block.position() + block.length(), QTextCursor.KeepAnchor)
+        cursor.removeSelectedText()
+        edit.setTextCursor(cursor)
+        edit.centerCursor()
+        return True
 
     def close_files_under(self, path: str) -> list[str]:
         """Close every tab whose file is ``path`` or lives inside it. Returns what closed.
@@ -511,7 +933,10 @@ class EditorArea(QTabWidget):
         path = edit.property("file_path")
         if not path or not edit.document().isModified():
             return  # nothing to save (welcome tab, or unchanged)
-        Path(path).write_text(edit.toPlainText(), encoding="utf-8")
+        text = edit.toPlainText()
+        if edit.property("had_bom"):
+            text = "﻿" + text  # restore what the file came with -- see open_file
+        Path(path).write_text(text, encoding="utf-8")
         edit.document().setModified(False)
         # Saving a file of constants changes what every *other* tab's includes are worth,
         # and their own documents haven't changed, so nothing else would notice.

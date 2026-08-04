@@ -12,6 +12,23 @@ testable on its own, and the UI panels in ``zxemu_ui`` are thin presentation ove
                      *source* rather than memory: how many bytes and T-states a run
                      of assembly costs, so "does this fit" and "does this finish
                      inside a frame" are answerable by selecting the code.
+    asm_layout.py    The same direction again, one level up: not what a run of source
+                     *costs* but where it *lands*. Reads the directives that decide
+                     layout -- org, MODULE, SLOT/PAGE, include, incbin -- so the memory
+                     map can show where your code lives before a build has ever run,
+                     which is what stops auto-locate dropping an asset on top of it.
+    asm_hidden.py    The characters that are in a file, mean something to the
+                     assembler, and draw nothing -- a file-type marker that has
+                     drifted off line 1, a pasted non-breaking space, a zero-width
+                     space inside a label. Named so the editor can mark them and
+                     refuse to paste them, because the failure mode is an error
+                     message about a character nobody can see.
+    asm_defs.py      Where a name comes from: labels, ``equ`` constants, macros and
+                     modules, indexed across the whole include tree so "go to
+                     definition" reaches the one of a dozen files it actually lives
+                     in. Names inside a ``MODULE`` are indexed twice, bare and
+                     qualified, because that is how the two halves of a project
+                     spell the same label.
     asm_help.py      What an instruction is *for*, in one line, plus the flags it
                      disturbs -- the editor's hover help. Prices the exact operand
                      form under the cursor through ``asm_meter``'s tables rather
@@ -51,6 +68,6 @@ tells you nothing.
 
 from __future__ import annotations
 
-from zxemu_core.debug import analysis, asm_help, asm_meter, asm_symbols, debug_expr, disassembler, dumper, rom_symbols
+from zxemu_core.debug import analysis, asm_defs, asm_hidden, asm_help, asm_layout, asm_meter, asm_symbols, debug_expr, disassembler, dumper, rom_symbols
 
-__all__ = ["analysis", "asm_help", "asm_meter", "asm_symbols", "debug_expr", "disassembler", "dumper", "rom_symbols"]
+__all__ = ["analysis", "asm_defs", "asm_hidden", "asm_help", "asm_layout", "asm_meter", "asm_symbols", "debug_expr", "disassembler", "dumper", "rom_symbols"]

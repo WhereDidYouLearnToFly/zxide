@@ -117,8 +117,14 @@ def build(window, *, model_choices, scale_choices) -> Menus:
     # Edit: navigating your own text. Separate from File (which is about the files
     # themselves) and from Reversing (which is about someone else's *program*).
     add_items(window, bar.addMenu("&Edit"), [
-        Item("&Find in Project…", window._find_in_project, shortcut="Ctrl+F",
+        Item("&Find…", window._find_in_document, shortcut="Ctrl+F",
+             tip="Find in the file you are editing (F3 / Shift+F3 step, Esc closes)"),
+        Item("Find in &Project…", window._find_in_project, shortcut="Ctrl+Shift+F",
              tip="Search every text file in the project; results go to Output"),
+        Item("Find Next", lambda: window._find_step_from_key(True), shortcut="F3"),
+        Item("Find Previous", lambda: window._find_step_from_key(False), shortcut="Shift+F3"),
+        Item("Go to &Definition", window._go_to_definition, shortcut="F12",
+             tip="Jump to where the label, constant or macro under the caret is defined"),
         Item("&Go to Line…", window._goto_line_dialog, shortcut="Ctrl+G"),
     ])
 
@@ -377,6 +383,14 @@ def _build_view_menu(window, bar, scale_choices) -> None:
     fullscreen.triggered.connect(window.emulator_panel.toggle_fullscreen)
     window.emulator_panel.fullscreen_changed.connect(fullscreen.setChecked)
     view_menu.addAction(fullscreen)
+
+    # The memory plan is a window rather than a dock: it needs the room, and it shows
+    # every bank rather than the four a dock-sized to-scale map can draw.
+    plan = QAction("Memory plan…", window)
+    plan.setShortcut("Ctrl+M")
+    plan.setToolTip("Every bank, one row per block, with the free space between them")
+    plan.triggered.connect(window.open_memory_plan_window)
+    view_menu.addAction(plan)
 
     view_menu.addSeparator()
     for dock in window._all_docks:

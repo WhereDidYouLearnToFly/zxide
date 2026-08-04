@@ -21,6 +21,19 @@ tools that build it, and the settings that say where those tools live.
                         include -- the bridge between the asset workflow and sjasmplus.
     sld.py              Parses that SLD (Source Level Debug) file into the map the
                         debugger needs -- source line <-> address, and your labels.
+    memory_plan.py      Where everything lands, gathered from all three things that
+                        know: a scan of your sources for the ``org``/``MODULE``
+                        directives that decide layout (``zxemu_core.debug.asm_layout``),
+                        the manifest's placed assets, and the last build's SLD. It is
+                        what the memory map's Refresh draws, and what stops auto-locate
+                        putting an asset on top of code -- the free-space search had no
+                        idea where hand-written code lived until this existed.
+    memory_edit.py      The other direction: moving a block. Finds the single line that
+                        decides a region's address -- the ``equ`` its ``org`` names, or
+                        the ``org`` itself -- and rewrites just that value, keeping the
+                        alignment, notation and trailing comment. What the memory map's
+                        drag and Arrange do, and it refuses rather than guesses whenever
+                        an address doesn't trace to exactly one line.
     project_files.py    Removing a file or folder from a project, which is three things
                         at once (the file, the manifest assets sourced from it, their
                         cached bytes) -- plus the path comparison that decides which
